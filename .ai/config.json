@@ -1,0 +1,19 @@
+{
+  "maxIterations": 5,
+  "cursorTimeoutMinutes": 45,
+  "reviewTimeoutMinutes": 20,
+  "branchPattern": "^feat/",
+  "cursorModel": "",
+  "level2Paths": ["db/", "fixtures/books-goldens/", "src/server/books/", "worker/", ".github/", "package.json", "package-lock.json", "src/server/security", "src/lib/money", "src/lib/fx"],
+  "forbiddenPaths": ["docs/reference/outputs/", ".env", "uploads/", "lab-output/"],
+  "gates": [
+    { "name": "unit", "required": true, "when": "*",
+      "command": "docker compose up -d postgres minio; docker run --rm --network accountingautomation_default -v \"${REPO}:/src:ro\" -v arnibooks_ai_node_modules:/work/node_modules -w /work node:22 bash /src/scripts/ai/unit-inner.sh test" },
+    { "name": "typecheck", "required": false, "when": "*",
+      "command": "docker run --rm -v \"${REPO}:/src:ro\" -v arnibooks_ai_node_modules:/work/node_modules -w /work node:22 bash /src/scripts/ai/unit-inner.sh typecheck" },
+    { "name": "pytest", "required": true, "when": "worker/",
+      "command": "docker compose up -d postgres; docker run --rm --network accountingautomation_default -v \"${REPO}:/src:ro\" -w /work python:3.12 bash /src/scripts/ci-local-pytest.sh" },
+    { "name": "e2e", "required": true, "when": "src/app/,src/components/,e2e/,db/",
+      "command": "docker compose --profile e2e run --rm e2e" }
+  ]
+}

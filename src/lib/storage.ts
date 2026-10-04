@@ -27,6 +27,19 @@ export async function putObject(key: string, body: Buffer, contentType: string) 
   );
 }
 
+export async function getObjectBytes(key: string): Promise<Buffer> {
+  const out = await clientFor(uploadEndpoint()).send(
+    new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET || "statements",
+      Key: key,
+    }),
+  );
+  const body = out.Body;
+  if (!body) return Buffer.alloc(0);
+  const arr = await body.transformToByteArray();
+  return Buffer.from(arr);
+}
+
 export async function signedGetUrl(key: string) {
   return getSignedUrl(
     clientFor(publicEndpoint()),

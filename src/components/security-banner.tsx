@@ -19,12 +19,31 @@ type Security = {
   note: string;
 };
 
+const DISMISS_KEY = "arnibooks.securityBanner.dismissed";
+
+function readDismissed(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(DISMISS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeDismissed() {
+  try {
+    globalThis.localStorage?.setItem(DISMISS_KEY, "1");
+  } catch {
+    /* storage unavailable — banner stays dismissible for this session only */
+  }
+}
+
 /** Slim dismissible chip for the top bar — not full-width page content. */
 export function SecurityBannerChip() {
   const [security, setSecurity] = useState<Security | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
+    setDismissed(readDismissed());
     fetch("/api/security-status")
       .then((r) => r.json())
       .then(setSecurity)
@@ -47,7 +66,10 @@ export function SecurityBannerChip() {
         type="button"
         className="rounded-full p-0.5 hover:bg-amber-100"
         aria-label="Dismiss security notice"
-        onClick={() => setDismissed(true)}
+        onClick={() => {
+          writeDismissed();
+          setDismissed(true);
+        }}
       >
         <X className="size-3.5" />
       </button>

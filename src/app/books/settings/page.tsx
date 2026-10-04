@@ -25,7 +25,14 @@ import { formatDateUae } from "@/lib/date";
 import { displayToMinor, formatMinor } from "@/lib/money";
 import { statementLineLabel } from "@/lib/statement-line";
 
-type Profile = { id: string; name: string; trn: string | null; defaultCurrency: string };
+type Profile = {
+  id: string;
+  name: string;
+  trn: string | null;
+  defaultCurrency: string;
+  fiscalYearStartMonth?: number;
+  booksStartPeriodId?: string | null;
+};
 type Period = { id: string; label: string; periodStart: string; periodEnd: string; status: string };
 type UserRow = { id: string; name: string; email: string; role: string };
 type CoaNode = {
@@ -684,8 +691,10 @@ export default function BooksSettingsPage() {
   const [inviteRole, setInviteRole] = useState("accountant");
   const [name, setName] = useState("");
   const [trn, setTrn] = useState("");
+  const [fyMonth, setFyMonth] = useState(1);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  const [buildSha, setBuildSha] = useState("");
 
   async function reload() {
     // Load independently so one failing endpoint does not blank the whole page.
@@ -696,6 +705,7 @@ export default function BooksSettingsPage() {
         setProfile(p);
         setName(p.name || "");
         setTrn(p.trn || "");
+        setFyMonth(Number(p.fiscalYearStartMonth || 1));
       } else if (p?.error) errors.push(`company:${p.error}`);
     } catch {
       errors.push("company");
@@ -725,6 +735,11 @@ export default function BooksSettingsPage() {
 
   useEffect(() => {
     void reload();
+    setBuildSha(
+      process.env.NEXT_PUBLIC_BUILD_SHA ||
+        process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
+        "local-dev",
+    );
   }, []);
 
   async function saveProfile() {
@@ -733,7 +748,7 @@ export default function BooksSettingsPage() {
     const res = await fetch("/api/books/company", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, trn: trn || null }),
+      body: JSON.stringify({ name, trn: trn || null, fiscalYearStartMonth: fyMonth }),
     });
     if (!res.ok) {
       setError("Profile save failed.");
@@ -790,6 +805,21 @@ export default function BooksSettingsPage() {
           <div className="space-y-1">
             <Label>Default currency</Label>
             <Input value={profile?.defaultCurrency || "AED"} disabled />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="fy-start">Fiscal year start month</Label>
+            <Input
+              id="fy-start"
+              data-testid="fiscal-year-start-month"
+              type="number"
+              min={1}
+              max={12}
+              value={fyMonth}
+              onChange={(e) => setFyMonth(Number(e.target.value) || 1)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Separate from books-start period. Voucher number series use this fiscal year.
+            </p>
           </div>
         </div>
         <Button onClick={saveProfile}>Save profile</Button>
@@ -889,7 +919,7 @@ export default function BooksSettingsPage() {
               className="mt-1"
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
-              placeholder="name@firm.test"
+              placeholder="name@arnibooks.test"
               data-testid="invite-email"
             />
           </div>
@@ -992,6 +1022,19 @@ export default function BooksSettingsPage() {
             ))}
           </tbody>
         </table>
+        <p className="text-xs text-muted-foreground">
+          Sequences are scoped to the company fiscal year (start month above), not books-start period.
+        </p>
+      </section>
+
+      <section className="space-y-2 rounded-lg border border-border bg-card p-4" data-testid="about">
+        <h2 className="text-lg font-medium">About</h2>
+        <p className="text-sm text-muted-foreground">
+          arnibooks · build <span data-testid="build-sha">{buildSha || "local-dev"}</span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Portal security gate remains FAIL until PASS — synthetic companies only.
+        </p>
       </section>
     </div>
   );

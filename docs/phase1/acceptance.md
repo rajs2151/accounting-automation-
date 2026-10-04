@@ -2,6 +2,8 @@
 
 Shipped as **engine + tests** (stub forms corrected for money/dates/validation; full screens from Addendum C next). Company A month-1 golden remains **PROVISIONAL** until owner hand-computed values land.
 
+**Slice 1 (real review):** see [`slice1-acceptance.md`](./slice1-acceptance.md) — review loads `books_extractions` for uploaded inbox ids (no `buildDemoExtraction`). Addendum C gaps: [`../plan/arnibooks-cursor-prompts-addendum-C-gaps.md`](../plan/arnibooks-cursor-prompts-addendum-C-gaps.md).
+
 ## 1. Classification / OCR / match / dedupe
 
 | Requirement | Test name | Pass |
@@ -90,7 +92,8 @@ Company A month-1 golden: **PROVISIONAL** (`_provisional: true`) — agent-draft
 
 | Screen | File |
 |---|---|
-| Review (real PDF + aligned boxes, human labels) | `docs/phase1/review-split-view.png` |
+| Review (uploaded invoice_02 → INV-SYN-002, real MinIO file) | `docs/phase1/review-uploaded-invoice-02.png` |
+| Review (alias of latest upload) | `docs/phase1/review-split-view.png` |
 | Statement review (balanced) | `docs/phase1/statement-review.png` |
 | Statement review (dropped-row ✗) | `docs/phase1/statement-review-dropped.png` |
 | Purchases (AED + dd/mm) | `docs/phase1/purchases.png` |

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -21,10 +22,23 @@ type Doc = {
 
 type Party = { id: string; name: string; trn: string | null };
 
+type InboxRow = {
+  id: string;
+  filename: string;
+  status: string;
+  error: string | null;
+  detectedType: string | null;
+};
+
+type Tab = "bills" | "uploads";
+
 export default function PurchasesPage() {
   const { periodId } = useBooksShell();
+  const [tab, setTab] = useState<Tab>("bills");
   const [rows, setRows] = useState<Doc[]>([]);
+  const [uploads, setUploads] = useState<InboxRow[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
+  const [manualOpen, setManualOpen] = useState(false);
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
@@ -35,20 +49,51 @@ export default function PurchasesPage() {
   });
 
   const reload = useCallback(async () => {
-    const [docs, pts] = await Promise.all([
+    const [docs, pts, inbox] = await Promise.all([
       fetch("/api/books/documents?docType=purchase_bill").then((r) => r.json()),
       fetch("/api/books/parties?partyType=supplier").then((r) => r.json()),
+      fetch("/api/books/inbox").then((r) => r.json()),
     ]);
     if (Array.isArray(docs)) setRows(docs);
     if (Array.isArray(pts)) {
       setParties(pts);
       if (!form.partyId && pts[0]) setForm((f) => ({ ...f, partyId: pts[0].id }));
     }
+    if (Array.isArray(inbox)) setUploads(inbox);
   }, [form.partyId]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  async function onUpload(files: FileList | null) {
+    if (!files?.length) return;
+    const body = new FormData();
+    for (const f of Array.from(files)) body.append("files", f);
+    const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error || "upload_failed");
+      return;
+    }
+    toast.success(`Uploaded ${data.results?.length || 0} file(s)`);
+    setTab("uploads");
+    void reload();
+  }
+
+  async function retry(id: string) {
+    const res = await fetch(`/api/books/inbox/${id}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    if (!res.ok) {
+      toast.error((await res.json()).error || "retry_failed");
+      return;
+    }
+    toast.success("Retry queued");
+    void reload();
+  }
 
   async function createBill() {
     let net: number;
@@ -86,6 +131,7 @@ export default function PurchasesPage() {
       return;
     }
     toast.success("Draft bill created — switch to approver to post");
+    setManualOpen(false);
     void reload();
   }
 
@@ -102,95 +148,193 @@ export default function PurchasesPage() {
 
   return (
     <div className="space-y-4 py-4">
-      <h1 className="text-2xl font-semibold">Purchase bills</h1>
-      <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-3">
-        <div>
-          <Label>Supplier</Label>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-            value={form.partyId}
-            onChange={(e) => setForm({ ...form, partyId: e.target.value })}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Purchase bills</h1>
+        <div className="flex flex-wrap gap-2">
+          <label
+            className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
+            data-testid="purchase-upload"
           >
-            {parties.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.trn ? "" : " (no TRN)"}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <Label>Bill no</Label>
-          <Input
-            value={form.documentNumber}
-            onChange={(e) => setForm({ ...form, documentNumber: e.target.value })}
-          />
-        </div>
-        <div>
-          <Label>Issue date</Label>
-          <BooksDateInput
-            value={form.issueDate}
-            onChange={(iso) => setForm({ ...form, issueDate: iso })}
-            data-testid="purchase-issue-date"
-          />
-        </div>
-        <div>
-          <Label>Net (AED)</Label>
-          <Input
-            value={form.netAed}
-            onChange={(e) => setForm({ ...form, netAed: e.target.value })}
-            inputMode="decimal"
-            placeholder="0.00"
-          />
-        </div>
-        <div>
-          <Label>Line type</Label>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-            value={form.lineKind}
-            onChange={(e) =>
-              setForm({ ...form, lineKind: e.target.value as typeof form.lineKind })
-            }
-          >
-            <option value="expense">expense</option>
-            <option value="disbursement">disbursement (no VAT) → 1220</option>
-          </select>
-        </div>
-        <div className="flex items-end">
-          <Button onClick={() => void createBill()}>New Bill</Button>
+            Upload Invoices
+            <input
+              type="file"
+              multiple
+              accept=".pdf,image/*"
+              className="hidden"
+              onChange={(e) => void onUpload(e.target.files)}
+            />
+          </label>
+          <Button variant="outline" onClick={() => setManualOpen((v) => !v)}>
+            Record manually
+          </Button>
         </div>
       </div>
 
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-muted-foreground">
-            <th className="py-2">Number</th>
-            <th>Supplier</th>
-            <th>Date</th>
-            <th>Gross</th>
-            <th>Status</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} className="border-t border-border">
-              <td className="py-2">{r.documentNumber || "—"}</td>
-              <td>{r.partyName}</td>
-              <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
-              <td>{formatMinor(r.grossMinor)}</td>
-              <td>{r.status}</td>
-              <td className="text-right">
-                {r.status === "draft" ? (
-                  <Button size="sm" variant="outline" onClick={() => void approve(r.id)}>
-                    Approve
-                  </Button>
-                ) : null}
-              </td>
+      <div className="flex gap-2" data-testid="purchase-tabs">
+        <Button variant={tab === "bills" ? "default" : "outline"} onClick={() => setTab("bills")}>
+          Bills
+        </Button>
+        <Button
+          variant={tab === "uploads" ? "default" : "outline"}
+          onClick={() => setTab("uploads")}
+          data-testid="purchase-uploads-tab"
+        >
+          Uploads
+        </Button>
+      </div>
+
+      {tab === "uploads" ? (
+        <table className="w-full text-sm" data-testid="purchase-uploads-table">
+          <thead>
+            <tr className="text-left text-muted-foreground">
+              <th className="py-2">File</th>
+              <th>Status</th>
+              <th>Type</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {uploads.map((u) => (
+              <tr key={u.id} className="border-t border-border">
+                <td className="py-2">
+                  <Link className="text-primary underline" href={`/books/inbox/${u.id}`}>
+                    {u.filename}
+                  </Link>
+                </td>
+                <td data-testid={`upload-status-${u.id}`}>{u.status}</td>
+                <td>{u.detectedType || "—"}</td>
+                <td className="space-x-2 text-right">
+                  {u.status === "failed" || u.status === "needs_review" ? (
+                    <Button size="sm" variant="outline" onClick={() => void retry(u.id)}>
+                      Retry
+                    </Button>
+                  ) : null}
+                  <Link
+                    className="text-sm text-primary underline"
+                    href={`/books/inbox/${u.id}`}
+                  >
+                    Review
+                  </Link>
+                </td>
+              </tr>
+            ))}
+            {!uploads.length ? (
+              <tr>
+                <td colSpan={4} className="py-6 text-muted-foreground">
+                  No uploads yet — use Upload Invoices.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      ) : (
+        <>
+          {manualOpen ? (
+            <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-3">
+              <div>
+                <Label>Supplier</Label>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={form.partyId}
+                  onChange={(e) => setForm({ ...form, partyId: e.target.value })}
+                >
+                  {parties.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                      {p.trn ? "" : " (no TRN)"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label>Bill no</Label>
+                <Input
+                  value={form.documentNumber}
+                  onChange={(e) => setForm({ ...form, documentNumber: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Issue date</Label>
+                <BooksDateInput
+                  value={form.issueDate}
+                  onChange={(iso) => setForm({ ...form, issueDate: iso })}
+                  data-testid="purchase-issue-date"
+                />
+              </div>
+              <div>
+                <Label>Net (AED)</Label>
+                <Input
+                  value={form.netAed}
+                  onChange={(e) => setForm({ ...form, netAed: e.target.value })}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <Label>Line type</Label>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={form.lineKind}
+                  onChange={(e) =>
+                    setForm({ ...form, lineKind: e.target.value as typeof form.lineKind })
+                  }
+                >
+                  <option value="expense">expense</option>
+                  <option value="disbursement">disbursement (no VAT) → 1220</option>
+                </select>
+              </div>
+              <div className="flex items-end">
+                <Button onClick={() => void createBill()}>Save draft</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-end gap-3 rounded-lg border border-dashed border-border p-3">
+              <div>
+                <Label>Default issue date</Label>
+                <BooksDateInput
+                  value={form.issueDate}
+                  onChange={(iso) => setForm({ ...form, issueDate: iso })}
+                  data-testid="purchase-issue-date"
+                />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Primary path is upload. Use Record manually for edge cases.
+              </p>
+            </div>
+          )}
+
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="py-2">Number</th>
+                <th>Supplier</th>
+                <th>Date</th>
+                <th>Gross</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-border">
+                  <td className="py-2">{r.documentNumber || "—"}</td>
+                  <td>{r.partyName}</td>
+                  <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
+                  <td>{formatMinor(r.grossMinor)}</td>
+                  <td>{r.status}</td>
+                  <td className="text-right">
+                    {r.status === "draft" ? (
+                      <Button size="sm" variant="outline" onClick={() => void approve(r.id)}>
+                        Approve
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   );
 }

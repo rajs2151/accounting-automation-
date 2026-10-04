@@ -52,3 +52,15 @@ __pycache__/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- added for AI loop safety (real client files must never be committed) ---
+# Real reference outputs: only anonymised copies may be committed (force-add after review).
+docs/reference/outputs/*
+!docs/reference/outputs/.gitkeep
+# Local verification logs
+/.verify-*.log
+# AI orchestration run packages
+/.ai/runs/
+/.ai/STOP
+/.ai/PAUSE
+/.ai/state.json

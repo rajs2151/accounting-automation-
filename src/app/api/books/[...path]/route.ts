@@ -60,7 +60,9 @@ import {
   listBooksDocuments,
 } from "@/server/books/documents";
 import {
+  getBooksInboxReview,
   listBooksInbox,
+  retryBooksInboxExtract,
   routeInboxItem,
   setInboxDocType,
   uploadBooksInboxFiles,
@@ -290,6 +292,11 @@ export async function GET(request: Request, ctx: Ctx) {
         }),
       );
     }
+    if (path[0] === "inbox" && path.length === 2) {
+      return NextResponse.json(
+        await getBooksInboxReview(session.userId, session.clientId, path[1]),
+      );
+    }
     if (path[0] === "statements" && path.length === 1) {
       return NextResponse.json(await listStatementExtractions(session.userId, session.clientId));
     }
@@ -406,6 +413,8 @@ export async function POST(request: Request, ctx: Ctx) {
           name: body.name != null ? String(body.name) : undefined,
           trn: body.trn === undefined ? undefined : body.trn == null ? null : String(body.trn),
           defaultCurrency: body.defaultCurrency != null ? String(body.defaultCurrency) : undefined,
+          fiscalYearStartMonth:
+            body.fiscalYearStartMonth != null ? Number(body.fiscalYearStartMonth) : undefined,
         }),
       );
     }
@@ -648,6 +657,11 @@ export async function POST(request: Request, ctx: Ctx) {
     }
     if (path[0] === "inbox" && path[2] === "route" && path.length === 3) {
       return NextResponse.json(await routeInboxItem(session.userId, path[1], session.clientId));
+    }
+    if (path[0] === "inbox" && path[2] === "retry" && path.length === 3) {
+      return NextResponse.json(
+        await retryBooksInboxExtract(session.userId, session.clientId, path[1]),
+      );
     }
     if (path[0] === "inbox" && path[2] === "type" && path.length === 3) {
       return NextResponse.json(

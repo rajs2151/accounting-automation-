@@ -50,6 +50,13 @@ cpSync(path.join(process.cwd(), ".next", "static"), path.join(standalone, ".next
 if (existsSync(path.join(process.cwd(), "public"))) {
   cpSync(path.join(process.cwd(), "public"), path.join(standalone, "public"), { recursive: true });
 }
+// Ensure pdfjs is available beside standalone server for sync extract
+const pdfjsSrc = path.join(process.cwd(), "node_modules", "pdfjs-dist");
+const pdfjsDest = path.join(standalone, "node_modules", "pdfjs-dist");
+if (existsSync(pdfjsSrc)) {
+  mkdirSync(path.join(standalone, "node_modules"), { recursive: true });
+  cpSync(pdfjsSrc, pdfjsDest, { recursive: true });
+}
 
 process.env.PORT = process.env.PORT || "43127";
 process.env.HOSTNAME = process.env.HOSTNAME || "127.0.0.1";

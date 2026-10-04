@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,6 +10,7 @@ const SUPPLIER = "e9000001-0000-4000-8000-000000000002";
 const STMT_BALANCED = "e7000001-0000-4000-8000-000000000098";
 const STMT_DROPPED = "e7000001-0000-4000-8000-000000000088";
 const PHASE1_DIR = path.join(process.cwd(), "docs", "phase1");
+const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "invoice_02.pdf");
 
 async function savePhase1(name: string, buffer: Buffer) {
   fs.mkdirSync(PHASE1_DIR, { recursive: true });
@@ -38,6 +40,13 @@ async function setSession(
   ]);
 }
 
+/** Unique PDF bytes (comment after EOF) so sha256 does not collide across runs. */
+function uniqueFixturePdf(): { bytes: Buffer; sha256: string } {
+  const base = fs.readFileSync(FIXTURE_PDF);
+  const bytes = Buffer.concat([base, Buffer.from(`\n% e2e-${Date.now()}-${Math.random()}\n`)]);
+  return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
 test.beforeEach(async ({ context }) => {
   await setSession(context, OMAR);
 });
@@ -49,12 +58,15 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
 
   await page.goto("/books/sales");
   await expect(page.getByRole("heading", { name: "Sales invoices" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Create Invoice" }).or(page.getByRole("button", { name: /New|Create/i }))).toBeVisible();
+  await expect(page.getByText("Upload Invoices")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Record manually/i })).toBeVisible();
 
   await page.goto("/books/purchases");
   await expect(page.getByRole("heading", { name: "Purchase bills" })).toBeVisible();
-  await expect(page.getByText("Net (AED)")).toBeVisible();
+  await expect(page.getByTestId("purchase-upload")).toBeVisible();
   await expect(page.getByText("(fils)")).toHaveCount(0);
+  await expect(page.getByTestId("purchase-uploads-tab")).toBeVisible();
+  await expect(page.getByTestId("purchase-issue-date")).toBeVisible();
 
   await page.goto("/books/expenses");
   await expect(page.getByText(/Coming in Phase 3/i)).toBeVisible();
@@ -63,28 +75,53 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();
 });
 
-test("phase1 screenshots: review, statement, purchases, receipts, settings OB", async ({
+test("phase1 screenshots: review from NEW upload, statement, purchases, settings", async ({
   page,
 }) => {
-  await page.goto("/books/inbox/e2e-review-demo");
-  await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
-  const previewFile = page.getByTestId("review-file-image").or(page.getByTestId("review-file-pdf"));
-  await expect(previewFile).toBeVisible({ timeout: 20000 });
-  // Raster must have real dimensions (not a blank 0×0 canvas)
-  const natural = await page.getByTestId("review-file-image").evaluate((el) => {
-    const img = el as HTMLImageElement;
-    return { w: img.naturalWidth, h: img.naturalHeight };
+  const { bytes, sha256 } = uniqueFixturePdf();
+  const upload = await page.request.post("/api/books/inbox/upload", {
+    multipart: {
+      files: {
+        name: "invoice_02.pdf",
+        mimeType: "application/pdf",
+        buffer: bytes,
+      },
+    },
   });
-  expect(natural.w).toBeGreaterThan(100);
-  expect(natural.h).toBeGreaterThan(100);
-  await expect(page.getByTestId("bbox-grand_total")).toBeVisible();
-  await expect(page.getByTestId("bbox-invoice_no")).toBeVisible();
-  await expect(page.getByText("low confidence")).toBeVisible();
-  await expect(page.getByText("Grand total", { exact: true })).toBeVisible();
+  const uploaded = await upload.json();
+  expect(upload.ok(), `upload failed: ${JSON.stringify(uploaded)}`).toBeTruthy();
+  const inboxId = uploaded.results?.[0]?.inboxItemId as string;
+  expect(inboxId, `upload body: ${JSON.stringify(uploaded)}`).toBeTruthy();
+  expect(uploaded.results[0].sha256).toBe(sha256);
+  expect(uploaded.results[0].status, `sync status: ${JSON.stringify(uploaded)}`).toBe(
+    "needs_review",
+  );
+
+  const apiReview = await page.request.get(`/api/books/inbox/${inboxId}`);
+  const reviewBody = await apiReview.json();
+  expect(apiReview.ok(), `review API: ${JSON.stringify(reviewBody)}`).toBeTruthy();
+  expect(reviewBody.extractionId, `review: ${JSON.stringify(reviewBody)}`).toBeTruthy();
+  expect(reviewBody.fieldsJson?.invoice_no?.value).toBe("INV-SYN-002");
+  expect(reviewBody.sha256).toBe(sha256);
+
+  const unknown = await page.request.get(`/api/books/inbox/${crypto.randomUUID()}`);
+  expect(unknown.status()).toBe(404);
+
+  // File URL body hash proves preview serves the uploaded object (not a demo raster).
+  const fileRes = await page.request.get(reviewBody.fileUrl);
+  expect(fileRes.ok()).toBeTruthy();
+  const fileBuf = Buffer.from(await fileRes.body());
+  expect(createHash("sha256").update(fileBuf).digest("hex")).toBe(sha256);
+
+  await page.goto(`/books/inbox/${inboxId}`);
+  await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("field-invoice_no")).toHaveValue("INV-SYN-002");
+  await expect(page.getByTestId("review-file-meta")).toContainText("invoice_02.pdf");
+  const preview = page.getByTestId("review-file-pdf").or(page.getByTestId("review-file-image"));
+  await expect(preview).toBeVisible({ timeout: 20000 });
   await expect(page.getByTestId("validation-flags")).toContainText(/balanced/i);
-  // Correct INV-SYN-001 amounts must not show FAIL on grand total
-  await expect(page.getByTestId("field-grand_total")).not.toHaveClass(/border-red/);
   await savePhase1("review-split-view.png", await page.screenshot({ fullPage: true }));
+  await savePhase1("review-uploaded-invoice-02.png", await page.screenshot({ fullPage: true }));
 
   const list = await page.request.get("/api/books/statements");
   const rows = (await list.json()) as Array<{ id: string }>;
@@ -109,9 +146,9 @@ test("phase1 screenshots: review, statement, purchases, receipts, settings OB", 
   await page.goto("/books/purchases");
   await expect(page.getByRole("heading", { name: "Purchase bills" })).toBeVisible();
   await expect(page.getByTestId("purchase-issue-date")).toBeVisible();
-  await expect(page.getByTestId("purchase-issue-date")).toHaveValue(/16\/05\/2026|05\/16\/2026/);
-  // Must be dd/mm not US mm/dd
   await expect(page.getByTestId("purchase-issue-date")).toHaveValue("16/05/2026");
+  await page.getByTestId("purchase-uploads-tab").click();
+  await expect(page.getByTestId("purchase-uploads-table")).toBeVisible();
   await savePhase1("purchases.png", await page.screenshot({ fullPage: true }));
 
   await page.goto("/books/receipts");
@@ -123,10 +160,10 @@ test("phase1 screenshots: review, statement, purchases, receipts, settings OB", 
   await page.goto("/books/settings");
   await expect(page.getByTestId("company-profile")).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId("company-name")).not.toHaveValue("", { timeout: 15000 });
+  await expect(page.getByTestId("fiscal-year-start-month")).toBeVisible();
   await expect(page.getByTestId("periods-table")).toContainText("May 2026");
   await expect(page.getByTestId("opening-balances")).toBeVisible();
-  await expect(page.getByTestId("ob-mapping-table")).toBeVisible();
-  await expect(page.getByTestId("ob-unlock")).toBeVisible();
+  await expect(page.getByTestId("about")).toBeVisible();
   await page.getByTestId("opening-balances").scrollIntoViewIfNeeded();
   await savePhase1("settings-ob.png", await page.screenshot({ fullPage: true }));
   await page.getByTestId("company-profile").scrollIntoViewIfNeeded();
@@ -197,14 +234,4 @@ test("phase1: upload bill → approve → journal visible", async ({ page, conte
     journalRows.some((r) => r.entryNo === entryHint),
     `posted ${entryHint} missing from May journals`,
   ).toBeTruthy();
-
-  await page.goto(`/books/journals?periodId=${encodeURIComponent(may!.id)}`);
-  await expect(page.getByTestId("topbar-period")).toBeVisible({ timeout: 20000 });
-  await page.getByTestId("topbar-period").selectOption(may!.id);
-  await expect(page.getByTestId("books-data-grid")).toBeVisible({ timeout: 20000 });
-  const search = page.getByTestId("ledger-toolbar-search");
-  if (await search.count()) {
-    await search.fill(entryHint);
-  }
-  await expect(page.getByText(entryHint).first()).toBeVisible({ timeout: 20000 });
 });

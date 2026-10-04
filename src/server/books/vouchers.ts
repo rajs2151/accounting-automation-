@@ -1,7 +1,20 @@
+import type { PoolClient } from "pg";
+
 import { withUser } from "@/lib/db";
+import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
 import { assertSyntheticTenant } from "@/server/security-gate";
+
+async function clientFiscalYear(db: PoolClient, clientId: string, asOfIso?: string) {
+  const row = await db.query(
+    `SELECT fiscal_year_start_month AS m FROM clients WHERE id = $1`,
+    [clientId],
+  );
+  const fyStart = Number(row.rows[0]?.m || 1);
+  const asOf = asOfIso || new Date().toISOString().slice(0, 10);
+  return { fyStart, year: fiscalYearForDate(asOf, fyStart) };
+}
 
 export const VOUCHER_TYPES = [
   "Sales",
@@ -25,7 +38,7 @@ export function isVoucherType(value: string): value is VoucherType {
 export async function listBooksVoucherSequences(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    const year = new Date().getUTCFullYear();
+    const { year, fyStart } = await clientFiscalYear(db, clientId);
     const rows = await db.query(
       `SELECT voucher_type AS "voucherType", year, prefix, last_n AS "lastN"
        FROM books_voucher_sequences
@@ -33,8 +46,9 @@ export async function listBooksVoucherSequences(userId: string, clientId: string
        ORDER BY voucher_type`,
       [clientId, year],
     );
-    if (rows.rowCount) return rows.rows;
-    // Ensure defaults exist for current year
+    if (rows.rowCount) {
+      return rows.rows.map((r) => ({ ...r, fiscalYearStartMonth: fyStart }));
+    }
     for (const vt of VOUCHER_TYPES) {
       await db.query(
         `INSERT INTO books_voucher_sequences (client_id, voucher_type, year, prefix, last_n)
@@ -50,7 +64,7 @@ export async function listBooksVoucherSequences(userId: string, clientId: string
        ORDER BY voucher_type`,
       [clientId, year],
     );
-    return again.rows;
+    return again.rows.map((r) => ({ ...r, fiscalYearStartMonth: fyStart }));
   });
 }
 
@@ -62,9 +76,10 @@ export async function updateBooksVoucherSequence(
   if (!isVoucherType(body.voucherType)) {
     throw new BooksError("invalid_voucher_type", "invalid");
   }
-  const year = body.year ?? new Date().getUTCFullYear();
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    const { year: defaultYear } = await clientFiscalYear(db, clientId);
+    const year = body.year ?? defaultYear;
     const before = await db.query(
       `SELECT prefix, last_n AS "lastN" FROM books_voucher_sequences
        WHERE client_id = $1 AND voucher_type = $2 AND year = $3`,

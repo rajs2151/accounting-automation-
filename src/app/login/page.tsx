@@ -48,7 +48,7 @@ function LoginForm() {
       </div>
       <div className="space-y-2">
         <Label htmlFor="email">Email</Label>
-        <Input id="email" type="email" defaultValue="omar@arnifi.example" readOnly />
+        <Input id="email" type="email" defaultValue="omar@arnibooks.test" readOnly />
       </div>
       <Button className="w-full" disabled={busy} onClick={() => void signIn()} data-testid="login-submit">
         {busy ? "Signing in…" : "Continue as Omar"}

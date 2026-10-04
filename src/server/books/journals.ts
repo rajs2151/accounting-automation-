@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 
 import { withUser } from "@/lib/db";
+import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
@@ -118,7 +119,11 @@ async function assignEntryNo(
   entryDate: string,
   voucherType: string = "Journal",
 ): Promise<string> {
-  const year = Number(String(entryDate).slice(0, 4));
+  const fyRow = await db.query(
+    `SELECT fiscal_year_start_month AS m FROM clients WHERE id = $1`,
+    [clientId],
+  );
+  const year = fiscalYearForDate(entryDate, Number(fyRow.rows[0]?.m || 1));
   const vt = isVoucherType(voucherType) ? voucherType : "Journal";
   const no = await db.query(
     `SELECT books_next_voucher_no($1::uuid, $2::text, $3::int) AS entry_no`,

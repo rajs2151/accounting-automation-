@@ -275,7 +275,9 @@ export async function getBooksCompanyProfile(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const row = await db.query(
-      `SELECT id, name, trn, default_currency AS "defaultCurrency", is_synthetic AS "isSynthetic"
+      `SELECT id, name, trn, default_currency AS "defaultCurrency", is_synthetic AS "isSynthetic",
+              fiscal_year_start_month AS "fiscalYearStartMonth",
+              books_start_period_id AS "booksStartPeriodId"
        FROM clients WHERE id = $1`,
       [clientId],
     );
@@ -287,21 +289,30 @@ export async function getBooksCompanyProfile(userId: string, clientId: string) {
 export async function updateBooksCompanyProfile(
   userId: string,
   clientId: string,
-  body: { name?: string; trn?: string | null; defaultCurrency?: string },
+  body: {
+    name?: string;
+    trn?: string | null;
+    defaultCurrency?: string;
+    fiscalYearStartMonth?: number;
+  },
 ) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const before = await db.query(
-      `SELECT name, trn, default_currency FROM clients WHERE id = $1`,
+      `SELECT name, trn, default_currency, fiscal_year_start_month FROM clients WHERE id = $1`,
       [clientId],
     );
     if (!before.rowCount) throw new BooksError("client_not_found", "not_found");
     const name = body.name?.trim() || before.rows[0].name;
     const trn = body.trn === undefined ? before.rows[0].trn : body.trn;
     const currency = body.defaultCurrency || before.rows[0].default_currency;
+    let fy = Number(before.rows[0].fiscal_year_start_month || 1);
+    if (body.fiscalYearStartMonth != null) {
+      fy = Math.min(12, Math.max(1, Math.floor(body.fiscalYearStartMonth)));
+    }
     await db.query(
-      `UPDATE clients SET name = $2, trn = $3, default_currency = $4 WHERE id = $1`,
-      [clientId, name, trn, currency],
+      `UPDATE clients SET name = $2, trn = $3, default_currency = $4, fiscal_year_start_month = $5 WHERE id = $1`,
+      [clientId, name, trn, currency, fy],
     );
     await writeBooksAudit(db, {
       clientId,
@@ -310,9 +321,9 @@ export async function updateBooksCompanyProfile(
       entity: "client",
       entityId: clientId,
       before: before.rows[0],
-      after: { name, trn, defaultCurrency: currency },
+      after: { name, trn, defaultCurrency: currency, fiscalYearStartMonth: fy },
     });
-    return { id: clientId, name, trn, defaultCurrency: currency };
+    return { id: clientId, name, trn, defaultCurrency: currency, fiscalYearStartMonth: fy };
   });
 }
 

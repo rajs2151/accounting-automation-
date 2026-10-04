@@ -115,8 +115,38 @@ export default function SalesPage() {
 
   return (
     <div className="space-y-4 py-4">
-      <h1 className="text-2xl font-semibold">Sales invoices</h1>
-      <p className="text-sm text-muted-foreground">Period context: {periodLabel || "—"}</p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Sales invoices</h1>
+          <p className="text-sm text-muted-foreground">Period context: {periodLabel || "—"}</p>
+        </div>
+        <div className="flex gap-2">
+          <label className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground">
+            Upload Invoices
+            <input
+              type="file"
+              multiple
+              accept=".pdf,image/*"
+              className="hidden"
+              data-testid="sales-upload"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (!files?.length) return;
+                const body = new FormData();
+                for (const f of Array.from(files)) body.append("files", f);
+                void fetch("/api/books/inbox/upload", { method: "POST", body }).then(async (res) => {
+                  const data = await res.json();
+                  if (!res.ok) toast.error(data.error || "upload_failed");
+                  else toast.success(`Uploaded ${data.results?.length || 0} — review in Inbox`);
+                });
+              }}
+            />
+          </label>
+          <Button variant="outline" onClick={() => toast.message("Use the form below to record manually")}>
+            Record manually
+          </Button>
+        </div>
+      </div>
 
       <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-3">
         <div>
@@ -190,7 +220,7 @@ export default function SalesPage() {
           </div>
         </div>
         <div className="md:col-span-3">
-          <Button onClick={() => void createInvoice()}>Create Invoice</Button>
+          <Button onClick={() => void createInvoice()}>Save draft</Button>
         </div>
       </div>
 

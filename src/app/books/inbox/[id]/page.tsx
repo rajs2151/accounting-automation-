@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { PdfPagePreview } from "@/components/books/pdf-page-preview";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatMinor } from "@/lib/money";
-import { invoiceSyn001DemoBboxes, type PageBBox } from "@/lib/review-bbox";
+import type { PageBBox } from "@/lib/review-bbox";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
 
 type FieldState = {
@@ -18,6 +18,25 @@ type FieldState = {
   confidence: number;
   status?: string;
   bbox?: PageBBox;
+};
+
+type ReviewPayload = {
+  id: string;
+  filename: string;
+  sha256: string;
+  status: string;
+  error: string | null;
+  fileUrl: string;
+  extractionId: string | null;
+  fieldsJson: Record<string, FieldState>;
+  lineItems: Array<{
+    description?: string;
+    vatCode?: string;
+    netMinor?: number;
+    vatMinor?: number;
+    amount_minor?: number;
+  }>;
+  validationFlags: string[];
 };
 
 const LABELS: Record<string, string> = {
@@ -36,131 +55,128 @@ const LABELS: Record<string, string> = {
   grand_total: "Grand total",
 };
 
-function buildDemoExtraction() {
-  const boxes = invoiceSyn001DemoBboxes();
-  const lines = [{ netMinor: 10000, vatMinor: 500 }];
-  const grandTotalMinor = 10500;
-  const validation = validateInvoiceLineSum({ lines, grandTotalMinor });
+const FIELD_ORDER = [
+  "doc_type",
+  "company_match",
+  "supplier_name",
+  "customer_name",
+  "supplier_trn",
+  "customer_trn",
+  "invoice_no",
+  "invoice_date",
+  "due_date",
+  "currency",
+  "subtotal",
+  "vat_total",
+  "grand_total",
+] as const;
 
-  const fields: Record<string, FieldState> = {
-    doc_type: { value: "Sales invoice", confidence: 0.97, status: "ok" },
-    company_match: {
-      value: "Desert Falcon Services FZE (TRN match)",
-      confidence: 0.94,
-      status: "ok",
-    },
-    supplier_name: {
-      value: "Desert Falcon Services FZE",
-      confidence: 0.42,
-      status: "low",
-      bbox: boxes.supplier_name,
-    },
-    customer_name: {
-      value: "Oasis Retail LLC",
-      confidence: 0.91,
-      status: "ok",
-      bbox: boxes.customer_name,
-    },
-    supplier_trn: {
-      value: "100000000000001",
-      confidence: 0.95,
-      status: "ok",
-      bbox: boxes.supplier_trn,
-    },
-    customer_trn: {
-      value: "100123456700003",
-      confidence: 0.93,
-      status: "ok",
-      bbox: boxes.customer_trn,
-    },
-    invoice_no: {
-      value: "INV-SYN-001",
-      confidence: 0.98,
-      status: "ok",
-      bbox: boxes.invoice_no,
-    },
-    invoice_date: {
-      value: "15/05/2026",
-      confidence: 0.96,
-      status: "ok",
-      bbox: boxes.invoice_date,
-    },
-    due_date: { value: "14/06/2026", confidence: 0.88, status: "ok" },
-    currency: { value: "AED", confidence: 0.99, status: "ok" },
-    subtotal: {
-      value: formatMinor(validation.subtotalMinor),
-      confidence: 0.97,
-      status: validation.fieldStatus.subtotal,
-    },
-    vat_total: {
-      value: formatMinor(validation.vatTotalMinor),
-      confidence: 0.97,
-      status: "ok",
-    },
-    grand_total: {
-      value: formatMinor(grandTotalMinor),
-      confidence: 0.97,
-      status: validation.fieldStatus.grand_total,
-      bbox: boxes.grand_total,
-    },
-  };
-
-  return {
-    // Raster of the real invoice PDF (same fixture) — pdf.js canvas is flaky in
-    // the standalone e2e build; image keeps boxes in the same coordinate space.
-    fileUrl: "/books-demo/invoice-syn-001.png",
-    validation_flags: validation.flags,
-    line_items: [
-      {
-        description: "Consulting services",
-        vatCode: "SR",
-        netMinor: 10000,
-        vatMinor: 500,
-      },
-    ],
-    fields_json: fields,
-  };
+function normalizeFields(raw: Record<string, FieldState>): Record<string, FieldState> {
+  const out: Record<string, FieldState> = {};
+  for (const [k, v] of Object.entries(raw || {})) {
+    if (!v || typeof v !== "object") continue;
+    if (typeof (v as FieldState).value === "string") {
+      out[k] = v as FieldState;
+    } else if ("value" in v) {
+      out[k] = {
+        value: String((v as { value: unknown }).value ?? ""),
+        confidence: Number((v as { confidence?: number }).confidence ?? 0.5),
+        status: (v as { status?: string }).status,
+      };
+    }
+  }
+  return out;
 }
 
-/** Split-view review: real PDF + bbox highlights ↔ human-labelled form. */
+function normalizeLines(items: ReviewPayload["lineItems"]) {
+  return (items || []).map((l, i) => ({
+    description: l.description || `Line ${i + 1}`,
+    vatCode: l.vatCode || "SR",
+    netMinor: Number(l.netMinor ?? l.amount_minor ?? 0),
+    vatMinor: Number(l.vatMinor ?? 0),
+  }));
+}
+
+/** Split-view review: uploaded file page 1 + fields from books_extractions for this inbox id. */
 export default function InboxReviewPage() {
   const params = useParams<{ id: string }>();
-  const demo = useMemo(() => buildDemoExtraction(), []);
-  const [fields, setFields] = useState(demo.fields_json);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [review, setReview] = useState<ReviewPayload | null>(null);
+  const [fields, setFields] = useState<Record<string, FieldState>>({});
+  const [lineItems, setLineItems] = useState<
+    Array<{ description: string; vatCode: string; netMinor: number; vatMinor: number }>
+  >([]);
   const [activeField, setActiveField] = useState<string | null>("invoice_no");
 
-  const boxes = Object.values(fields)
-    .map((f) => f.bbox)
-    .filter(Boolean) as PageBBox[];
+  async function load() {
+    setLoading(true);
+    setError("");
+    const res = await fetch(`/api/books/inbox/${params.id}`);
+    const data = await res.json();
+    if (res.status === 404) {
+      setError("Inbox item not found");
+      setReview(null);
+      setLoading(false);
+      return;
+    }
+    if (!res.ok) {
+      setError(data.error || "load_failed");
+      setLoading(false);
+      return;
+    }
+    setReview(data as ReviewPayload);
+    setFields(normalizeFields(data.fieldsJson || {}));
+    setLineItems(normalizeLines(data.lineItems || []));
+    setLoading(false);
+  }
 
-  const fieldStatus = Object.fromEntries(
-    Object.entries(fields).map(([k, f]) => [k, { status: f.status, confidence: f.confidence }]),
-  );
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.id]);
 
-  // Re-validate when grand total / lines change (demo: grand_total edit)
+  async function retry() {
+    const res = await fetch(`/api/books/inbox/${params.id}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error || "retry_failed");
+      return;
+    }
+    toast.success("Extraction retried");
+    void load();
+  }
+
   function onFieldChange(key: string, value: string) {
     setFields((prev) => {
       const next = { ...prev, [key]: { ...prev[key], value } };
       if (key === "grand_total" || key === "subtotal" || key === "vat_total") {
         const subtotal =
-          Math.round(parseFloat(next.subtotal.value.replace(/,/g, "")) * 100) || 10000;
-        const vat = Math.round(parseFloat(next.vat_total.value.replace(/,/g, "")) * 100) || 500;
+          Math.round(parseFloat((next.subtotal?.value || "0").replace(/,/g, "")) * 100) || 0;
+        const vat =
+          Math.round(parseFloat((next.vat_total?.value || "0").replace(/,/g, "")) * 100) || 0;
         const grand =
-          Math.round(parseFloat(next.grand_total.value.replace(/,/g, "")) * 100) || 0;
+          Math.round(parseFloat((next.grand_total?.value || "0").replace(/,/g, "")) * 100) || 0;
         const v = validateInvoiceLineSum({
           lines: [{ netMinor: subtotal, vatMinor: vat }],
           grandTotalMinor: grand,
         });
-        next.grand_total = {
-          ...next.grand_total,
-          status: v.fieldStatus.grand_total,
-        };
+        if (next.grand_total) {
+          next.grand_total = { ...next.grand_total, status: v.fieldStatus.grand_total };
+        }
       }
       return next;
     });
   }
 
   const flags = (() => {
+    if (!fields.subtotal || !fields.vat_total || !fields.grand_total) {
+      return (review?.validationFlags as string[]) || [];
+    }
     const subtotal =
       Math.round(parseFloat(fields.subtotal.value.replace(/,/g, "")) * 100) || 0;
     const vat = Math.round(parseFloat(fields.vat_total.value.replace(/,/g, "")) * 100) || 0;
@@ -171,6 +187,79 @@ export default function InboxReviewPage() {
       grandTotalMinor: grand,
     }).flags;
   })();
+
+  const boxes = Object.values(fields)
+    .map((f) => f.bbox)
+    .filter(Boolean) as PageBBox[];
+
+  const fieldStatus = Object.fromEntries(
+    Object.entries(fields).map(([k, f]) => [k, { status: f.status, confidence: f.confidence }]),
+  );
+
+  if (loading) {
+    return (
+      <div className="space-y-4 py-4" data-testid="review-split-view">
+        <h1 className="text-2xl font-semibold">Review extraction</h1>
+        <p className="text-sm text-muted-foreground" data-testid="review-extracting">
+          Extracting…
+        </p>
+      </div>
+    );
+  }
+
+  if (error || !review) {
+    return (
+      <div className="space-y-4 py-4" data-testid="review-split-view">
+        <h1 className="text-2xl font-semibold">Review extraction</h1>
+        <p className="text-sm text-red-600" data-testid="review-error">
+          {error || "Not found"}
+        </p>
+        <Link href="/books/inbox" className="text-sm text-primary underline">
+          Back to inbox
+        </Link>
+      </div>
+    );
+  }
+
+  if (review.status === "queued" || review.status === "extracting") {
+    return (
+      <div className="space-y-4 py-4" data-testid="review-split-view">
+        <h1 className="text-2xl font-semibold">Review extraction</h1>
+        <p className="text-sm text-muted-foreground" data-testid="review-extracting">
+          Extracting… status={review.status}
+        </p>
+        <Button variant="outline" onClick={() => void load()}>
+          Refresh
+        </Button>
+      </div>
+    );
+  }
+
+  if (review.status === "failed" && !review.extractionId) {
+    return (
+      <div className="space-y-4 py-4" data-testid="review-split-view">
+        <h1 className="text-2xl font-semibold">Review extraction</h1>
+        <p className="text-sm text-red-600" data-testid="review-failed">
+          Failed: {review.error || "extraction_failed"}
+        </p>
+        <Button data-testid="review-retry" onClick={() => void retry()}>
+          Retry extract
+        </Button>
+      </div>
+    );
+  }
+
+  if (!review.extractionId) {
+    return (
+      <div className="space-y-4 py-4" data-testid="review-split-view">
+        <h1 className="text-2xl font-semibold">Review extraction</h1>
+        <p className="text-sm text-muted-foreground">No extraction row yet for this inbox item.</p>
+        <Button data-testid="review-retry" onClick={() => void retry()}>
+          Retry extract
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 py-4" data-testid="review-split-view">
@@ -187,34 +276,19 @@ export default function InboxReviewPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <PdfPagePreview
-            fileUrl={demo.fileUrl}
+            fileUrl={review.fileUrl}
             boxes={boxes}
             activeLabel={activeField}
             fieldStatus={fieldStatus}
             onSelectField={setActiveField}
           />
-          <p className="mt-1 text-xs text-muted-foreground">
-            File: invoice-syn-001.pdf (page raster) · Inbox item: {params.id}
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="review-file-meta">
+            File: {review.filename} · sha256 {String(review.sha256).slice(0, 12)}… · Inbox{" "}
+            {params.id}
           </p>
         </div>
         <div className="space-y-3 rounded-lg border border-border p-4">
-          {(
-            [
-              "doc_type",
-              "company_match",
-              "supplier_name",
-              "customer_name",
-              "supplier_trn",
-              "customer_trn",
-              "invoice_no",
-              "invoice_date",
-              "due_date",
-              "currency",
-              "subtotal",
-              "vat_total",
-              "grand_total",
-            ] as const
-          ).map((key) => {
+          {FIELD_ORDER.map((key) => {
             const field = fields[key];
             if (!field) return null;
             const low = (field.confidence ?? 1) < 0.8;
@@ -252,7 +326,7 @@ export default function InboxReviewPage() {
                 </tr>
               </thead>
               <tbody>
-                {demo.line_items.map((l) => (
+                {lineItems.map((l) => (
                   <tr key={l.description} className="border-t border-border">
                     <td className="py-1">{l.description}</td>
                     <td>{l.vatCode}</td>
@@ -265,6 +339,9 @@ export default function InboxReviewPage() {
           </div>
 
           <div className="flex flex-wrap gap-2 pt-2">
+            <Button variant="outline" onClick={() => void retry()} data-testid="review-retry">
+              Retry extract
+            </Button>
             <Button
               variant="outline"
               onClick={() => toast.success("Saved as profile (stub)")}

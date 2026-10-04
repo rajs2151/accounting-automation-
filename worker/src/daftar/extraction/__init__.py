@@ -127,7 +127,14 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
             company_iban=crow.get("default_iban") if crow else None,
             company_name=crow.get("name") if crow else None,
         )
-        if not match.matched:
+        flags.append(f"company_match:{match.reason}")
+        if getattr(match, "label", None):
+            fields["company_match"] = {
+                "value": match.label,
+                "confidence": 0.99 if match.reason == "trn" else 0.7,
+                "status": "ok" if match.reason == "trn" else "low",
+            }
+        if not match.matched and match.unassigned:
             flags.append("company_mismatch")
             flags.append("unassigned")
             conn.execute(
@@ -140,8 +147,14 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 (doc_type, class_conf, inbox_id),
             )
             client_id = None
+        elif match.needs_review:
+            flags.append("company_needs_review")
+            status_force_review = True
+        else:
+            status_force_review = False
     else:
         flags.append("unassigned")
+        status_force_review = False
 
     # Business-key duplicate (type/number/party/amount) against prior extractions
     inv_no = None
@@ -175,7 +188,7 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     if classification.needs_user_pick or class_conf < 0.55 or doc_type is None:
         status = "needs_review"
         flags.append("low_confidence_classification")
-    elif "company_mismatch" in flags or "unassigned" in flags:
+    elif "company_mismatch" in flags or "unassigned" in flags or status_force_review:
         status = "needs_review"
     elif "duplicate_identity" in flags:
         status = "needs_review"
@@ -184,6 +197,7 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
         status = "ready" if class_conf >= 0.8 and not ocr_used else "needs_review"
 
     ext_id = str(uuid4())
+    conn.execute("DELETE FROM books_extractions WHERE inbox_item_id = %s", (inbox_id,))
     conn.execute(
         """
         INSERT INTO books_extractions (

@@ -94,6 +94,7 @@ export default async function globalSetup() {
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/22-books-alignment.sql")]);
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/23-books-phase1.sql")]);
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/24-books-phase1-seed.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/25-books-slice1.sql")]);
 
   const admin = new pg.Client({
     connectionString:

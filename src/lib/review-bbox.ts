@@ -72,7 +72,33 @@ function toPngBox(label: string, r: { x0: number; y0: number; x1: number; y1: nu
   };
 }
 
-/** Bboxes in PNG pixel space for the demo raster of invoice_01. */
+function toPdfBox(label: string, r: { x0: number; y0: number; x1: number; y1: number }): PageBBox {
+  return {
+    page: 1,
+    label,
+    x0: r.x0,
+    y0: r.y0,
+    x1: r.x1,
+    y1: r.y1,
+    pageWidth: INVOICE_SYN_001_PAGE.width,
+    pageHeight: INVOICE_SYN_001_PAGE.height,
+  };
+}
+
+/** Bboxes in PDF point space for pdf.js preview of invoice_0x fixtures. */
+export function invoiceSynPdfBboxes(): Record<string, PageBBox> {
+  return {
+    supplier_name: toPdfBox("supplier_name", PDF_TEXT_RECTS.supplier_name),
+    customer_name: toPdfBox("customer_name", PDF_TEXT_RECTS.customer_name),
+    supplier_trn: toPdfBox("supplier_trn", PDF_TEXT_RECTS.supplier_trn),
+    customer_trn: toPdfBox("customer_trn", PDF_TEXT_RECTS.customer_trn),
+    invoice_no: toPdfBox("invoice_no", PDF_TEXT_RECTS.invoice_no),
+    invoice_date: toPdfBox("invoice_date", PDF_TEXT_RECTS.invoice_date),
+    grand_total: toPdfBox("grand_total", PDF_TEXT_RECTS.grand_total),
+  };
+}
+
+/** @deprecated PNG demo path — kept for bbox unit tests only. */
 export function invoiceSyn001DemoBboxes(): Record<string, PageBBox> {
   return {
     supplier_name: toPngBox("supplier_name", PDF_TEXT_RECTS.supplier_name),

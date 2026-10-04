@@ -109,6 +109,29 @@ def test_company_match_unassigned_when_no_match():
         company_name="Desert Falcon Services FZE",
     )
     assert hit.matched and not hit.unassigned
+    assert hit.reason == "trn"
+    assert "TRN exact" in hit.label
+
+    near = match_company(
+        "TAX INVOICE\nTRN 100000000000002\n",
+        "inv.pdf",
+        company_trn="100000000000001",
+        company_iban="AE070331234567890123456",
+        company_name="Desert Falcon Services FZE",
+    )
+    assert near.reason != "trn"
+    assert "TRN exact" not in near.label
+
+    name_only = match_company(
+        "Invoice for Desert Falcon Services consulting\nTotal 50.00\n",
+        "inv.pdf",
+        company_trn="100000000000001",
+        company_iban="AE070331234567890123456",
+        company_name="Desert Falcon Services FZE",
+    )
+    assert name_only.matched and name_only.needs_review and not name_only.unassigned
+    assert name_only.reason == "name"
+    assert "TRN" not in name_only.label or "not TRN" in name_only.label
 
     miss = match_company(
         "TAX INVOICE\nTRN 100999999999999\nOther Co LLC",
