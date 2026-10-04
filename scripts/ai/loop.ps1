@@ -1,5 +1,5 @@
 <#
-  arnibooks AI loop — Cursor implements, Claude reviews.
+  arnibooks AI loop - Cursor implements, Claude reviews.
   Usage (from the repo root, normal PowerShell):
     .\scripts\ai\loop.ps1               # run the loop on .ai\CURSOR_TASK.md (stops on PASS / NEEDS_HUMAN / max iterations)
     .\scripts\ai\loop.ps1 -Once         # one iteration only (POC)
@@ -40,8 +40,8 @@ if ($Status) {
 }
 
 function Check-Control {
-  if (Test-Path (Join-Path $AI "STOP")) { Remove-Item -Force (Join-Path $AI "STOP"); Log "STOP file found — stopping."; Save -next "stopped by owner"; exit 0 }
-  while (Test-Path (Join-Path $AI "PAUSE")) { Write-Host "Paused (run -Resume)…"; Start-Sleep 15 }
+  if (Test-Path (Join-Path $AI "STOP")) { Remove-Item -Force (Join-Path $AI "STOP"); Log "STOP file found - stopping."; Save -next "stopped by owner"; exit 0 }
+  while (Test-Path (Join-Path $AI "PAUSE")) { Write-Host "Paused (run -Resume)..."; Start-Sleep 15 }
 }
 
 # ---------- preconditions ----------
@@ -78,7 +78,7 @@ $iter = 0
 while ($true) {
   $iter++
   Check-Control
-  if ($iter -gt [int]$Cfg.maxIterations) { Log "Max iterations reached."; $St.decision="NEEDS_HUMAN_DECISION"; Save "max iterations reached — owner review"; break }
+  if ($iter -gt [int]$Cfg.maxIterations) { Log "Max iterations reached."; $St.decision="NEEDS_HUMAN_DECISION"; Save "max iterations reached - owner review"; break }
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $script:RunDir = Join-Path $AI ("runs\{0}-{1}-i{2}" -f $stamp, $taskId, $iter)
   New-Item -ItemType Directory -Force (Join-Path $RunDir "gates") | Out-Null
@@ -119,7 +119,7 @@ while ($true) {
     Check-Control
     $St.tests = "running $($g.name)"; Save
     $gcmd = $g.command.Replace('${REPO}', $Repo.Replace('\','/'))
-    Log "Gate $($g.name)…"
+    Log "Gate $($g.name)..."
     $gc = Run-WithTimeout $gcmd (Join-Path $RunDir "gates\$($g.name).log") 40
     $res = if ($gc -eq 0) { "PASS" } else { "FAIL (exit $gc)" }
     $req = if ($g.required) { "required" } else { "informational" }
@@ -130,7 +130,7 @@ while ($true) {
 
   # ---------- 4. review package ----------
   $pkg = @"
-# Review package — $taskId iteration $iter
+# Review package - $taskId iteration $iter
 - Branch: $branch
 - Base: $baseSha   Head: $head
 - Run folder: $($RunDir.Replace($Repo + '\',''))
@@ -149,7 +149,7 @@ Full logs: gates/*.log in the run folder. Diff: diff.patch. Cursor output: curso
   # ---------- 5. Claude reviews ----------
   $rel = $RunDir.Replace($Repo + '\','').Replace('\','/')
   $reviewPrompt = "Review task $taskId. The task is .ai/CURSOR_TASK.md. The run package is $rel/package.md (diff: $rel/diff.patch, gate logs: $rel/gates/, Cursor output: $rel/cursor-output.txt). " +
-                  "Base commit $baseSha, head $head — use git diff/show to inspect the real changes. Follow the reviewer brief exactly and end with ONLY the JSON object."
+                  "Base commit $baseSha, head $head - use git diff/show to inspect the real changes. Follow the reviewer brief exactly and end with ONLY the JSON object."
   $reviewPrompt | Set-Content (Join-Path $RunDir "review-prompt.txt") -Encoding UTF8
   $tools = "Read,Grep,Glob,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *)"
   $rcmd = "Get-Content -Raw '$($RunDir)\review-prompt.txt' | claude -p --output-format json --permission-mode dontAsk --allowedTools `"$tools`" --append-system-prompt-file .ai/REVIEWER.md"
@@ -174,17 +174,17 @@ Full logs: gates/*.log in the run folder. Diff: diff.patch. Cursor output: curso
 
   $d = if ($decision) { $decision.decision } else { "NEEDS_HUMAN_DECISION" }
   $St.decision = $d
-  $reviewMd = "# Review — $taskId iteration $iter`n`n**Decision: $d**`n`n" + $(if ($decision) { "$($decision.summary)`n`n" + (($decision.requirements | ForEach-Object { "- [$($_.result)] $($_.criterion) — $($_.evidence)" }) -join "`n") + "`n`nNeeds human validation: $((@($decision.needs_human_validation)) -join '; ')`n`nQuestion: $($decision.human_question)" } else { "Reviewer output unreadable — see review-raw.json" })
+  $reviewMd = "# Review - $taskId iteration $iter`n`n**Decision: $d**`n`n" + $(if ($decision) { "$($decision.summary)`n`n" + (($decision.requirements | ForEach-Object { "- [$($_.result)] $($_.criterion) - $($_.evidence)" }) -join "`n") + "`n`nNeeds human validation: $((@($decision.needs_human_validation)) -join '; ')`n`nQuestion: $($decision.human_question)" } else { "Reviewer output unreadable - see review-raw.json" })
   $reviewMd | Set-Content (Join-Path $RunDir "review.md") -Encoding UTF8
   Copy-Item (Join-Path $RunDir "review.md") (Join-Path $AI "CLAUDE_REVIEW.md") -Force
-  Add-Content (Join-Path $AI "STATUS.md") ("- {0} · {1} · i{2} · {3} · {4}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $taskId, $iter, $d, $rel)
+  Add-Content (Join-Path $AI "STATUS.md") ("- {0} | {1} | i{2} | {3} | {4}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $taskId, $iter, $d, $rel)
   Log "Decision: $d"
 
-  if ($d -eq "PASS") { Save "PASS — owner checks needs_human_validation items, then queue the next task"; break }
-  if ($d -ne "FAIL") { Save "NEEDS HUMAN — read .ai\CLAUDE_REVIEW.md"; break }
+  if ($d -eq "PASS") { Save "PASS - owner checks needs_human_validation items, then queue the next task"; break }
+  if ($d -ne "FAIL") { Save "NEEDS HUMAN - read .ai\CLAUDE_REVIEW.md"; break }
 
-  # FAIL → corrective task becomes the next Cursor task
-  if ([string]::IsNullOrWhiteSpace($decision.next_task)) { Save "FAIL without next_task — owner review"; break }
+  # FAIL -> corrective task becomes the next Cursor task
+  if ([string]::IsNullOrWhiteSpace($decision.next_task)) { Save "FAIL without next_task - owner review"; break }
   Copy-Item $taskFile (Join-Path $RunDir "task-before-fix.md")
   $decision.next_task | Set-Content $taskFile -Encoding UTF8
   Save "Cursor fixing (next iteration)"
