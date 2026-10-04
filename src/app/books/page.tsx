@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { isDevUiEnabled } from "@/lib/dev-ui";
+
 export default function BooksHomePage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 py-4">
@@ -25,12 +27,14 @@ export default function BooksHomePage() {
           <p className="mt-1 text-sm text-muted-foreground">Posted balances by account.</p>
         </Link>
       </div>
-      <Link
-        href="/dev/ui"
-        className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-muted"
-      >
-        UI component gallery
-      </Link>
+      {isDevUiEnabled() ? (
+        <Link
+          href="/dev/ui"
+          className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-muted"
+        >
+          UI component gallery
+        </Link>
+      ) : null}
     </div>
   );
 }
