@@ -6,6 +6,9 @@ import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { DocumentReviewPanels } from "@/components/books/document-review-panels";
+import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
+import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,6 +42,7 @@ export default function PurchasesPage() {
   const [uploads, setUploads] = useState<InboxRow[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
@@ -169,6 +173,8 @@ export default function PurchasesPage() {
           </Button>
         </div>
       </div>
+
+      <OpenItemKpiTiles side="AP" />
 
       <div className="flex gap-2" data-testid="purchase-tabs">
         <Button variant={tab === "bills" ? "default" : "outline"} onClick={() => setTab("bills")}>
@@ -322,7 +328,10 @@ export default function PurchasesPage() {
                   <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
                   <td>{formatMinor(r.grossMinor)}</td>
                   <td>{r.status}</td>
-                  <td className="text-right">
+                  <td className="space-x-2 text-right">
+                    <Button size="sm" variant="outline" onClick={() => setReviewId(r.id)}>
+                      Review
+                    </Button>
                     {r.status === "draft" ? (
                       <Button size="sm" variant="outline" onClick={() => void approve(r.id)}>
                         Approve
@@ -335,6 +344,28 @@ export default function PurchasesPage() {
           </table>
         </>
       )}
+
+      <BooksSideDrawer
+        open={Boolean(reviewId)}
+        onOpenChange={(open) => {
+          if (!open) setReviewId(null);
+        }}
+        title="Bill review"
+        entryNo={rows.find((r) => r.id === reviewId)?.documentNumber}
+        status={rows.find((r) => r.id === reviewId)?.status}
+      >
+        {reviewId ? (
+          <div className="p-4">
+            <DocumentReviewPanels
+              documentId={reviewId}
+              onApproved={() => {
+                setReviewId(null);
+                void reload();
+              }}
+            />
+          </div>
+        ) : null}
+      </BooksSideDrawer>
     </div>
   );
 }

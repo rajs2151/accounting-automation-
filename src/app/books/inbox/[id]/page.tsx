@@ -5,7 +5,9 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { PdfPagePreview } from "@/components/books/pdf-page-preview";
+import { useBooksShell } from "@/components/books/books-shell-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +30,7 @@ type ReviewPayload = {
   error: string | null;
   fileUrl: string;
   extractionId: string | null;
+  documentId: string | null;
   fieldsJson: Record<string, FieldState>;
   lineItems: Array<{
     description?: string;
@@ -100,6 +103,7 @@ function normalizeLines(items: ReviewPayload["lineItems"]) {
 /** Split-view review: uploaded file page 1 + fields from books_extractions for this inbox id. */
 export default function InboxReviewPage() {
   const params = useParams<{ id: string }>();
+  const { periodId } = useBooksShell();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [review, setReview] = useState<ReviewPayload | null>(null);
@@ -108,6 +112,9 @@ export default function InboxReviewPage() {
     Array<{ description: string; vatCode: string; netMinor: number; vatMinor: number }>
   >([]);
   const [activeField, setActiveField] = useState<string | null>("invoice_no");
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [parties, setParties] = useState<Array<{ id: string; name: string }>>([]);
+  const [partyId, setPartyId] = useState("");
 
   async function load() {
     setLoading(true);
@@ -128,13 +135,42 @@ export default function InboxReviewPage() {
     setReview(data as ReviewPayload);
     setFields(normalizeFields(data.fieldsJson || {}));
     setLineItems(normalizeLines(data.lineItems || []));
+    setDocumentId(data.documentId || null);
     setLoading(false);
   }
 
   useEffect(() => {
     void load();
+    void fetch("/api/books/parties")
+      .then((r) => r.json())
+      .then((pts) => {
+        if (Array.isArray(pts) && pts.length) {
+          setParties(pts);
+          setPartyId((prev) => prev || pts[0].id);
+        }
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
+
+  async function confirmFields() {
+    if (!partyId || !periodId) {
+      toast.error("party_and_period_required");
+      return;
+    }
+    const res = await fetch(`/api/books/inbox/${params.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ partyId, periodId, docType: "sales_invoice" }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error || "confirm_failed");
+      return;
+    }
+    toast.success("Draft document created");
+    setDocumentId(String(data.documentId));
+    void load();
+  }
 
   async function retry() {
     const res = await fetch(`/api/books/inbox/${params.id}/retry`, {
@@ -338,30 +374,53 @@ export default function InboxReviewPage() {
             </table>
           </div>
 
-          <div className="flex flex-wrap gap-2 pt-2">
-            <Button variant="outline" onClick={() => void retry()} data-testid="review-retry">
-              Retry extract
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => toast.success("Saved as profile (stub)")}
-            >
-              Save as profile
-            </Button>
-            <Button
-              onClick={() =>
-                toast.message("Confirm creates a draft document — approve separately")
-              }
-            >
-              Confirm fields
-            </Button>
-            <Link
-              className="inline-flex h-8 items-center text-sm text-primary underline"
-              href="/books/statements"
-            >
-              Statement review
-            </Link>
+          <div className="space-y-2 pt-2">
+            {!documentId ? (
+              <div>
+                <Label className="text-xs">Party for draft</Label>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={partyId}
+                  onChange={(e) => setPartyId(e.target.value)}
+                  data-testid="confirm-party"
+                >
+                  {parties.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void retry()} data-testid="review-retry">
+                Retry extract
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => toast.success("Saved as profile (stub)")}
+              >
+                Save as profile
+              </Button>
+              {!documentId ? (
+                <Button onClick={() => void confirmFields()} data-testid="confirm-fields">
+                  Confirm fields
+                </Button>
+              ) : null}
+              <Link
+                className="inline-flex h-8 items-center text-sm text-primary underline"
+                href="/books/statements"
+              >
+                Statement review
+              </Link>
+            </div>
           </div>
+
+          {documentId ? (
+            <div className="border-t border-border pt-3">
+              <DocumentReviewPanels documentId={documentId} onApproved={() => void load()} />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

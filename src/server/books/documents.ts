@@ -45,7 +45,21 @@ export type DocumentInput = {
   periodId: string;
   lines: DocLineInput[];
   forceDuplicate?: boolean;
+  /** Printed/extracted totals (document currency). Info for UI; server gates Approve. */
+  printedNetMinor?: number | null;
+  printedVatMinor?: number | null;
+  printedGrossMinor?: number | null;
+  /** Info only — never creates a receipt/payment or allocation. */
+  printedPaidMinor?: number | null;
+  printedBalanceDueMinor?: number | null;
+  extractionId?: string | null;
+  fileId?: string | null;
 };
+
+function optionalMinor(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  return assertMinor(value);
+}
 
 async function accountIdByCode(db: PoolClient, clientId: string, code: string) {
   const row = await db.query(
@@ -155,7 +169,20 @@ export async function getBooksDocument(userId: string, clientId: string, documen
        FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
       [documentId],
     );
-    return { ...doc.rows[0], lines: lines.rows };
+    const d = doc.rows[0];
+    return {
+      ...d,
+      printedNetMinor: d.printed_net_minor == null ? null : Number(d.printed_net_minor),
+      printedVatMinor: d.printed_vat_minor == null ? null : Number(d.printed_vat_minor),
+      printedGrossMinor: d.printed_gross_minor == null ? null : Number(d.printed_gross_minor),
+      printedPaidMinor: d.printed_paid_minor == null ? null : Number(d.printed_paid_minor),
+      printedBalanceDueMinor:
+        d.printed_balance_due_minor == null ? null : Number(d.printed_balance_due_minor),
+      netMinor: Number(d.net_minor),
+      vatMinor: Number(d.vat_minor),
+      grossMinor: Number(d.gross_minor),
+      lines: lines.rows,
+    };
   });
 }
 
@@ -245,15 +272,24 @@ export async function createBooksDocument(userId: string, clientId: string, body
     }
     defer = Boolean(defer);
 
+    const printedNet = optionalMinor(body.printedNetMinor);
+    const printedVat = optionalMinor(body.printedVatMinor);
+    const printedGross = optionalMinor(body.printedGrossMinor);
+    const printedPaid = optionalMinor(body.printedPaidMinor);
+    const printedBalanceDue = optionalMinor(body.printedBalanceDueMinor);
+
     const id = randomUUID();
     await db.query(
       `INSERT INTO books_documents (
          id, client_id, doc_type, doc_kind, status, document_number, party_id,
          issue_date, due_date, service_start, service_end, defer_revenue,
          currency, fx_rate_scaled, original_total_minor, aed_total_minor,
-         net_minor, vat_minor, gross_minor, memo, original_document_id, created_by
+         net_minor, vat_minor, gross_minor, memo, original_document_id, created_by,
+         printed_net_minor, printed_vat_minor, printed_gross_minor,
+         printed_paid_minor, printed_balance_due_minor, extraction_id, file_id
        ) VALUES (
-         $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+         $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+         $22,$23,$24,$25,$26,$27,$28
        )`,
       [
         id,
@@ -277,6 +313,13 @@ export async function createBooksDocument(userId: string, clientId: string, body
         body.memo || "",
         body.originalDocumentId || null,
         userId,
+        printedNet,
+        printedVat,
+        printedGross,
+        printedPaid,
+        printedBalanceDue,
+        body.extractionId || null,
+        body.fileId || null,
       ],
     );
 
@@ -346,6 +389,54 @@ type BuiltLine = {
   vatCode?: string | null;
   tags?: string[];
 };
+
+/** Server gate: printed totals must match computed; VAT must not exceed 5% + 1 fils/line. */
+export function assertDocumentApproveMoneyGates(doc: {
+  net_minor: number;
+  vat_minor: number;
+  gross_minor: number;
+  printed_net_minor: number | null;
+  printed_vat_minor: number | null;
+  printed_gross_minor: number | null;
+}, lines: Array<{ net_minor: number; vat_minor: number; line_kind: string; vat_code: string | null }>) {
+  const diffs: string[] = [];
+  const printedNet = doc.printed_net_minor == null ? null : Number(doc.printed_net_minor);
+  const printedVat = doc.printed_vat_minor == null ? null : Number(doc.printed_vat_minor);
+  const printedGross = doc.printed_gross_minor == null ? null : Number(doc.printed_gross_minor);
+  if (printedNet != null && printedNet !== Number(doc.net_minor)) {
+    diffs.push(`net:${printedNet}!=${doc.net_minor}`);
+  }
+  if (printedVat != null && printedVat !== Number(doc.vat_minor)) {
+    diffs.push(`vat:${printedVat}!=${doc.vat_minor}`);
+  }
+  if (printedGross != null && printedGross !== Number(doc.gross_minor)) {
+    diffs.push(`gross:${printedGross}!=${doc.gross_minor}`);
+  }
+  if (diffs.length) {
+    throw new BooksError(`printed_totals_mismatch:${diffs.join(",")}`, "conflict");
+  }
+
+  // Taxable net = lines that are not disbursements and carry a positive VAT amount or SR-class code.
+  let taxableNet = 0;
+  let taxableLineCount = 0;
+  for (const line of lines) {
+    if (line.line_kind === "disbursement") continue;
+    const vat = Number(line.vat_minor || 0);
+    const net = Number(line.net_minor || 0);
+    if (vat > 0 || (line.vat_code && line.vat_code !== "ZR" && line.vat_code !== "EX" && line.vat_code !== "OS" && line.vat_code !== "NR")) {
+      taxableNet += net;
+      taxableLineCount += 1;
+    }
+  }
+  if (taxableLineCount === 0 && Number(doc.vat_minor) > 0) {
+    taxableNet = Number(doc.net_minor);
+    taxableLineCount = 1;
+  }
+  const maxVat = vatMinorForNet(taxableNet, 500) + taxableLineCount;
+  if (Number(doc.vat_minor) > maxVat) {
+    throw new BooksError("vat_exceeds_rate", "conflict");
+  }
+}
 
 async function buildPostingLines(
   db: PoolClient,
@@ -606,6 +697,7 @@ export async function approveAndPostBooksDocument(
       `SELECT * FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
       [documentId],
     );
+    assertDocumentApproveMoneyGates(doc, linesRes.rows);
     const period = await db.query(
       `SELECT id, status FROM books_periods
        WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date`,
@@ -721,6 +813,178 @@ export async function approveAndPostBooksDocument(
   });
 
   return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
+}
+
+/** Update printed totals / payments-made on a draft (editable on review). */
+export async function updateBooksDocumentPrintedFields(
+  userId: string,
+  clientId: string,
+  documentId: string,
+  body: {
+    printedNetMinor?: number | null;
+    printedVatMinor?: number | null;
+    printedGrossMinor?: number | null;
+    printedPaidMinor?: number | null;
+    printedBalanceDueMinor?: number | null;
+  },
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("document_not_found", "not_found");
+    if (before.rows[0].status !== "draft") throw new BooksError("not_draft", "conflict");
+
+    const next = {
+      printed_net_minor:
+        body.printedNetMinor === undefined
+          ? before.rows[0].printed_net_minor
+          : optionalMinor(body.printedNetMinor),
+      printed_vat_minor:
+        body.printedVatMinor === undefined
+          ? before.rows[0].printed_vat_minor
+          : optionalMinor(body.printedVatMinor),
+      printed_gross_minor:
+        body.printedGrossMinor === undefined
+          ? before.rows[0].printed_gross_minor
+          : optionalMinor(body.printedGrossMinor),
+      printed_paid_minor:
+        body.printedPaidMinor === undefined
+          ? before.rows[0].printed_paid_minor
+          : optionalMinor(body.printedPaidMinor),
+      printed_balance_due_minor:
+        body.printedBalanceDueMinor === undefined
+          ? before.rows[0].printed_balance_due_minor
+          : optionalMinor(body.printedBalanceDueMinor),
+    };
+
+    await db.query(
+      `UPDATE books_documents SET
+         printed_net_minor = $3, printed_vat_minor = $4, printed_gross_minor = $5,
+         printed_paid_minor = $6, printed_balance_due_minor = $7, updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [
+        documentId,
+        clientId,
+        next.printed_net_minor,
+        next.printed_vat_minor,
+        next.printed_gross_minor,
+        next.printed_paid_minor,
+        next.printed_balance_due_minor,
+      ],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "update_printed_totals",
+      entity: "books_document",
+      entityId: documentId,
+      before: {
+        printed_net_minor: before.rows[0].printed_net_minor,
+        printed_vat_minor: before.rows[0].printed_vat_minor,
+        printed_gross_minor: before.rows[0].printed_gross_minor,
+        printed_paid_minor: before.rows[0].printed_paid_minor,
+        printed_balance_due_minor: before.rows[0].printed_balance_due_minor,
+      },
+      after: next,
+    });
+    const lines = await db.query(
+      `SELECT id, line_no AS "lineNo", description, quantity_scaled AS "quantityScaled",
+              unit_price_minor AS "unitPriceMinor", line_kind AS "lineKind",
+              account_id AS "accountId", vat_code AS "vatCode",
+              net_minor AS "netMinor", vat_minor AS "vatMinor", gross_minor AS "grossMinor",
+              currency, original_minor AS "originalMinor", fx_rate_scaled AS "fxRateScaled",
+              aed_minor AS "aedMinor", tags
+       FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+      [documentId],
+    );
+    const d = { ...before.rows[0], ...next };
+    return {
+      ...d,
+      printedNetMinor: next.printed_net_minor == null ? null : Number(next.printed_net_minor),
+      printedVatMinor: next.printed_vat_minor == null ? null : Number(next.printed_vat_minor),
+      printedGrossMinor: next.printed_gross_minor == null ? null : Number(next.printed_gross_minor),
+      printedPaidMinor: next.printed_paid_minor == null ? null : Number(next.printed_paid_minor),
+      printedBalanceDueMinor:
+        next.printed_balance_due_minor == null ? null : Number(next.printed_balance_due_minor),
+      netMinor: Number(d.net_minor),
+      vatMinor: Number(d.vat_minor),
+      grossMinor: Number(d.gross_minor),
+      lines: lines.rows,
+    };
+  });
+}
+
+export type JournalPreviewLine = {
+  accountCode: string;
+  accountName: string;
+  vatCode: string | null;
+  debitMinor: number;
+  creditMinor: number;
+  currency: string;
+  aedMinor: number;
+};
+
+/** Read-only Dr/Cr preview of what Approve would post. No inserts / voucher / audit. */
+export async function previewBooksDocumentJournal(
+  userId: string,
+  clientId: string,
+  documentId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const docRes = await db.query(
+      `SELECT * FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!docRes.rowCount) throw new BooksError("document_not_found", "not_found");
+    const doc = docRes.rows[0];
+    const linesRes = await db.query(
+      `SELECT * FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+      [documentId],
+    );
+    const built = await buildPostingLines(db, clientId, doc, linesRes.rows);
+    const accountIds = [...new Set(built.map((l) => l.accountId))];
+    const accts = accountIds.length
+      ? await db.query(
+          `SELECT id, code, name FROM books_accounts WHERE client_id = $1 AND id = ANY($2::uuid[])`,
+          [clientId, accountIds],
+        )
+      : { rows: [] as Array<{ id: string; code: string; name: string }> };
+    const byId = new Map(accts.rows.map((a) => [String(a.id), a]));
+
+    const lines: JournalPreviewLine[] = built.map((l) => {
+      const acct = byId.get(l.accountId);
+      const debit = Number(l.debitMinor ?? 0);
+      const credit = Number(l.creditMinor ?? 0);
+      const aed = Number(l.aedMinor ?? debit + credit);
+      return {
+        accountCode: acct?.code || "",
+        accountName: acct?.name || "",
+        vatCode: l.vatCode ?? null,
+        debitMinor: debit,
+        creditMinor: credit,
+        currency: (l.currency || doc.currency || "AED").toString(),
+        aedMinor: aed,
+      };
+    });
+    const debitAed = lines.reduce((s, l) => s + (l.debitMinor > 0 ? l.aedMinor : 0), 0);
+    const creditAed = lines.reduce((s, l) => s + (l.creditMinor > 0 ? l.aedMinor : 0), 0);
+    // Prefer summing debit/credit minors in AED terms (lines store aed on the posted side).
+    const sumDr = lines.reduce((s, l) => s + l.debitMinor, 0);
+    const sumCr = lines.reduce((s, l) => s + l.creditMinor, 0);
+    void debitAed;
+    void creditAed;
+    return {
+      documentId,
+      lines,
+      debitMinor: sumDr,
+      creditMinor: sumCr,
+      balanced: sumDr === sumCr,
+    };
+  });
 }
 
 async function scheduleDeferredReleases(

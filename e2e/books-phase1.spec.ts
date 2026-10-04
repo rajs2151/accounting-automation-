@@ -221,6 +221,15 @@ test("phase1: upload bill → approve → journal visible", async ({ page, conte
   expect(create.ok(), `create failed: ${JSON.stringify(created)}`).toBeTruthy();
   expect(created.id).toBeTruthy();
 
+  // C1-1: review screen shows journal preview + totals panels before approve
+  await page.goto("/books/purchases");
+  await expect(page.getByTestId("ap-kpi-row")).toBeVisible({ timeout: 15000 });
+  await page.getByRole("button", { name: "Review" }).first().click();
+  await expect(page.getByTestId("document-review-panels")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("totals-panel")).toBeVisible();
+  await expect(page.getByTestId("journal-preview-panel")).toBeVisible();
+  await expect(page.getByTestId("journal-preview-balance")).toContainText(/Balanced/i);
+
   await setSession(context, LAYLA);
   const approve = await page.request.post(`/api/books/documents/${created.id}/approve`, {
     data: {},

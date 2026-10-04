@@ -58,8 +58,11 @@ import {
   createBooksDocument,
   getBooksDocument,
   listBooksDocuments,
+  previewBooksDocumentJournal,
+  updateBooksDocumentPrintedFields,
 } from "@/server/books/documents";
 import {
+  confirmInboxAsDocument,
   getBooksInboxReview,
   listBooksInbox,
   retryBooksInboxExtract,
@@ -74,6 +77,7 @@ import {
 } from "@/server/books/opening-import";
 import {
   assertOpenItemsMatchRebuild,
+  getBooksOpenItemKpis,
   listBooksOpenItems,
 } from "@/server/books/open-items";
 import {
@@ -270,6 +274,11 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
     }
+    if (path[0] === "documents" && path[2] === "journal-preview" && path.length === 3) {
+      return NextResponse.json(
+        await previewBooksDocumentJournal(session.userId, session.clientId, path[1]),
+      );
+    }
     if (path[0] === "open-items" && path.length === 1) {
       return NextResponse.json(
         await listBooksOpenItems(session.userId, session.clientId, {
@@ -277,6 +286,12 @@ export async function GET(request: Request, ctx: Ctx) {
           side: url.searchParams.get("side") || undefined,
           status: url.searchParams.get("status") || undefined,
         }),
+      );
+    }
+    if (path[0] === "open-items" && path[1] === "kpis" && path.length === 2) {
+      const side = url.searchParams.get("side") === "AR" ? "AR" : "AP";
+      return NextResponse.json(
+        await getBooksOpenItemKpis(session.userId, session.clientId, side),
       );
     }
     if (path[0] === "open-items" && path[1] === "rebuild-check" && path.length === 2) {
@@ -618,6 +633,20 @@ export async function POST(request: Request, ctx: Ctx) {
         await approveAndPostBooksDocument(session.userId, session.clientId, path[1]),
       );
     }
+    if (path[0] === "inbox" && path[2] === "confirm" && path.length === 3) {
+      return NextResponse.json(
+        await confirmInboxAsDocument(session.userId, session.clientId, path[1], {
+          partyId: String(body.partyId || ""),
+          periodId: String(body.periodId || ""),
+          docType:
+            body.docType === "purchase_bill" || body.docType === "sales_invoice"
+              ? body.docType
+              : undefined,
+          issueDate: body.issueDate ? String(body.issueDate) : undefined,
+          dueDate: body.dueDate === undefined ? undefined : body.dueDate ? String(body.dueDate) : null,
+        }),
+      );
+    }
     if (path[0] === "settlements" && path.length === 1) {
       // Approver = session user. Preparer must differ (dual control). Synthetic stub:
       // default preparer to Omar when the signed-in user is not Omar.
@@ -779,6 +808,42 @@ export async function PATCH(request: Request, ctx: Ctx) {
     }
     if (path[0] === "parties" && path.length === 2) {
       return NextResponse.json(await updateBooksParty(session.userId, session.clientId, path[1], body));
+    }
+    if (path[0] === "documents" && path.length === 2) {
+      return NextResponse.json(
+        await updateBooksDocumentPrintedFields(session.userId, session.clientId, path[1], {
+          printedNetMinor:
+            body.printedNetMinor === undefined
+              ? undefined
+              : body.printedNetMinor == null
+                ? null
+                : Number(body.printedNetMinor),
+          printedVatMinor:
+            body.printedVatMinor === undefined
+              ? undefined
+              : body.printedVatMinor == null
+                ? null
+                : Number(body.printedVatMinor),
+          printedGrossMinor:
+            body.printedGrossMinor === undefined
+              ? undefined
+              : body.printedGrossMinor == null
+                ? null
+                : Number(body.printedGrossMinor),
+          printedPaidMinor:
+            body.printedPaidMinor === undefined
+              ? undefined
+              : body.printedPaidMinor == null
+                ? null
+                : Number(body.printedPaidMinor),
+          printedBalanceDueMinor:
+            body.printedBalanceDueMinor === undefined
+              ? undefined
+              : body.printedBalanceDueMinor == null
+                ? null
+                : Number(body.printedBalanceDueMinor),
+        }),
+      );
     }
     if (path[0] === "statements" && path.length === 2) {
       return NextResponse.json(

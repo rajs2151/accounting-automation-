@@ -127,7 +127,8 @@ export async function listBooksOpenItems(
               oi.original_minor AS "originalMinor", oi.aed_original_minor AS "aedOriginalMinor",
               oi.open_original_minor AS "openOriginalMinor", oi.open_aed_minor AS "openAedMinor",
               oi.fx_rate_scaled AS "fxRateScaled", oi.status,
-              p.name AS "partyName", d.document_number AS "documentNumber", d.doc_type AS "docType"
+              p.name AS "partyName", d.document_number AS "documentNumber", d.doc_type AS "docType",
+              d.due_date AS "dueDate"
        FROM books_open_items oi
        JOIN books_parties p ON p.id = oi.party_id
        LEFT JOIN books_documents d ON d.id = oi.document_id
@@ -139,6 +140,59 @@ export async function listBooksOpenItems(
       [clientId, opts?.partyId || null, opts?.side || null, opts?.status || null],
     );
     return rows.rows;
+  });
+}
+
+export type OpenItemKpis = {
+  side: "AR" | "AP";
+  totalOutstandingAedMinor: number;
+  overdueAedMinor: number;
+  dueIn7DaysAedMinor: number;
+  /** Phase 2 — bank match. Always null until then (UI shows "—"). */
+  unmatchedToBankAedMinor: number | null;
+};
+
+/**
+ * KPI tiles for Purchases (AP) / Sales (AR). Posted journals only via open items
+ * (draft documents never create open items, so they are excluded automatically).
+ */
+export async function getBooksOpenItemKpis(
+  userId: string,
+  clientId: string,
+  side: "AR" | "AP",
+): Promise<OpenItemKpis> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const rows = await db.query(
+      `SELECT
+         COALESCE(SUM(oi.open_aed_minor), 0)::bigint AS total_outstanding,
+         COALESCE(SUM(
+           CASE WHEN d.due_date IS NOT NULL AND d.due_date < (CURRENT_DATE)
+             THEN oi.open_aed_minor ELSE 0 END
+         ), 0)::bigint AS overdue,
+         COALESCE(SUM(
+           CASE WHEN d.due_date IS NOT NULL
+                 AND d.due_date >= (CURRENT_DATE)
+                 AND d.due_date <= (CURRENT_DATE + INTERVAL '7 days')
+             THEN oi.open_aed_minor ELSE 0 END
+         ), 0)::bigint AS due_7
+       FROM books_open_items oi
+       JOIN books_journal_entries e ON e.id = oi.journal_entry_id
+       LEFT JOIN books_documents d ON d.id = oi.document_id
+       WHERE oi.client_id = $1
+         AND oi.side = $2
+         AND oi.status IN ('open', 'partial')
+         AND e.status = 'posted'`,
+      [clientId, side],
+    );
+    const r = rows.rows[0];
+    return {
+      side,
+      totalOutstandingAedMinor: Number(r.total_outstanding),
+      overdueAedMinor: Number(r.overdue),
+      dueIn7DaysAedMinor: Number(r.due_7),
+      unmatchedToBankAedMinor: null,
+    };
   });
 }
 

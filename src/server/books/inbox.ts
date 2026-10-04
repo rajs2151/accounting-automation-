@@ -1,12 +1,36 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { withUser } from "@/lib/db";
+import { displayToMinor } from "@/lib/money";
 import { getObjectBytes, putObject, signedGetUrl } from "@/lib/storage";
 import { writeBooksAudit } from "@/server/books/audit";
+import { createBooksDocument } from "@/server/books/documents";
 import { BooksError } from "@/server/books/errors";
 import { syncExtractInboxItem } from "@/server/books/extract-sync";
 import { enqueueBooksJob } from "@/server/books/jobs";
+import { parseAmountToFils } from "@/server/books/parsing";
 import { assertSyntheticTenant } from "@/server/security-gate";
+
+function fieldMinor(fields: Record<string, unknown>, key: string): number | null {
+  const raw = fields[key] as { value?: string } | string | undefined;
+  const value = typeof raw === "string" ? raw : raw?.value;
+  if (!value || !String(value).trim()) return null;
+  try {
+    return displayToMinor(String(value).trim()) ?? parseAmountToFils(String(value));
+  } catch {
+    try {
+      return parseAmountToFils(String(value));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function fieldStr(fields: Record<string, unknown>, key: string): string {
+  const raw = fields[key] as { value?: string } | string | undefined;
+  if (typeof raw === "string") return raw;
+  return raw?.value ? String(raw.value) : "";
+}
 
 export async function listBooksInbox(
   userId: string,
@@ -74,6 +98,17 @@ export async function getBooksInboxReview(
     const fields = { ...fieldsJson };
     delete fields._line_items;
 
+    let documentId: string | null = null;
+    if (r.extractionId) {
+      const linked = await db.query(
+        `SELECT id FROM books_documents
+         WHERE extraction_id = $1 AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [r.extractionId],
+      );
+      if (linked.rowCount) documentId = String(linked.rows[0].id);
+    }
+
     return {
       id: r.id,
       clientId: r.clientId,
@@ -93,6 +128,7 @@ export async function getBooksInboxReview(
       lineItems,
       validationFlags: r.validationFlags || [],
       rawTextPreview: r.rawText ? String(r.rawText).slice(0, 500) : null,
+      documentId,
     };
   });
 }
@@ -297,4 +333,111 @@ export async function setInboxDocType(
     );
     return { id: inboxItemId, detectedType: docType };
   });
+}
+
+/**
+ * Confirm extraction → draft document. Fills printed_* from extracted totals when present.
+ * Payments made / balance due are stored as info only (no settlement).
+ */
+export async function confirmInboxAsDocument(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  body: {
+    partyId: string;
+    periodId: string;
+    docType?: "sales_invoice" | "purchase_bill";
+    issueDate?: string;
+    dueDate?: string | null;
+  },
+) {
+  const review = await getBooksInboxReview(userId, clientId, inboxItemId);
+  if (!review.extractionId) throw new BooksError("extraction_required", "invalid");
+  const fields = (review.fieldsJson || {}) as Record<string, unknown>;
+  const detected = String(review.detectedType || review.extractionDocType || "").toLowerCase();
+  const docType: "sales_invoice" | "purchase_bill" =
+    body.docType ||
+    (detected.includes("purchase") || detected.includes("bill")
+      ? "purchase_bill"
+      : "sales_invoice");
+
+  const lineItems = (review.lineItems || []) as Array<{
+    description?: string;
+    vatCode?: string;
+    netMinor?: number;
+    vatMinor?: number;
+    lineKind?: string;
+  }>;
+  const lines =
+    lineItems.length > 0
+      ? lineItems.map((l) => ({
+          description: l.description || "Line",
+          lineKind: (l.lineKind as "revenue" | "expense" | "disbursement") ||
+            (docType === "purchase_bill" ? "expense" : "revenue"),
+          vatCode: l.vatCode || "SR",
+          netMinor: Number(l.netMinor || 0),
+          vatMinor: Number(l.vatMinor || 0),
+        }))
+      : [
+          {
+            description: "Extracted line",
+            lineKind: (docType === "purchase_bill" ? "expense" : "revenue") as "expense" | "revenue",
+            vatCode: "SR",
+            netMinor: fieldMinor(fields, "subtotal") ?? 0,
+            vatMinor: fieldMinor(fields, "vat_total") ?? 0,
+          },
+        ];
+
+  const invoiceDateRaw = fieldStr(fields, "invoice_date");
+  let issueDate = body.issueDate;
+  if (!issueDate && invoiceDateRaw) {
+    const m = invoiceDateRaw.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (m) issueDate = `${m[3]}-${m[2]}-${m[1]}`;
+  }
+  if (!issueDate) issueDate = new Date().toISOString().slice(0, 10);
+
+  const printedNet = fieldMinor(fields, "subtotal");
+  const printedVat = fieldMinor(fields, "vat_total");
+  const printedGross = fieldMinor(fields, "grand_total");
+  const printedPaid =
+    fieldMinor(fields, "amount_paid") ?? fieldMinor(fields, "payments_made");
+  const printedBalanceDue =
+    fieldMinor(fields, "balance_due") ?? fieldMinor(fields, "amount_due");
+
+  const created = await createBooksDocument(userId, clientId, {
+    docType,
+    partyId: body.partyId,
+    periodId: body.periodId,
+    issueDate,
+    dueDate: body.dueDate ?? null,
+    documentNumber: fieldStr(fields, "invoice_no") || null,
+    currency: fieldStr(fields, "currency") || "AED",
+    lines,
+    printedNetMinor: printedNet,
+    printedVatMinor: printedVat,
+    printedGrossMinor: printedGross,
+    printedPaidMinor: printedPaid,
+    printedBalanceDueMinor: printedBalanceDue,
+    extractionId: String(review.extractionId),
+    fileId: String(review.fileId),
+  });
+
+  await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    await db.query(
+      `UPDATE books_inbox_items SET status = 'confirmed', updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "confirm_inbox_document",
+      entity: "books_inbox_item",
+      entityId: inboxItemId,
+      after: { documentId: created.id, printedGrossMinor: printedGross },
+    });
+  });
+
+  return { inboxItemId, documentId: String(created.id), document: created };
 }

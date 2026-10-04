@@ -5,6 +5,9 @@ import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { DocumentReviewPanels } from "@/components/books/document-review-panels";
+import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
+import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,6 +29,7 @@ export default function SalesPage() {
   const { periodId, periods } = useBooksShell();
   const [rows, setRows] = useState<Doc[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
@@ -148,6 +152,8 @@ export default function SalesPage() {
         </div>
       </div>
 
+      <OpenItemKpiTiles side="AR" />
+
       <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-3">
         <div>
           <Label>Customer</Label>
@@ -247,7 +253,10 @@ export default function SalesPage() {
                   {r.status}
                   {r.deferRevenue ? " · deferred" : ""}
                 </td>
-                <td className="px-3 py-2">
+                <td className="space-x-2 px-3 py-2">
+                  <Button size="sm" variant="outline" onClick={() => setReviewId(r.id)}>
+                    Review
+                  </Button>
                   {r.status === "draft" && (
                     <Button size="sm" variant="outline" onClick={() => void approve(r.id)}>
                       Approve
@@ -259,6 +268,28 @@ export default function SalesPage() {
           </tbody>
         </table>
       </div>
+
+      <BooksSideDrawer
+        open={Boolean(reviewId)}
+        onOpenChange={(open) => {
+          if (!open) setReviewId(null);
+        }}
+        title="Invoice review"
+        entryNo={rows.find((r) => r.id === reviewId)?.documentNumber}
+        status={rows.find((r) => r.id === reviewId)?.status}
+      >
+        {reviewId ? (
+          <div className="p-4">
+            <DocumentReviewPanels
+              documentId={reviewId}
+              onApproved={() => {
+                setReviewId(null);
+                void reload();
+              }}
+            />
+          </div>
+        ) : null}
+      </BooksSideDrawer>
     </div>
   );
 }
