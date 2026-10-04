@@ -125,3 +125,70 @@ test("preparer cannot approve; Layla can release; upstream post marks stale; dow
     await admin.end().catch(() => undefined);
   }
 });
+
+test("seed roles: Layla approver can release pack; Omar preparer cannot", async (t) => {
+  const appUrl =
+    process.env.DATABASE_URL || "postgresql://daftar_app:daftar-local-only@127.0.0.1:5432/daftar_test";
+  process.env.DATABASE_URL = appUrl;
+  const adminUrl = process.env.DATABASE_URL_SUPER || appUrl.replace("://daftar_app:", "://daftar:");
+  const admin = new pg.Client({ connectionString: adminUrl });
+  try {
+    await admin.connect();
+  } catch {
+    t.skip("Postgres is not reachable");
+    return;
+  }
+  try {
+    const has = await admin.query(`SELECT to_regclass('public.release_packs') AS reg`);
+    if (!has.rows[0]?.reg) {
+      t.skip("release_packs not migrated");
+      return;
+    }
+
+    const roles = await admin.query(
+      `SELECT id, role, email FROM users WHERE id = ANY($1::uuid[])`,
+      [[LAYLA, OMAR]],
+    );
+    const byId = Object.fromEntries(roles.rows.map((r) => [String(r.id), r]));
+    assert.equal(byId[LAYLA]?.role, "approver");
+    assert.equal(byId[OMAR]?.role, "accountant");
+    assert.equal(byId[LAYLA]?.email, "layla@arnibooks.test");
+    assert.equal(byId[OMAR]?.email, "omar@arnibooks.test");
+
+    const sales = await createSyntheticDocument(OMAR, AL_NOOR, {
+      periodId: PERIOD,
+      docType: "SALES_INVOICE",
+      originalName: "verify-s1-dual-control.json",
+      facts: {
+        entryDate: "2026-02-10",
+        invoiceNumber: "INV-VS1-1",
+        counterparty: "Verify S1 Co",
+        taxableMinor: 10000,
+        vatMinor: 500,
+      },
+    });
+    await approveExtractionAndPost(OMAR, AL_NOOR, sales.extractionId);
+
+    const prepared = await prepareVat201Pack(OMAR, AL_NOOR, PERIOD);
+    await assert.rejects(
+      () => approveVat201Pack(OMAR, AL_NOOR, prepared.id),
+      (error: unknown) =>
+        error instanceof LedgerError &&
+        error.code === "forbidden" &&
+        error.message === "preparer_cannot_approve",
+    );
+
+    const released = await approveVat201Pack(LAYLA, AL_NOOR, prepared.id);
+    assert.equal(released.status, "RELEASED");
+    assert.equal(released.approvedBy, LAYLA);
+
+    const approval = await admin.query(
+      `SELECT role, actor_id FROM pack_approvals WHERE pack_id = $1 AND role = 'approver'`,
+      [prepared.id],
+    );
+    assert.equal(approval.rowCount, 1);
+    assert.equal(String(approval.rows[0].actor_id), LAYLA);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
