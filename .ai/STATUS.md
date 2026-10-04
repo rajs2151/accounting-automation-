@@ -2,14 +2,17 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: C1-1 (KPI tiles, printed-totals approve block, payments-made info only, journal preview)
-- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752, approver least privilege)
+- Current task: C1-2 (C1 validation matrix - 8 posting/VAT cases, server-side)
+- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) · C1-1 PASS (5755744, 02c7976)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
+  2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
+- CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
+  the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1
-2. C1-1 - KPI tiles, printed totals block Approve, payments-made info only, journal preview (addendum-C.md C1)
-3. C1-2 - Item/Accounting mode, Approve & Next, party mismatch banner, full C1 validation matrix (8 cases)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1
+2. C1-2 - C1 validation matrix (8 cases from addendum-C.md lines 64-73) + check_vat acknowledgement
+3. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
 4. C1b sales record-only parity | 5. C2 Banking + statements
 
 ## Known issues / open decisions

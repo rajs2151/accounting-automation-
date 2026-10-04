@@ -1,70 +1,83 @@
-﻿TASK ID: C1-1-fix1
-PHASE: Addendum C - C1 Purchases/Sales review queue (part 1 of 2), corrective
+TASK ID: C1-2
+PHASE: Addendum C - C1 validation matrix (posting rules)
 
 OBJECTIVE:
-Make the C1-1 unit tests deterministic so the required unit gate is green. The orchestrator re-ran npm test: 98 pass / 2 fail. Both failures are C1-1 tests that check company-wide totals/counts on the shared synthetic company DESERT while other test files post to it at the same time. Do not change product behaviour unless a test proves a real bug.
+Make the 8 C1 validation cases from the plan true in the server and prove each one with a test:
+correct posting (disbursement 1220, deposit -> asset, exempt, VAT recoverability), "check VAT" flags, approve blocks,
+and sales-vs-bill re-routing. UI work (Item/Accounting mode, Approve & Next, party mismatch banner) is NOT in this task.
 
 CONTEXT:
-- gates/unit.log: 'C1-1 KPI: AP outstanding / overdue / due-7; draft excluded' failed at src/server/books/c1-money-checks.test.ts:128 (total-outstanding delta 73500 !== 63000; the extra 10500 came from another test file posting an AP bill to DESERT at the same time).
-- 'C1-1 journal preview: matches posted lines; creates no rows; balances' failed at :350 (audit count 105 → 106 for all of DESERT; previewBooksDocumentJournal itself only does SELECTs).
-- The voucher check counts books_voucher_sequences rows; consuming a voucher number updates last_no and adds no row, so the check cannot detect a consumed number.
-- Your report claimed '100 pass, 0 fail'. Report the orchestrator-equivalent full `npm test` result truthfully.
+Spec: docs/plan/arnibooks-cursor-prompts-addendum-C.md, "Validation rules to prove with tests" (lines 64-73).
+C1-1 (5755744, 02c7976) added printed totals + server checks printed_totals_mismatch / vat_exceeds_rate in
+approveAndPostBooksDocument (src/server/books/documents.ts:588). Posting lines come from buildPostingLines
+(documents.ts:441): purchase "disbursement" lines already go to 1220; supplier TRN + recoverable VAT code -> 1430.
+books_document_lines.line_kind allows revenue, disbursement, taxable_recharge, expense, asset, inventory
+(db/23-books-phase1.sql:246-247). Inbox -> draft conversion is in src/server/books/inbox.ts (~lines 330-390);
+classification is in worker/src/daftar/extraction/classify.py and books_extractions.doc_type.
 
 FILES TO INSPECT:
-- src/server/books/c1-money-checks.test.ts
-- src/server/books/open-items.ts (getBooksOpenItemKpis)
-- src/server/books/documents.ts (previewBooksDocumentJournal)
-- src/components/books/open-item-kpis.tsx
-- books_voucher_sequences / books_audit_events / books_journal_entries schema in db/
+- docs/plan/arnibooks-cursor-prompts-addendum-C.md (C1 lines 64-73)
+- src/server/books/documents.ts (buildPostingLines, approveAndPostBooksDocument), src/server/books/vat-codes.ts
+- src/server/books/inbox.ts, src/server/books/extract-sync.ts (draft creation / doc type routing)
+- src/server/books/phase1.test.ts, src/server/books/c1*.test.ts (existing test style; reuse helpers)
+- db/20-books-coa-v2.sql (account codes: 1220, 1430, 2210, deposit/asset accounts), db/*vat* seeds (VAT codes)
 
-EXPECTED BEHAVIOR:
-- The KPI test proves exact totals for ONLY the rows it creates, no matter what other test files do at the same time.
-- The preview test proves that preview writes nothing, using checks scoped to this test's document, plus a voucher check on the last-used number.
+THE 8 CASES (each = one named test "C1-2 case N: ..."; synthetic parties/amounts only):
+1. Bill with mixed lines: gov-fee line with no VAT -> disbursement 1220; service lines at 5% -> expense + 1430 input VAT.
+2. Gov-authority bill with no VAT at all -> all lines disbursement (1220), no 1430 line.
+3. Supplier HAS a TRN but a service line has no VAT -> document gets a "check_vat" flag/warning (stored, visible via
+   the document API); it is NOT silently accepted. Decide: approve allowed only after the flag is acknowledged
+   (store who/when, audited). Do not block forever.
+4. Foreign-currency bill, supplier has no TRN -> recoverable VAT = 0 (no 1430 line; VAT goes to cost);
+   a "refundable security deposit" line with line_kind 'asset' -> asset/deposit account, not expense.
+5. Sales invoice in USD with "- Arnifi Fee" (5%) and "- Government Fee" (no VAT) lines -> revenue + 2210 output VAT
+   for the fee, Cr 1220 for the gov fee; AED amounts via the document FX rate, integer minor units.
+6. Exempt residential lease invoice -> exempt VAT code, no 2210 output VAT line.
+7. Document classified as a sales invoice but uploaded under Purchases -> becomes a sales_invoice draft (moved to
+   Sales with a notice/audit row), never a purchase_bill; it is never posted as a purchase.
+8. VAT > 5% of taxable (e.g. tax larger than subtotal) -> vat_exceeds_rate, approve blocked, nothing posted
+   (C1-1 already has the check - prove it for a multi-line document and keep one assertion that no journal exists).
 
 IMPLEMENTATION REQUIREMENTS:
-1. KPI isolation. Pick one:
-   (a) In the test, create a new synthetic supplier (and customer for AR) with a unique name/tag in DESERT. Add an optional `partyId` filter to getBooksOpenItemKpis (server function + `partyId` query param on GET open-items/kpis, still posted open items only) and assert EXACT values (not deltas): AP total 63000, overdue 10500, due-7 21000, draft excluded; AR overdue 42000, due-7 52500, total 94500.
-   (b) Or compute the KPI with the same function scoped to the test's party.
-   Do not just retry, loosen the assertions, or check '>='.
-2. Preview isolation:
-   - Audit: count books_audit_events WHERE client_id = DESERT AND entity_id = the test document id (and any audit row whose entity is the document's lines or journal) before and after preview → equal.
-   - Journals: count books_journal_entries linked to this document (journal_entry_id on books_documents stays NULL, and no journal entry references this document) before and after preview → unchanged.
-   - Vouchers: snapshot (id, fiscal year, prefix, last_no or equivalent column) of every books_voucher_sequences row for DESERT before and after preview → deepEqual. Fix the assertion so it catches a consumed number.
-   - Then approve and assert preview lines == posted lines (account code, VAT code, Dr, Cr) as now, and that sum Dr = sum Cr in AED.
-3. Apply the same scoping to the 'payments made' test: count allocations and receipt/payment documents for the test's own party/document only, not all of DESERT.
-4. KPI tiles: while loading or on fetch error, show '…' or '—' (not 0.00); keep the exact-value title only when real data has loaded.
-5. Remove the dead debitAed/creditAed `void` code in previewBooksDocumentJournal; if `balanced` should use AED, compute it from AED amounts and keep the test proving it.
+- Fix whatever the tests show is wrong in buildPostingLines / draft creation. Keep changes minimal and in the server.
+- If a deposit/asset account code is missing from the COA seed, add it in a NEW migration (next free number after 28,
+  additive/idempotent), not by editing older files.
+- check_vat flag (case 3): store on the document (new nullable columns in the same migration, e.g. check_vat_reason,
+  check_vat_ack_by, check_vat_ack_at) + POST .../documents/:id/ack-check-vat (audited). Approve without ack ->
+  BooksError("check_vat_unacknowledged", "conflict"). Show the flag + Acknowledge button on the review screen
+  (minimal UI only).
+- Every journal produced by the tests must balance in AED (sum Dr = sum Cr).
 
 CONSTRAINTS:
-- feat/books-phase1, local commit, message prefix "C1-1-fix1:".
-- Integer minor units only; synthetic data only; follow .cursor/rules/arnibooks.mdc.
-- Do not change dual control, RLS, periods/locking, voucher numbering, or the printed-totals / VAT gate logic.
-- Do not change the test runner concurrency or package.json test flags to hide the race.
+- Work on feat/books-phase1. Local commits only, message prefix "C1-2:".
+- Integer minor units only. Follow .cursor/rules/arnibooks.mdc.
+- Tests must only measure rows they create (tests run in parallel against shared synthetic companies - see
+  02c7976 for the pattern: own party per test, document-scoped counts).
+- Do not change dual control, RLS policies, period locking, voucher numbering, or C1-1 printed-total behaviour.
 
 TESTS REQUIRED:
-- Updated src/server/books/c1-money-checks.test.ts as above (still registered in package.json "test").
-- If partyId was added to the KPI function: one assertion that a document from a different party is excluded.
-- Run the full `npm test` 3 times in a row on a fresh migrated DB; all three must show 0 failures. Paste the three '# tests/# pass/# fail/# skipped' summaries in the report.
+- New file src/server/books/c1-validation.test.ts with the 8 named tests above, registered in package.json "test".
+- Each posting test asserts the exact journal lines (account code, Dr, Cr, VAT code) - not just "it posted".
+- Full npm test 0 failures; e2e gate passes; typecheck passes.
 
 ACCEPTANCE CRITERIA:
-1. Full npm test: 0 failures, the only skip is the pre-existing PROVISIONAL golden, across 3 consecutive runs (summaries in report).
-2. The KPI tests assert exact AP (63000 / 10500 / 21000) and AR (94500 / 42000 / 52500) values scoped to test-owned data; draft excluded.
-3. The preview test asserts no audit, journal or voucher change, using document-scoped audit/journal checks and a last-used-number snapshot of voucher sequences; preview == posted line-for-line; balanced in AED.
-4. The payments-made test is scoped to its own party/document and still proves no allocation/receipt/payment and outstanding = full gross.
-5. KPI tiles never show 0.00 for unloaded or failed data.
-6. e2e gate and typecheck still pass.
-7. Report lists every changed file and maps each test to the criterion it proves; no claims the logs don't show.
+1. All 8 case tests exist, are named "C1-2 case N: ...", and pass in the orchestrator's unit gate.
+2. Exact journal lines asserted for cases 1, 2, 4, 5, 6.
+3. check_vat flag requires an audited acknowledgement before approve; case 7 never creates a purchase_bill.
+4. Any new migration is additive/idempotent and numbered after 28; earlier migrations untouched.
+5. No golden values edited; no test skipped, narrowed or loosened; existing tests unchanged except new helpers.
+6. Report maps each case to its test and lists every file changed.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- edit golden expected values; disable, skip, .todo, or narrow any test; add retries; loosen to >= / approximate checks
-- change test concurrency flags or remove other test files from npm test
-- weaken any RLS rule or change dual control / voucher numbering / period locking
-- commit docs/phase1/*.png, anything under docs/reference/outputs/, or any real client data
-- run `git add -A` blindly; stage only files for this task
-- implement C1-2 / C1b scope (Item/Accounting mode, Approve & Next, party mismatch banner, validation matrix)
+- implement Item/Accounting mode, Approve & Next, party mismatch banner (C1-3)
+- edit golden expected values, disable/skip/narrow any test, weaken any RLS rule
+- commit docs/phase1/*.png, anything under docs/reference/outputs/, or real client data
+- run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If, after scoping, the preview test still shows a write caused by previewBooksDocumentJournal itself, STOP and report the exact row and code path (it would be a real bug).
-- If adding partyId to the KPI function would change existing API behaviour for callers that don't pass it, STOP and explain.
+- If a case conflicts with an existing golden or passing test (e.g. the PROVISIONAL Company A golden), STOP and explain
+  in the report - the owner decides the accounting treatment.
+- If the correct VAT treatment for a case is genuinely ambiguous under UAE VAT, implement the plan's wording, and
+  list the question in the report.
 - When done, write the report to the path given in the prompt and stop.
