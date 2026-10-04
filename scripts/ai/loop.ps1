@@ -24,7 +24,7 @@ $Cfg = Get-Content (Join-Path $AI "config.json") -Raw | ConvertFrom-Json
 function Write-State($obj) { $obj | ConvertTo-Json -Depth 6 | Set-Content -Path $StateFile -Encoding UTF8 }
 function Read-State { if (Test-Path $StateFile) { Get-Content $StateFile -Raw | ConvertFrom-Json } else { $null } }
 function Log($msg) { $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg; Write-Host $line; if ($script:RunDir) { Add-Content (Join-Path $script:RunDir "loop.log") $line } }
-function Git([string[]]$a) { $out = & git @a 2>&1; if ($LASTEXITCODE -ne 0) { throw "git $($a -join ' ') failed: $out" }; return $out }
+function GitOut([string[]]$a) { $out = & git @a 2>&1; if ($LASTEXITCODE -ne 0) { throw "git $($a -join ' ') failed: $out" }; return $out }
 
 # ---------- control commands ----------
 if ($Stop)   { New-Item -ItemType File -Force (Join-Path $AI "STOP")  | Out-Null; Write-Host "STOP requested. The loop stops at the next checkpoint."; exit 0 }
@@ -45,7 +45,7 @@ function Check-Control {
 }
 
 # ---------- preconditions ----------
-$branch = (Git @("rev-parse","--abbrev-ref","HEAD")).Trim()
+$branch = (GitOut @("rev-parse","--abbrev-ref","HEAD")).Trim()
 if ($branch -notmatch $Cfg.branchPattern) { throw "Refusing to run on branch '$branch' (must match $($Cfg.branchPattern))." }
 $dirty = & git -c core.autocrlf=true status --porcelain --untracked-files=normal | Where-Object { $_ -notmatch '\.ai/' }
 if ($dirty -and -not $ReviewOnly) {
@@ -85,7 +85,7 @@ while ($true) {
   $St.iteration = $iter; $St.run_dir = $RunDir; $St.decision = ""; $St.last_error = ""
   Copy-Item $taskFile (Join-Path $RunDir "task.md")
 
-  $baseSha = if ($Base) { $Base } else { (Git @("rev-parse","HEAD")).Trim() }
+  $baseSha = if ($Base) { $Base } else { (GitOut @("rev-parse","HEAD")).Trim() }
   Log "Task $taskId iteration $iter on $branch @ $baseSha"
 
   # ---------- 1. Cursor implements ----------
@@ -104,7 +104,7 @@ while ($true) {
   Check-Control
 
   # ---------- 2. collect evidence ----------
-  $head = (Git @("rev-parse","HEAD")).Trim()
+  $head = (GitOut @("rev-parse","HEAD")).Trim()
   & git diff "$baseSha..$head" | Set-Content (Join-Path $RunDir "diff.patch") -Encoding UTF8
   & git diff | Add-Content (Join-Path $RunDir "diff.patch")            # uncommitted leftovers, if any
   $changed = @(& git diff --name-only "$baseSha..$head") + @(& git diff --name-only) + @(& git ls-files --others --exclude-standard) | Sort-Object -Unique | Where-Object { $_ -and $_ -notmatch '^\.ai/' }
