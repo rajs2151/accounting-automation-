@@ -1,0 +1,8 @@
+{
+  "doc_type": "sales_invoice",
+  "route": "scan",
+  "invoice_no": "INV-SYN-077",
+  "invoice_date": "2026-05-15",
+  "grand_total": 10500,
+  "supplier_trn": "100000000000001"
+}

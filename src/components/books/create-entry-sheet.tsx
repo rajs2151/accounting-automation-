@@ -585,7 +585,7 @@ export function CreateEntrySheet({
           });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || payload.message || "create_failed");
-      let entryId = String(payload.id);
+      const entryId = String(payload.id);
       if (post && !schedule && !editEntryId) {
         const postRes = await fetch(`/api/books/journals/${entryId}/post`, { method: "POST" });
         const postPayload = await postRes.json().catch(() => ({}));

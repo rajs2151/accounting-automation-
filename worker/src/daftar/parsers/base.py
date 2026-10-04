@@ -1,8 +1,8 @@
-"""Pluggable document parsers for Stage G ingestion.
+"""Pluggable document parsers (Addendum A / Phase 1).
 
-OCR policy: text-layer PDFs are preferred. Scanned PDFs may use local Tesseract
-(eng+ara) only; every OCR field must be marked low-confidence. Do not add
-vision-LLM / cloud OCR without an explicit owner decision.
+OCR policy: text-layer PDFs via pdfplumber/PyMuPDF; scans via local docTR with
+EasyOCR fallback for Arabic/low confidence. Every OCR field must be marked
+low-confidence. No external OCR/LLM APIs until security PASS.
 """
 
 from __future__ import annotations

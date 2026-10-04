@@ -1,0 +1,8 @@
+ACCOUNT STATEMENT / كشف حساب
+Bank: Synthetic UAE Bank B
+IBAN: AE070331234567890123456
+Period: 01/05/2026 to 31/05/2026
+Opening balance: 2,000.00
+الرصيد الافتتاحي 2,000.00
+05/05/2026 RECEIPT 100.00 CR
+Closing balance: 2,100.00

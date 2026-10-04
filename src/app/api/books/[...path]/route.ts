@@ -54,12 +54,50 @@ import {
   updateBooksTag,
 } from "@/server/books/tags";
 import {
+  approveAndPostBooksDocument,
+  createBooksDocument,
+  getBooksDocument,
+  listBooksDocuments,
+} from "@/server/books/documents";
+import {
+  listBooksInbox,
+  routeInboxItem,
+  setInboxDocType,
+  uploadBooksInboxFiles,
+} from "@/server/books/inbox";
+import {
+  createOpeningImport,
+  parseOpeningTbCsv,
+  postOpeningImport,
+} from "@/server/books/opening-import";
+import {
+  assertOpenItemsMatchRebuild,
+  listBooksOpenItems,
+} from "@/server/books/open-items";
+import {
+  createBooksParty,
+  listBooksParties,
+  partyDisbursementNet,
+  suggestPartyDuplicates,
+  updateBooksParty,
+} from "@/server/books/parties";
+import {
   createBooksPeriod,
   listBooksPeriods,
   lockBooksPeriod,
   reopenBooksPeriod,
 } from "@/server/books/periods";
+import { createContra, createReceiptOrPayment } from "@/server/books/settlements";
+import {
+  getStatementExtraction,
+  ingestCsvToStatement,
+  listCsvProfiles,
+  listStatementExtractions,
+  saveCsvProfile,
+  updateStatementLines,
+} from "@/server/books/statement-extractions";
 import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
+import { listBooksVatCodes } from "@/server/books/vat-codes";
 import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
 import { listBooksVoucherSequences, updateBooksVoucherSequence } from "@/server/books/vouchers";
 import { LedgerError } from "@/server/errors";
@@ -202,6 +240,67 @@ export async function GET(request: Request, ctx: Ctx) {
         }),
       );
     }
+    if (path[0] === "vat-codes" && path.length === 1) {
+      return NextResponse.json(await listBooksVatCodes(session.userId, session.clientId));
+    }
+    if (path[0] === "parties" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksParties(session.userId, session.clientId, {
+          partyType: url.searchParams.get("partyType") || undefined,
+          q: url.searchParams.get("q") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "parties" && path[2] === "disbursement-net" && path.length === 3) {
+      return NextResponse.json(
+        await partyDisbursementNet(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "documents" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksDocuments(session.userId, session.clientId, {
+          docType: url.searchParams.get("docType") || undefined,
+          status: url.searchParams.get("status") || undefined,
+          q: url.searchParams.get("q") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "documents" && path.length === 2) {
+      return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "open-items" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksOpenItems(session.userId, session.clientId, {
+          partyId: url.searchParams.get("partyId") || undefined,
+          side: url.searchParams.get("side") || undefined,
+          status: url.searchParams.get("status") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "open-items" && path[1] === "rebuild-check" && path.length === 2) {
+      return NextResponse.json(
+        await assertOpenItemsMatchRebuild(session.userId, session.clientId),
+      );
+    }
+    if (path[0] === "inbox" && path.length === 1) {
+      const unassigned = url.searchParams.get("unassigned") === "1";
+      return NextResponse.json(
+        await listBooksInbox(session.userId, unassigned ? null : session.clientId, {
+          unassignedOnly: unassigned,
+        }),
+      );
+    }
+    if (path[0] === "statements" && path.length === 1) {
+      return NextResponse.json(await listStatementExtractions(session.userId, session.clientId));
+    }
+    if (path[0] === "statements" && path.length === 2) {
+      return NextResponse.json(
+        await getStatementExtraction(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "csv-profiles" && path.length === 1) {
+      return NextResponse.json(await listCsvProfiles(session.userId, session.clientId));
+    }
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     return fail(error);
@@ -229,6 +328,30 @@ export async function POST(request: Request, ctx: Ctx) {
           buffer,
           filename,
           file.type || "application/octet-stream",
+        ),
+      );
+    }
+
+    if (path[0] === "inbox" && path[1] === "upload" && contentType.includes("multipart/form-data")) {
+      const form = await request.formData();
+      const unassigned = String(form.get("unassigned") || "") === "1";
+      const uploaded: Array<{ filename: string; contentType: string; bytes: Buffer }> = [];
+      for (const [key, value] of form.entries()) {
+        if (key !== "file" && key !== "files") continue;
+        if (!(value instanceof Blob)) continue;
+        const filename = "name" in value && typeof value.name === "string" ? value.name : "upload";
+        uploaded.push({
+          filename,
+          contentType: value.type || "application/octet-stream",
+          bytes: Buffer.from(await value.arrayBuffer()),
+        });
+      }
+      if (!uploaded.length) return NextResponse.json({ error: "file_required" }, { status: 400 });
+      return NextResponse.json(
+        await uploadBooksInboxFiles(
+          session.userId,
+          unassigned ? null : session.clientId,
+          uploaded,
         ),
       );
     }
@@ -464,6 +587,113 @@ export async function POST(request: Request, ctx: Ctx) {
         ),
       );
     }
+    if (path[0] === "parties" && path[1] === "suggest" && path.length === 2) {
+      return NextResponse.json(
+        await suggestPartyDuplicates(
+          session.userId,
+          session.clientId,
+          String(body.partyType || "customer"),
+          String(body.name || ""),
+          body.trn ? String(body.trn) : null,
+        ),
+      );
+    }
+    if (path[0] === "parties" && path.length === 1) {
+      return NextResponse.json(await createBooksParty(session.userId, session.clientId, body));
+    }
+    if (path[0] === "documents" && path.length === 1) {
+      return NextResponse.json(await createBooksDocument(session.userId, session.clientId, body));
+    }
+    if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
+      return NextResponse.json(
+        await approveAndPostBooksDocument(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "settlements" && path.length === 1) {
+      // Approver = session user. Preparer must differ (dual control). Synthetic stub:
+      // default preparer to Omar when the signed-in user is not Omar.
+      const OMAR = "55555555-5555-4555-8555-555555555555";
+      const preparerId = String(
+        body.preparerId || (session.userId === OMAR ? "" : OMAR) || session.userId,
+      );
+      return NextResponse.json(
+        await createReceiptOrPayment(preparerId, session.userId, session.clientId, {
+          docType: body.docType === "payment" ? "payment" : "receipt",
+          partyId: String(body.partyId || ""),
+          issueDate: String(body.issueDate || ""),
+          periodId: String(body.periodId || ""),
+          bankAccountId: String(body.bankAccountId || ""),
+          currency: body.currency ? String(body.currency) : undefined,
+          fxRateScaled: body.fxRateScaled != null ? Number(body.fxRateScaled) : undefined,
+          originalAmountMinor: Number(body.originalAmountMinor || 0),
+          memo: body.memo ? String(body.memo) : undefined,
+          allocations: Array.isArray(body.allocations) ? body.allocations : [],
+        }),
+      );
+    }
+    if (path[0] === "contra" && path.length === 1) {
+      const preparerId = String(body.preparerId || session.userId);
+      return NextResponse.json(
+        await createContra(preparerId, session.userId, session.clientId, {
+          issueDate: String(body.issueDate || ""),
+          periodId: String(body.periodId || ""),
+          fromAccountId: String(body.fromAccountId || ""),
+          toAccountId: String(body.toAccountId || ""),
+          currency: body.currency ? String(body.currency) : undefined,
+          fxRateScaled: body.fxRateScaled != null ? Number(body.fxRateScaled) : undefined,
+          originalAmountMinor: Number(body.originalAmountMinor || 0),
+          memo: body.memo ? String(body.memo) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "inbox" && path[2] === "route" && path.length === 3) {
+      return NextResponse.json(await routeInboxItem(session.userId, path[1], session.clientId));
+    }
+    if (path[0] === "inbox" && path[2] === "type" && path.length === 3) {
+      return NextResponse.json(
+        await setInboxDocType(session.userId, session.clientId, path[1], String(body.docType || "")),
+      );
+    }
+    if (path[0] === "statements" && path[1] === "csv" && path.length === 2) {
+      return NextResponse.json(
+        await ingestCsvToStatement(session.userId, session.clientId, {
+          csvText: String(body.csvText || ""),
+          issuerKey: body.issuerKey ? String(body.issuerKey) : "stripe",
+          openingBalanceMinor:
+            body.openingBalanceMinor != null ? Number(body.openingBalanceMinor) : undefined,
+          closingBalanceMinor:
+            body.closingBalanceMinor != null ? Number(body.closingBalanceMinor) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "csv-profiles" && path.length === 1) {
+      return NextResponse.json(
+        await saveCsvProfile(session.userId, session.clientId, {
+          issuerKey: String(body.issuerKey || ""),
+          docType: String(body.docType || "gateway_statement"),
+          fileType: body.fileType ? String(body.fileType) : "csv",
+          headerFingerprint: body.headerFingerprint ? String(body.headerFingerprint) : "",
+          columnMap: typeof body.columnMap === "object" && body.columnMap ? body.columnMap : {},
+          dateFormat: body.dateFormat ? String(body.dateFormat) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "opening-imports" && path.length === 1) {
+      let lines = Array.isArray(body.lines) ? body.lines : [];
+      if (body.csvText) lines = parseOpeningTbCsv(String(body.csvText));
+      return NextResponse.json(
+        await createOpeningImport(session.userId, session.clientId, {
+          lines,
+          partyOpenItems: Array.isArray(body.partyOpenItems) ? body.partyOpenItems : [],
+          forceBooksStartPeriodId: body.forceBooksStartPeriodId
+            ? String(body.forceBooksStartPeriodId)
+            : undefined,
+        }),
+      );
+    }
+    if (path[0] === "opening-imports" && path[2] === "post" && path.length === 3) {
+      return NextResponse.json(await postOpeningImport(session.userId, session.clientId, path[1]));
+    }
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     return fail(error);
@@ -529,6 +759,20 @@ export async function PATCH(request: Request, ctx: Ctx) {
               : body.scheduledFor == null
                 ? null
                 : String(body.scheduledFor),
+          lines: Array.isArray(body.lines) ? body.lines : [],
+        }),
+      );
+    }
+    if (path[0] === "parties" && path.length === 2) {
+      return NextResponse.json(await updateBooksParty(session.userId, session.clientId, path[1], body));
+    }
+    if (path[0] === "statements" && path.length === 2) {
+      return NextResponse.json(
+        await updateStatementLines(session.userId, session.clientId, path[1], {
+          openingBalanceMinor:
+            body.openingBalanceMinor != null ? Number(body.openingBalanceMinor) : undefined,
+          closingBalanceMinor:
+            body.closingBalanceMinor != null ? Number(body.closingBalanceMinor) : undefined,
           lines: Array.isArray(body.lines) ? body.lines : [],
         }),
       );

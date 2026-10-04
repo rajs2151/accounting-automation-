@@ -1,0 +1,7 @@
+CREDIT STATEMENT
+Card ending 4242
+Previous balance 0.00
+Purchases 250.00
+Payments 0.00
+Total due 250.00
+Due date: 20/06/2026

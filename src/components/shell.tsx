@@ -8,11 +8,13 @@ import {
   ArrowLeftRight,
   FileSpreadsheet,
   Home,
+  Inbox,
   Landmark,
   PanelLeft,
   Receipt,
   Search,
   Settings,
+  Users,
 } from "lucide-react";
 
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
@@ -32,8 +34,13 @@ type Directory = {
 
 const NAV = [
   { href: "/books", label: "Home", icon: Home },
+  { href: "/books/inbox", label: "Inbox", icon: Inbox },
+  { href: "/books/sales", label: "Sales", icon: FileSpreadsheet },
+  { href: "/books/purchases", label: "Purchases", icon: Receipt },
+  { href: "/books/receipts", label: "Receipts", icon: Landmark },
+  { href: "/books/parties", label: "Parties", icon: Users },
   { href: "/books/transactions", label: "Transactions", icon: ArrowLeftRight },
-  { href: "/books/expenses", label: "Expenses", icon: Receipt },
+  { href: "/books/expenses", label: "Expenses (Phase 3)", icon: Receipt },
   { href: "/books/journals", label: "Ledger", icon: Landmark },
   { href: "/books/reports/trial-balance", label: "Reports", icon: FileSpreadsheet },
   { href: "/books/health", label: "Company Health", icon: Activity },

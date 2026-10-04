@@ -37,6 +37,9 @@ def _psql(database: str, *args: str) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database():
+    if os.environ.get("PYTEST_UNIT_ONLY") == "1":
+        yield
+        return
     env = {**os.environ, "PGPASSWORD": "daftar-local-only"}
     subprocess.check_call(
         ["psql", "-h", "127.0.0.1", "-U", "daftar", "-d", "postgres", "-c", "SELECT 1"],
@@ -68,6 +71,8 @@ def migrated_database():
             "20-books-coa-v2.sql",
             "21-books-phase0-fixes.sql",
             "22-books-alignment.sql",
+            "23-books-phase1.sql",
+            "24-books-phase1-seed.sql",
         ):
             _psql(database, "-f", str(ROOT / "db" / name))
     from daftar.bootstrap import bootstrap

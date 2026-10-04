@@ -4,7 +4,13 @@ import { randomUUID } from "node:crypto";
 import { withUser } from "@/lib/db";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
-export type BooksJobKind = "schedule_post" | "recurring_materialize" | "auto_reverse";
+export type BooksJobKind =
+  | "schedule_post"
+  | "recurring_materialize"
+  | "auto_reverse"
+  | "extract_document"
+  | "classify_document"
+  | "deferred_release";
 
 export async function enqueueBooksJob(
   db: PoolClient,

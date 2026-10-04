@@ -241,7 +241,8 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                     extraction.headers = headers
                 extraction.rows.extend(rows)
                 extraction.pages.append(PageImage(index, png, width, height))
-                extraction.methods.append((index, "ocr"))
+                engine = getattr(recognize, "last_engine", "ocr")
+                extraction.methods.append((index, engine))
         meta = _metadata_from_free_text("\n".join(meta_text))
         _apply_meta(extraction, meta)
         return extraction
@@ -255,12 +256,13 @@ def _extract_image(content: bytes) -> Extraction:
     headers, rows, png, width, height, ocr_text = _ocr_image(image, 1)
     for number, row in enumerate(rows, start=1):
         row.row_no = number
+    engine = getattr(recognize, "last_engine", "ocr")
     extraction = Extraction(
         headers=headers,
         rows=rows,
         page_count=1,
         pages=[PageImage(1, png, width, height)],
-        methods=[(1, "ocr")],
+        methods=[(1, engine)],
         kind="image",
     )
     _apply_meta(extraction, _metadata_from_free_text(ocr_text))
@@ -278,35 +280,27 @@ def _ocr_image(image: Image.Image, page_no: int):
 
 
 def recognize(image: Image.Image) -> tuple[Image.Image, list[Token]]:
+    """OCR via docTR (primary) with EasyOCR Arabic/low-confidence fallback."""
     provider = os.environ.get("OCR_PROVIDER", "local")
     if provider == "textract":
         raise CodedError("textract_not_available")
     if provider != "local":
         raise CodedError("unknown_ocr_provider")
-    processed = _preprocess(image)
-    import pytesseract
+    from daftar.ocr_engine import recognize_image
 
-    data = pytesseract.image_to_data(
-        processed,
-        lang="eng+ara",
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT,
-    )
-    tokens: list[Token] = []
-    total = len(data["text"])
-    for index in range(total):
-        text = (data["text"][index] or "").strip()
-        if not text:
-            continue
-        try:
-            confidence = float(data["conf"][index])
-        except (TypeError, ValueError):
-            confidence = -1
-        if confidence < 0:
-            continue
-        x, y, w, h = data["left"][index], data["top"][index], data["width"][index], data["height"][index]
-        tokens.append(Token(text, x, y, x + w, y + h, confidence / 100.0))
+    processed = _preprocess(image)
+    result = recognize_image(processed)
+    # Stash engine on module for callers that inspect last OCR route.
+    recognize.last_engine = result.engine  # type: ignore[attr-defined]
+    recognize.last_models = result.model_names  # type: ignore[attr-defined]
+    tokens = [
+        Token(t.text, t.x0, t.y0, t.x1, t.y1, t.confidence) for t in result.tokens
+    ]
     return processed, tokens
+
+
+recognize.last_engine = "none"  # type: ignore[attr-defined]
+recognize.last_models = []  # type: ignore[attr-defined]
 
 
 def _preprocess(image: Image.Image) -> Image.Image:

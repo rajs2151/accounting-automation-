@@ -1,0 +1,25 @@
+{
+  "route": "scan",
+  "fields": {
+    "invoice_no": {
+      "value": "INV-SYN-022",
+      "confidence": 0.96
+    },
+    "supplier_trn": {
+      "value": "100000000000001",
+      "confidence": 0.96
+    },
+    "invoice_date": {
+      "value": "2026-05-15",
+      "confidence": 0.96
+    },
+    "grand_total": {
+      "value": 10500,
+      "confidence": 0.96
+    }
+  },
+  "invoice_no": "INV-SYN-022",
+  "supplier_trn": "100000000000001",
+  "invoice_date": "2026-05-15",
+  "grand_total": 10500
+}

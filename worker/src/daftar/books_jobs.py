@@ -60,16 +60,33 @@ def _actor_from_job(conn, job: dict) -> str:
 def run_books_job(conn, job: dict) -> None:
     kind = job["kind"]
     try:
-        actor = _actor_from_job(conn, job)
-        _as_actor(conn, actor)
-        if kind == "schedule_post":
-            _schedule_post(conn, job)
-        elif kind == "recurring_materialize":
-            _recurring_materialize(conn, job)
-        elif kind == "auto_reverse":
-            _auto_reverse(conn, job)
+        if kind in ("extract_document", "classify_document"):
+            # Prefer uploader from books_files; fall back to Omar preparer seed.
+            p = _payload(job)
+            actor = p.get("actorUserId") or "55555555-5555-4555-8555-555555555555"
+            file_id = p.get("fileId") or p.get("file_id")
+            if file_id:
+                frow = conn.execute(
+                    "SELECT uploaded_by FROM books_files WHERE id = %s",
+                    (file_id,),
+                ).fetchone()
+                if frow and frow.get("uploaded_by"):
+                    actor = str(frow["uploaded_by"])
+            _as_actor(conn, actor)
+            _extract_document(conn, job)
         else:
-            raise ValueError(f"unknown_books_job:{kind}")
+            actor = _actor_from_job(conn, job)
+            _as_actor(conn, actor)
+            if kind == "schedule_post":
+                _schedule_post(conn, job)
+            elif kind == "recurring_materialize":
+                _recurring_materialize(conn, job)
+            elif kind == "auto_reverse":
+                _auto_reverse(conn, job)
+            elif kind == "deferred_release":
+                _deferred_release(conn, job)
+            else:
+                raise ValueError(f"unknown_books_job:{kind}")
         conn.execute(
             "SELECT books_complete_job(%s::uuid, 'done', NULL)",
             (job["id"],),
@@ -338,4 +355,108 @@ def _auto_reverse(conn, job: dict) -> None:
         WHERE id = %s
         """,
         (rev_id, entry_id),
+    )
+
+def _extract_document(conn, job: dict) -> None:
+    from daftar.extraction import process_extract_document
+    from daftar.settings import load_settings
+    from daftar.storage import ObjectStore
+
+    settings = load_settings()
+    store = ObjectStore(settings)
+    process_extract_document(conn, store, _payload(job))
+
+
+def _deferred_release(conn, job: dict) -> None:
+    """Release deferred revenue: Dr 2310 / Cr revenue for a schedule row."""
+    p = _payload(job)
+    schedule_id = p.get("scheduleId") or p.get("schedule_id")
+    if not schedule_id:
+        raise ValueError("scheduleId_required")
+    sched = conn.execute(
+        """
+        SELECT s.*, p.status AS period_status
+        FROM books_deferred_schedules s
+        LEFT JOIN books_periods p ON p.id = s.period_id
+        WHERE s.id = %s
+        """,
+        (schedule_id,),
+    ).fetchone()
+    if not sched:
+        raise ValueError("schedule_not_found")
+    if sched["status"] != "pending":
+        return
+    if sched.get("period_status") == "LOCKED":
+        conn.execute(
+            "UPDATE books_deferred_schedules SET status = 'blocked' WHERE id = %s",
+            (schedule_id,),
+        )
+        return
+    deferred = conn.execute(
+        "SELECT id FROM books_accounts WHERE client_id = %s AND code = '2310'",
+        (sched["client_id"],),
+    ).fetchone()
+    if not deferred:
+        raise ValueError("deferred_account_missing")
+    amount = int(sched["amount_aed_minor"])
+    entry_id = str(uuid4())
+    period_id = sched["period_id"]
+    actor = _actor_from_job(conn, job)
+    conn.execute(
+        """
+        INSERT INTO books_journal_entries (
+          id, client_id, period_id, memo, entry_date, status, content_hash,
+          created_by, voucher_type
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,%s,'Journal')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            period_id,
+            "Deferred revenue release",
+            sched["release_date"],
+            "deferred-release",
+            actor,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_journal_lines (
+          entry_id, client_id, account_id, debit_minor, credit_minor, currency, aed_minor, line_memo
+        ) VALUES
+          (%s,%s,%s,%s,0,'AED',%s,'Release deferred'),
+          (%s,%s,%s,0,%s,'AED',%s,'Recognize revenue')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            deferred["id"],
+            amount,
+            amount,
+            entry_id,
+            sched["client_id"],
+            sched["revenue_account_id"],
+            amount,
+            amount,
+        ),
+    )
+    year = int(str(sched["release_date"])[:4])
+    entry_no = conn.execute(
+        "SELECT books_next_voucher_no(%s::uuid, 'Journal', %s::int) AS n",
+        (sched["client_id"], year),
+    ).fetchone()["n"]
+    conn.execute(
+        """
+        UPDATE books_journal_entries
+        SET status = 'posted', posted_at = now(), entry_no = %s
+        WHERE id = %s
+        """,
+        (entry_no, entry_id),
+    )
+    conn.execute(
+        """
+        UPDATE books_deferred_schedules
+        SET status = 'posted', journal_entry_id = %s WHERE id = %s
+        """,
+        (entry_id, schedule_id),
     )

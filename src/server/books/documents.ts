@@ -1,0 +1,787 @@
+import { randomUUID } from "node:crypto";
+
+import type { PoolClient } from "pg";
+
+import { withUser } from "@/lib/db";
+import { aedFromOriginal } from "@/lib/fx";
+import { assertMinor } from "@/lib/money";
+import { writeBooksAudit } from "@/server/books/audit";
+import { requireDualControlActor } from "@/server/books/dual-control";
+import { BooksError } from "@/server/books/errors";
+import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
+import { upsertOpenItemFromDocument } from "@/server/books/open-items";
+import { enqueueBooksJob } from "@/server/books/jobs";
+import { vatMinorForNet } from "@/server/books/vat-codes";
+import { assertSyntheticTenant } from "@/server/security-gate";
+
+export type DocLineInput = {
+  description?: string;
+  quantityScaled?: number;
+  unitPriceMinor?: number;
+  lineKind?: "revenue" | "disbursement" | "taxable_recharge" | "expense" | "asset" | "inventory";
+  accountId?: string | null;
+  vatCode?: string | null;
+  netMinor: number;
+  vatMinor?: number;
+  currency?: string;
+  originalMinor?: number | null;
+  fxRateScaled?: number | null;
+  tags?: string[];
+};
+
+export type DocumentInput = {
+  docType: "sales_invoice" | "purchase_bill" | "credit_note" | "debit_note";
+  partyId: string;
+  issueDate: string;
+  dueDate?: string | null;
+  serviceStart?: string | null;
+  serviceEnd?: string | null;
+  deferRevenue?: boolean | null;
+  currency?: string;
+  fxRateScaled?: number;
+  documentNumber?: string | null;
+  memo?: string;
+  originalDocumentId?: string | null;
+  periodId: string;
+  lines: DocLineInput[];
+  forceDuplicate?: boolean;
+};
+
+async function accountIdByCode(db: PoolClient, clientId: string, code: string) {
+  const row = await db.query(
+    `SELECT id FROM books_accounts WHERE client_id = $1 AND code = $2 AND active = true`,
+    [clientId, code],
+  );
+  if (!row.rowCount) throw new BooksError(`account_missing:${code}`, "not_found");
+  return String(row.rows[0].id);
+}
+
+async function vatRateBp(
+  db: PoolClient,
+  code: string | null | undefined,
+): Promise<{ rateBp: number; recoverable: boolean }> {
+  if (!code) return { rateBp: 0, recoverable: false };
+  const row = await db.query(`SELECT rate_bp, recoverable FROM books_vat_codes WHERE code = $1`, [
+    code,
+  ]);
+  if (!row.rowCount) throw new BooksError("invalid_vat_code", "invalid");
+  return { rateBp: Number(row.rows[0].rate_bp), recoverable: Boolean(row.rows[0].recoverable) };
+}
+
+function monthsSpan(start: string, end: string): number {
+  const s = new Date(`${start}T12:00:00Z`);
+  const e = new Date(`${end}T12:00:00Z`);
+  return (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + (e.getUTCMonth() - s.getUTCMonth()) + 1;
+}
+
+function normalizeLines(lines: DocLineInput[], fxRateScaled: number, currency: string) {
+  return lines.map((line, idx) => {
+    const net = assertMinor(line.netMinor) ?? 0;
+    if (net < 0) throw new BooksError("negative_line", "invalid_money");
+    const kind = line.lineKind || "revenue";
+    let vat = line.vatMinor ?? 0;
+    if (kind === "disbursement") vat = 0;
+    const gross = net + vat;
+    const original = line.originalMinor ?? (currency === "AED" ? gross : null);
+    const aed =
+      currency === "AED"
+        ? gross
+        : aedFromOriginal(original ?? gross, line.fxRateScaled ?? fxRateScaled);
+    return {
+      lineNo: idx + 1,
+      description: line.description || "",
+      quantityScaled: line.quantityScaled ?? 1000,
+      unitPriceMinor: line.unitPriceMinor ?? net,
+      lineKind: kind,
+      accountId: line.accountId || null,
+      vatCode: kind === "disbursement" ? null : line.vatCode || null,
+      netMinor: net,
+      vatMinor: vat,
+      grossMinor: gross,
+      currency,
+      originalMinor: original,
+      fxRateScaled: line.fxRateScaled ?? fxRateScaled,
+      aedMinor: aed,
+      tags: line.tags || [],
+    };
+  });
+}
+
+export async function listBooksDocuments(
+  userId: string,
+  clientId: string,
+  opts?: { docType?: string; status?: string; q?: string },
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const rows = await db.query(
+      `SELECT d.id, d.doc_type AS "docType", d.doc_kind AS "docKind", d.status,
+              d.document_number AS "documentNumber", d.issue_date AS "issueDate",
+              d.due_date AS "dueDate", d.currency, d.gross_minor AS "grossMinor",
+              d.aed_total_minor AS "aedTotalMinor", d.vat_minor AS "vatMinor",
+              d.journal_entry_id AS "journalEntryId", d.defer_revenue AS "deferRevenue",
+              p.name AS "partyName", p.id AS "partyId"
+       FROM books_documents d
+       LEFT JOIN books_parties p ON p.id = d.party_id
+       WHERE d.client_id = $1 AND d.deleted_at IS NULL
+         AND ($2::text IS NULL OR d.doc_type = $2)
+         AND ($3::text IS NULL OR d.status = $3)
+         AND ($4::text IS NULL OR d.document_number ILIKE '%' || $4 || '%' OR p.name ILIKE '%' || $4 || '%')
+       ORDER BY d.issue_date DESC NULLS LAST, d.created_at DESC`,
+      [clientId, opts?.docType || null, opts?.status || null, opts?.q?.trim() || null],
+    );
+    return rows.rows;
+  });
+}
+
+export async function getBooksDocument(userId: string, clientId: string, documentId: string) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const doc = await db.query(
+      `SELECT d.*, p.name AS party_name
+       FROM books_documents d
+       LEFT JOIN books_parties p ON p.id = d.party_id
+       WHERE d.id = $1 AND d.client_id = $2 AND d.deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!doc.rowCount) throw new BooksError("document_not_found", "not_found");
+    const lines = await db.query(
+      `SELECT id, line_no AS "lineNo", description, quantity_scaled AS "quantityScaled",
+              unit_price_minor AS "unitPriceMinor", line_kind AS "lineKind",
+              account_id AS "accountId", vat_code AS "vatCode",
+              net_minor AS "netMinor", vat_minor AS "vatMinor", gross_minor AS "grossMinor",
+              currency, original_minor AS "originalMinor", fx_rate_scaled AS "fxRateScaled",
+              aed_minor AS "aedMinor", tags
+       FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+      [documentId],
+    );
+    return { ...doc.rows[0], lines: lines.rows };
+  });
+}
+
+export async function createBooksDocument(userId: string, clientId: string, body: DocumentInput) {
+  if (!body.lines?.length) throw new BooksError("lines_required", "invalid");
+  const currency = (body.currency || "AED").toUpperCase();
+  const fxRateScaled = body.fxRateScaled ?? 100000000;
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!body.periodId) throw new BooksError("period_required", "invalid");
+    const party = await db.query(
+      `SELECT id, party_type, trn FROM books_parties WHERE id = $1 AND client_id = $2`,
+      [body.partyId, clientId],
+    );
+    if (!party.rowCount) throw new BooksError("party_not_found", "not_found");
+
+    // Compute VAT where missing
+    const withVat: DocLineInput[] = [];
+    for (const line of body.lines) {
+      const kind = line.lineKind || "revenue";
+      let vatCode = line.vatCode || null;
+      if (kind === "disbursement") vatCode = null;
+      if (kind === "taxable_recharge" && !vatCode) vatCode = "SR";
+      let vatMinor = line.vatMinor;
+      if (vatMinor == null && vatCode && kind !== "disbursement") {
+        const { rateBp } = await vatRateBp(db, vatCode);
+        vatMinor = vatMinorForNet(line.netMinor, rateBp);
+      }
+      withVat.push({ ...line, lineKind: kind, vatCode, vatMinor: vatMinor ?? 0 });
+    }
+
+    const lines = normalizeLines(withVat, fxRateScaled, currency);
+    const net = lines.reduce((s, l) => s + l.netMinor, 0);
+    const vat = lines.reduce((s, l) => s + l.vatMinor, 0);
+    const gross = lines.reduce((s, l) => s + l.grossMinor, 0);
+    const aedTotal = lines.reduce((s, l) => s + (l.aedMinor ?? l.grossMinor), 0);
+    const originalTotal =
+      currency === "AED" ? gross : lines.reduce((s, l) => s + (l.originalMinor ?? l.grossMinor), 0);
+
+    // Duplicate detection: type + number + party + amount
+    if (body.documentNumber && !body.forceDuplicate) {
+      const dup = await db.query(
+        `SELECT id FROM books_documents
+         WHERE client_id = $1 AND doc_type = $2 AND document_number = $3
+           AND party_id = $4 AND aed_total_minor = $5 AND deleted_at IS NULL AND status <> 'void'`,
+        [clientId, body.docType, body.documentNumber, body.partyId, aedTotal],
+      );
+      if (dup.rowCount) throw new BooksError("duplicate_document", "conflict");
+    }
+
+    // CN/DN constraints
+    let docKind: string | null = null;
+    if (body.docType === "credit_note") docKind = "customer";
+    if (body.docType === "debit_note") docKind = "supplier";
+    if (body.docType === "sales_invoice") docKind = "customer";
+    if (body.docType === "purchase_bill") docKind = "supplier";
+
+    if (body.docType === "credit_note" || body.docType === "debit_note") {
+      if (!body.originalDocumentId) throw new BooksError("original_required", "invalid");
+      const orig = await db.query(
+        `SELECT id, doc_type, party_id, status, gross_minor, aed_total_minor
+         FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+        [body.originalDocumentId, clientId],
+      );
+      if (!orig.rowCount) throw new BooksError("original_not_found", "not_found");
+      const oi = await db.query(
+        `SELECT open_aed_minor, open_original_minor FROM books_open_items
+         WHERE document_id = $1 AND client_id = $2`,
+        [body.originalDocumentId, clientId],
+      );
+      const remaining = oi.rowCount
+        ? Number(oi.rows[0].open_aed_minor)
+        : Number(orig.rows[0].aed_total_minor || orig.rows[0].gross_minor);
+      if (aedTotal > remaining) throw new BooksError("exceeds_original_balance", "invalid");
+    }
+
+    // Deferred revenue default (b): service span > 1 month → defer unless explicitly false
+    let defer = body.deferRevenue;
+    if (
+      body.docType === "sales_invoice" &&
+      body.serviceStart &&
+      body.serviceEnd &&
+      defer == null
+    ) {
+      defer = monthsSpan(body.serviceStart, body.serviceEnd) > 1;
+    }
+    defer = Boolean(defer);
+
+    const id = randomUUID();
+    await db.query(
+      `INSERT INTO books_documents (
+         id, client_id, doc_type, doc_kind, status, document_number, party_id,
+         issue_date, due_date, service_start, service_end, defer_revenue,
+         currency, fx_rate_scaled, original_total_minor, aed_total_minor,
+         net_minor, vat_minor, gross_minor, memo, original_document_id, created_by
+       ) VALUES (
+         $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+       )`,
+      [
+        id,
+        clientId,
+        body.docType,
+        docKind,
+        body.documentNumber || null,
+        body.partyId,
+        body.issueDate,
+        body.dueDate || null,
+        body.serviceStart || null,
+        body.serviceEnd || null,
+        defer,
+        currency,
+        fxRateScaled,
+        originalTotal,
+        aedTotal,
+        net,
+        vat,
+        gross,
+        body.memo || "",
+        body.originalDocumentId || null,
+        userId,
+      ],
+    );
+
+    for (const line of lines) {
+      await db.query(
+        `INSERT INTO books_document_lines (
+           document_id, client_id, line_no, description, quantity_scaled, unit_price_minor,
+           line_kind, account_id, vat_code, net_minor, vat_minor, gross_minor,
+           currency, original_minor, fx_rate_scaled, aed_minor, tags
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        [
+          id,
+          clientId,
+          line.lineNo,
+          line.description,
+          line.quantityScaled,
+          line.unitPriceMinor,
+          line.lineKind,
+          line.accountId,
+          line.vatCode,
+          line.netMinor,
+          line.vatMinor,
+          line.grossMinor,
+          line.currency,
+          line.originalMinor,
+          line.fxRateScaled,
+          line.aedMinor,
+          line.tags,
+        ],
+      );
+    }
+
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "create",
+      entity: "books_document",
+      entityId: id,
+      before: null,
+      after: { docType: body.docType, gross, defer },
+    });
+
+    const linesOut = await db.query(
+      `SELECT id, line_no AS "lineNo", description, quantity_scaled AS "quantityScaled",
+              unit_price_minor AS "unitPriceMinor", line_kind AS "lineKind",
+              account_id AS "accountId", vat_code AS "vatCode",
+              net_minor AS "netMinor", vat_minor AS "vatMinor", gross_minor AS "grossMinor",
+              currency, original_minor AS "originalMinor", fx_rate_scaled AS "fxRateScaled",
+              aed_minor AS "aedMinor", tags
+       FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+      [id],
+    );
+    const header = await db.query(`SELECT * FROM books_documents WHERE id = $1`, [id]);
+    return { ...header.rows[0], id, lines: linesOut.rows };
+  });
+}
+
+type BuiltLine = {
+  accountId: string;
+  debitMinor?: number;
+  creditMinor?: number;
+  currency?: string;
+  originalMinor?: number | null;
+  fxRateScaled?: number | null;
+  aedMinor?: number | null;
+  lineMemo?: string;
+  vatCode?: string | null;
+  tags?: string[];
+};
+
+async function buildPostingLines(
+  db: PoolClient,
+  clientId: string,
+  doc: {
+    id: string;
+    doc_type: string;
+    party_id: string;
+    defer_revenue: boolean;
+    currency: string;
+    fx_rate_scaled: number;
+  },
+  lines: Array<{
+    line_kind: string;
+    account_id: string | null;
+    vat_code: string | null;
+    net_minor: number;
+    vat_minor: number;
+    aed_minor: number | null;
+    original_minor: number | null;
+    fx_rate_scaled: number | null;
+    description: string;
+    tags: string[];
+  }>,
+): Promise<BuiltLine[]> {
+  const ar = await accountIdByCode(db, clientId, "1210");
+  const ap = await accountIdByCode(db, clientId, "2110");
+  const vatOut = await accountIdByCode(db, clientId, "2210");
+  const vatIn = await accountIdByCode(db, clientId, "1430");
+  const clearing = await accountIdByCode(db, clientId, "1220");
+  const deferred = await accountIdByCode(db, clientId, "2310");
+  const revenueDefault = await accountIdByCode(db, clientId, "4100");
+  const expenseDefault = await accountIdByCode(db, clientId, "6600");
+
+  const party = await db.query(`SELECT trn, country FROM books_parties WHERE id = $1`, [
+    doc.party_id,
+  ]);
+  const supplierTrn = party.rows[0]?.trn as string | null;
+
+  const out: BuiltLine[] = [];
+  let arApTotal = 0;
+  let outputVatTotal = 0;
+
+  const docType = doc.doc_type;
+  const isSales = docType === "sales_invoice" || docType === "credit_note";
+  const sign = docType === "credit_note" || docType === "debit_note" ? -1 : 1;
+
+  for (const line of lines) {
+    // Prefer storing line aed as net+vat already on line.aed_minor (gross). Split:
+    const grossAed = Number(line.aed_minor ?? line.net_minor + line.vat_minor);
+    const vatAed = Number(line.vat_minor);
+    const netAed = grossAed - vatAed;
+
+    const fx = {
+      currency: doc.currency,
+      originalMinor: line.original_minor,
+      fxRateScaled: line.fx_rate_scaled ?? doc.fx_rate_scaled,
+      aedMinor: netAed,
+    };
+
+    if (isSales) {
+      if (line.line_kind === "disbursement") {
+        // Dr AR / Cr 1220
+        arApTotal += grossAed * sign;
+        out.push({
+          accountId: clearing,
+          creditMinor: sign > 0 ? netAed : 0,
+          debitMinor: sign > 0 ? 0 : netAed,
+          lineMemo: line.description || "Disbursement rebill",
+          tags: line.tags,
+          ...fx,
+          aedMinor: netAed,
+        });
+      } else {
+        const revAcct =
+          line.account_id || (doc.defer_revenue && docType === "sales_invoice" ? deferred : revenueDefault);
+        const creditAcct =
+          doc.defer_revenue && line.line_kind !== "taxable_recharge" && docType === "sales_invoice"
+            ? deferred
+            : line.line_kind === "taxable_recharge"
+              ? line.account_id || revenueDefault
+              : revAcct;
+        arApTotal += grossAed * sign;
+        outputVatTotal += vatAed * sign;
+        out.push({
+          accountId: creditAcct,
+          creditMinor: sign > 0 ? netAed : 0,
+          debitMinor: sign > 0 ? 0 : netAed,
+          lineMemo: line.description || "Revenue",
+          vatCode: line.vat_code,
+          tags: line.tags,
+          ...fx,
+          aedMinor: netAed,
+        });
+      }
+    } else {
+      // Purchase / DN
+      if (line.line_kind === "disbursement") {
+        arApTotal += grossAed * sign;
+        out.push({
+          accountId: clearing,
+          debitMinor: sign > 0 ? netAed : 0,
+          creditMinor: sign > 0 ? 0 : netAed,
+          lineMemo: line.description || "Client disbursement",
+          tags: line.tags,
+          ...fx,
+          aedMinor: netAed,
+        });
+      } else {
+        const expAcct = line.account_id || expenseDefault;
+        const vatCode = line.vat_code;
+        const vatMeta = vatCode ? await vatRateBp(db, vatCode) : { rateBp: 0, recoverable: false };
+        const canRecover =
+          Boolean(supplierTrn) && vatCode !== "NR" && vatMeta.recoverable && vatAed > 0;
+
+        if (vatCode === "RC_IN" || vatCode === "RC_OUT") {
+          // Foreign services: expense net; RC_OUT + RC_IN net zero on VAT controls
+          arApTotal += netAed * sign;
+          out.push({
+            accountId: expAcct,
+            debitMinor: sign > 0 ? netAed : 0,
+            creditMinor: sign > 0 ? 0 : netAed,
+            lineMemo: line.description || "Expense",
+            vatCode,
+            tags: line.tags,
+            ...fx,
+            aedMinor: netAed,
+          });
+          if (vatAed > 0) {
+            out.push({
+              accountId: vatOut,
+              creditMinor: sign > 0 ? vatAed : 0,
+              debitMinor: sign > 0 ? 0 : vatAed,
+              lineMemo: "RC_OUT",
+              vatCode: "RC_OUT",
+              aedMinor: vatAed,
+              currency: doc.currency,
+            });
+            out.push({
+              accountId: vatIn,
+              debitMinor: sign > 0 ? vatAed : 0,
+              creditMinor: sign > 0 ? 0 : vatAed,
+              lineMemo: "RC_IN",
+              vatCode: "RC_IN",
+              aedMinor: vatAed,
+              currency: doc.currency,
+            });
+          }
+        } else if (canRecover) {
+          arApTotal += grossAed * sign;
+          out.push({
+            accountId: expAcct,
+            debitMinor: sign > 0 ? netAed : 0,
+            creditMinor: sign > 0 ? 0 : netAed,
+            lineMemo: line.description || "Expense",
+            vatCode,
+            tags: line.tags,
+            ...fx,
+            aedMinor: netAed,
+          });
+          out.push({
+            accountId: vatIn,
+            debitMinor: sign > 0 ? vatAed : 0,
+            creditMinor: sign > 0 ? 0 : vatAed,
+            lineMemo: "Input VAT",
+            vatCode,
+            aedMinor: vatAed,
+            currency: doc.currency,
+          });
+        } else {
+          // VAT in cost
+          const cost = netAed + vatAed;
+          arApTotal += cost * sign;
+          out.push({
+            accountId: expAcct,
+            debitMinor: sign > 0 ? cost : 0,
+            creditMinor: sign > 0 ? 0 : cost,
+            lineMemo: line.description || "Expense (VAT in cost)",
+            vatCode: vatCode || "NR",
+            tags: line.tags,
+            ...fx,
+            aedMinor: cost,
+          });
+        }
+      }
+    }
+  }
+
+  // Control AR/AP + output VAT (sales)
+  if (isSales && outputVatTotal !== 0) {
+    out.push({
+      accountId: vatOut,
+      creditMinor: outputVatTotal > 0 ? outputVatTotal : 0,
+      debitMinor: outputVatTotal < 0 ? -outputVatTotal : 0,
+      lineMemo: "Output VAT",
+      vatCode: "SR",
+      aedMinor: Math.abs(outputVatTotal),
+      currency: doc.currency,
+    });
+  }
+
+  if (arApTotal !== 0) {
+    const control = isSales ? ar : ap;
+    out.push({
+      accountId: control,
+      debitMinor: isSales
+        ? arApTotal > 0
+          ? arApTotal
+          : 0
+        : arApTotal < 0
+          ? -arApTotal
+          : 0,
+      creditMinor: isSales
+        ? arApTotal < 0
+          ? -arApTotal
+          : 0
+        : arApTotal > 0
+          ? arApTotal
+          : 0,
+      lineMemo: isSales ? "Trade receivables" : "Trade payables",
+      aedMinor: Math.abs(arApTotal),
+      currency: doc.currency,
+      originalMinor: null,
+      fxRateScaled: doc.fx_rate_scaled,
+    });
+  }
+
+  // Drop zero lines
+  return out.filter((l) => (l.debitMinor ?? 0) + (l.creditMinor ?? 0) > 0);
+}
+
+const VOUCHER_FOR_DOC: Record<string, string> = {
+  sales_invoice: "Sales",
+  purchase_bill: "Purchase",
+  credit_note: "Credit Note",
+  debit_note: "Debit Note",
+};
+
+/** Approve + post document (dual-control). Separate connection for journal helpers. */
+export async function approveAndPostBooksDocument(
+  userId: string,
+  clientId: string,
+  documentId: string,
+) {
+  // Pre-checks + build lines inside one session, then create journal
+  const prepared = await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const docRes = await db.query(
+      `SELECT * FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!docRes.rowCount) throw new BooksError("document_not_found", "not_found");
+    const doc = docRes.rows[0];
+    if (doc.status !== "draft") throw new BooksError("not_draft", "conflict");
+    await requireDualControlActor(db, userId, String(doc.created_by), "post");
+
+    const linesRes = await db.query(
+      `SELECT * FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+      [documentId],
+    );
+    const period = await db.query(
+      `SELECT id, status FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date`,
+      [clientId, doc.issue_date],
+    );
+    if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
+    if (!["OPEN", "REOPENED"].includes(String(period.rows[0].status))) {
+      throw new BooksError("period_locked", "period_closed");
+    }
+
+    const journalLines = await buildPostingLines(db, clientId, doc, linesRes.rows);
+    return {
+      doc,
+      periodId: String(period.rows[0].id),
+      journalLines,
+      voucherType: VOUCHER_FOR_DOC[String(doc.doc_type)] || "Journal",
+    };
+  });
+
+  // Journal preparer = document creator; approver posts (dual control).
+  const preparerId = String(prepared.doc.created_by);
+  const created = await createBooksJournal(preparerId, clientId, {
+    periodId: prepared.periodId,
+    entryDate: String(prepared.doc.issue_date),
+    memo: prepared.doc.memo || `${prepared.doc.doc_type} ${prepared.doc.document_number || ""}`.trim(),
+    voucherType: prepared.voucherType,
+    // VAT companions already built in buildPostingLines — do not expand again.
+    lines: prepared.journalLines.map((l) => ({
+      accountId: l.accountId,
+      debitMinor: l.debitMinor,
+      creditMinor: l.creditMinor,
+      currency: l.currency,
+      originalMinor: l.originalMinor,
+      fxRateScaled: l.fxRateScaled,
+      aedMinor: l.aedMinor,
+      lineMemo: l.lineMemo,
+      vatCode: null,
+      vatTreatment: l.vatCode ?? null,
+      tags: l.tags,
+      isVatCompanion: true,
+    })),
+    post: false,
+  });
+
+  const posted = await postBooksJournal(userId, clientId, created.id);
+
+  await withUser(userId, async (db) => {
+    await db.query(
+      `UPDATE books_documents SET
+         status = 'posted', journal_entry_id = $3, approved_by = $4, updated_at = now(),
+         voucher_type = $5
+       WHERE id = $1 AND client_id = $2`,
+      [documentId, clientId, created.id, userId, prepared.voucherType],
+    );
+
+    const side =
+      prepared.doc.doc_type === "sales_invoice" || prepared.doc.doc_type === "credit_note"
+        ? "AR"
+        : "AP";
+
+    if (
+      ["sales_invoice", "purchase_bill"].includes(String(prepared.doc.doc_type)) &&
+      prepared.doc.party_id
+    ) {
+      await upsertOpenItemFromDocument(db, {
+        clientId,
+        partyId: String(prepared.doc.party_id),
+        documentId,
+        journalEntryId: created.id,
+        side,
+        currency: String(prepared.doc.currency),
+        originalMinor: Number(prepared.doc.original_total_minor),
+        aedMinor: Number(prepared.doc.aed_total_minor),
+        fxRateScaled: Number(prepared.doc.fx_rate_scaled),
+      });
+    }
+
+    // CN/DN: reduce original open item
+    if (
+      (prepared.doc.doc_type === "credit_note" || prepared.doc.doc_type === "debit_note") &&
+      prepared.doc.original_document_id
+    ) {
+      const oi = await db.query(
+        `SELECT id FROM books_open_items WHERE document_id = $1 AND client_id = $2`,
+        [prepared.doc.original_document_id, clientId],
+      );
+      if (oi.rowCount) {
+        const { applyAllocationToOpenItem } = await import("@/server/books/open-items");
+        await applyAllocationToOpenItem(
+          db,
+          String(oi.rows[0].id),
+          clientId,
+          Number(prepared.doc.original_total_minor),
+          Number(prepared.doc.aed_total_minor),
+        );
+      }
+    }
+
+    // Deferred revenue schedules
+    if (prepared.doc.defer_revenue && prepared.doc.doc_type === "sales_invoice") {
+      await scheduleDeferredReleases(db, clientId, prepared.doc);
+    }
+
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "approve_post",
+      entity: "books_document",
+      entityId: documentId,
+      before: { status: "draft" },
+      after: { status: "posted", journalEntryId: created.id, entryNo: posted.entryNo },
+    });
+  });
+
+  return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
+}
+
+async function scheduleDeferredReleases(
+  db: PoolClient,
+  clientId: string,
+  doc: {
+    id: string;
+    service_start: string | null;
+    service_end: string | null;
+    net_minor: number;
+    aed_total_minor: number;
+    vat_minor: number;
+  },
+) {
+  if (!doc.service_start || !doc.service_end) return;
+  const months = monthsSpan(String(doc.service_start), String(doc.service_end));
+  if (months <= 1) return;
+  const revenue = await accountIdByCode(db, clientId, "4100");
+  const deferred = await accountIdByCode(db, clientId, "2310");
+  void deferred;
+  const netAed = Number(doc.aed_total_minor) - Number(doc.vat_minor);
+  const each = Math.floor(netAed / months);
+  let allocated = 0;
+  const start = new Date(`${doc.service_start}T12:00:00Z`);
+
+  for (let i = 0; i < months; i++) {
+    const d = new Date(start);
+    d.setUTCMonth(d.getUTCMonth() + i);
+    const releaseDate = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+    const amount = i === months - 1 ? netAed - allocated : each;
+    allocated += amount;
+    const period = await db.query(
+      `SELECT id, status FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date`,
+      [clientId, releaseDate],
+    );
+    const periodId = period.rowCount ? String(period.rows[0].id) : null;
+    const blocked = period.rowCount && String(period.rows[0].status) === "LOCKED";
+    const sched = await db.query(
+      `INSERT INTO books_deferred_schedules (
+         client_id, document_id, release_date, period_id, amount_aed_minor,
+         revenue_account_id, status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [
+        clientId,
+        doc.id,
+        releaseDate,
+        periodId,
+        amount,
+        revenue,
+        blocked ? "blocked" : "pending",
+      ],
+    );
+    if (!blocked && periodId) {
+      await enqueueBooksJob(
+        db,
+        clientId,
+        "deferred_release",
+        { scheduleId: String(sched.rows[0].id), documentId: doc.id },
+        new Date(`${releaseDate}T00:00:00Z`),
+      );
+    }
+  }
+}
