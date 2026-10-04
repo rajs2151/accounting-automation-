@@ -970,19 +970,15 @@ export async function previewBooksDocumentJournal(
         aedMinor: aed,
       };
     });
+    // Balance in AED (FX lines store aedMinor on the posted side).
     const debitAed = lines.reduce((s, l) => s + (l.debitMinor > 0 ? l.aedMinor : 0), 0);
     const creditAed = lines.reduce((s, l) => s + (l.creditMinor > 0 ? l.aedMinor : 0), 0);
-    // Prefer summing debit/credit minors in AED terms (lines store aed on the posted side).
-    const sumDr = lines.reduce((s, l) => s + l.debitMinor, 0);
-    const sumCr = lines.reduce((s, l) => s + l.creditMinor, 0);
-    void debitAed;
-    void creditAed;
     return {
       documentId,
       lines,
-      debitMinor: sumDr,
-      creditMinor: sumCr,
-      balanced: sumDr === sumCr,
+      debitMinor: debitAed,
+      creditMinor: creditAed,
+      balanced: debitAed === creditAed,
     };
   });
 }

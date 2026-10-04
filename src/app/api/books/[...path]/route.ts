@@ -290,8 +290,9 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "open-items" && path[1] === "kpis" && path.length === 2) {
       const side = url.searchParams.get("side") === "AR" ? "AR" : "AP";
+      const partyId = url.searchParams.get("partyId") || undefined;
       return NextResponse.json(
-        await getBooksOpenItemKpis(session.userId, session.clientId, side),
+        await getBooksOpenItemKpis(session.userId, session.clientId, side, { partyId }),
       );
     }
     if (path[0] === "open-items" && path[1] === "rebuild-check" && path.length === 2) {

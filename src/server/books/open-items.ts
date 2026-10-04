@@ -155,11 +155,13 @@ export type OpenItemKpis = {
 /**
  * KPI tiles for Purchases (AP) / Sales (AR). Posted journals only via open items
  * (draft documents never create open items, so they are excluded automatically).
+ * Optional partyId scopes totals to one party; omitted/undefined = company-wide (unchanged).
  */
 export async function getBooksOpenItemKpis(
   userId: string,
   clientId: string,
   side: "AR" | "AP",
+  opts?: { partyId?: string },
 ): Promise<OpenItemKpis> {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -182,8 +184,9 @@ export async function getBooksOpenItemKpis(
        WHERE oi.client_id = $1
          AND oi.side = $2
          AND oi.status IN ('open', 'partial')
-         AND e.status = 'posted'`,
-      [clientId, side],
+         AND e.status = 'posted'
+         AND ($3::uuid IS NULL OR oi.party_id = $3)`,
+      [clientId, side, opts?.partyId || null],
     );
     const r = rows.rows[0];
     return {

@@ -12,17 +12,19 @@ type Kpis = {
   unmatchedToBankAedMinor: number | null;
 };
 
+type LoadState = "loading" | "ready" | "error";
+
 function Tile({
   label,
-  minor,
+  display,
+  title,
   testId,
 }: {
   label: string;
-  minor: number | null;
+  display: string;
+  title?: string;
   testId: string;
 }) {
-  const display = minor == null ? "—" : formatMinor(minor);
-  const title = minor == null ? "Available in Phase 2" : `AED ${formatMinor(minor)} (exact)`;
   return (
     <div
       className="min-w-[140px] flex-1 rounded-lg border border-border bg-background px-3 py-2"
@@ -35,40 +37,76 @@ function Tile({
   );
 }
 
+function moneyTile(
+  loadState: LoadState,
+  minor: number | undefined,
+): { display: string; title?: string } {
+  if (loadState === "loading") return { display: "…" };
+  if (loadState === "error" || minor === undefined) return { display: "—" };
+  return { display: formatMinor(minor), title: `AED ${formatMinor(minor)} (exact)` };
+}
+
 export function OpenItemKpiTiles({ side }: { side: "AR" | "AP" }) {
   const [kpis, setKpis] = useState<Kpis | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
 
   useEffect(() => {
     let cancelled = false;
+    setLoadState("loading");
+    setKpis(null);
     void fetch(`/api/books/open-items/kpis?side=${side}`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`kpis ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
-        if (!cancelled && data && typeof data.totalOutstandingAedMinor === "number") {
+        if (cancelled) return;
+        if (data && typeof data.totalOutstandingAedMinor === "number") {
           setKpis(data as Kpis);
+          setLoadState("ready");
+        } else {
+          setLoadState("error");
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setLoadState("error");
+      });
     return () => {
       cancelled = true;
     };
   }, [side]);
 
   const prefix = side === "AP" ? "ap-kpi" : "ar-kpi";
+  const outstanding = moneyTile(loadState, kpis?.totalOutstandingAedMinor);
+  const overdue = moneyTile(loadState, kpis?.overdueAedMinor);
+  const due7 = moneyTile(loadState, kpis?.dueIn7DaysAedMinor);
 
   return (
     <div className="flex flex-wrap gap-2" data-testid={`${prefix}-row`}>
       <Tile
         label="Total outstanding"
-        minor={kpis?.totalOutstandingAedMinor ?? 0}
+        display={outstanding.display}
+        title={outstanding.title}
         testId={`${prefix}-outstanding`}
       />
-      <Tile label="Overdue" minor={kpis?.overdueAedMinor ?? 0} testId={`${prefix}-overdue`} />
+      <Tile
+        label="Overdue"
+        display={overdue.display}
+        title={overdue.title}
+        testId={`${prefix}-overdue`}
+      />
       <Tile
         label="Due in next 7 days"
-        minor={kpis?.dueIn7DaysAedMinor ?? 0}
+        display={due7.display}
+        title={due7.title}
         testId={`${prefix}-due-7`}
       />
-      <Tile label="Unmatched to bank" minor={null} testId={`${prefix}-unmatched`} />
+      <Tile
+        label="Unmatched to bank"
+        display="—"
+        title="Available in Phase 2"
+        testId={`${prefix}-unmatched`}
+      />
     </div>
   );
 }
