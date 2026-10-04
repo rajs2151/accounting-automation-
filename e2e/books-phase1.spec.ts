@@ -13,8 +13,14 @@ const PHASE1_DIR = path.join(process.cwd(), "docs", "phase1");
 const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "invoice_02.pdf");
 
 async function savePhase1(name: string, buffer: Buffer) {
-  fs.mkdirSync(PHASE1_DIR, { recursive: true });
-  const out = path.join(PHASE1_DIR, name);
+  // Committed docs screenshots are only refreshed on purpose (UPDATE_SCREENSHOTS=1).
+  // Normal runs write to the gitignored test-results folder so the working tree stays clean.
+  const dir =
+    process.env.UPDATE_SCREENSHOTS === "1"
+      ? PHASE1_DIR
+      : path.join(process.cwd(), "test-results", "phase1-screenshots");
+  fs.mkdirSync(dir, { recursive: true });
+  const out = path.join(dir, name);
   fs.writeFileSync(out, buffer);
   console.log(`saved ${out} (${buffer.length} bytes)`);
 }

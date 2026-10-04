@@ -168,7 +168,7 @@ Full logs: gates/*.log in the run folder. Diff: diff.patch. Cursor output: curso
   # ---------- 6. parse decision ----------
   $decision = $null
   try {
-    $raw = Get-Content (Join-Path $RunDir "review-raw.json") -Raw
+    $raw = Get-Content (Join-Path $RunDir "review-raw.json") -Raw -Encoding UTF8
     $envl = $raw | ConvertFrom-Json
     $text = [string]$envl.result
     $start = $text.IndexOf('{'); $end = $text.LastIndexOf('}')
