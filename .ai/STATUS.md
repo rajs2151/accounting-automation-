@@ -1,21 +1,19 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 in progress (uncommitted on feat/books-phase1 at loop setup)
-- Current task: VERIFY-S1 (fix 5 slice-1 regressions + verify slice-1 acceptance)
-- Done: POC-001 PASS (6d007c1, reviewed 2026-10-04)
+- Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
+- Current task: C1-1 (KPI tiles, printed-totals approve block, payments-made info only, journal preview)
+- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752, approver least privilege)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001
-2. VERIFY-S1 - run all gates on Addendum C slice 1 and turn every "pass*" row in docs/phase1/slice1-acceptance.md into
-   real evidence or a fix
-3. C1 remaining gaps - see docs/plan/arnibooks-cursor-prompts-addendum-C-gaps.md (KPI tiles, Item/Accounting mode,
-   totals vs printed totals, journal preview, payments-made info only, C1 validation matrix)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1
+2. C1-1 - KPI tiles, printed totals block Approve, payments-made info only, journal preview (addendum-C.md C1)
+3. C1-2 - Item/Accounting mode, Approve & Next, party mismatch banner, full C1 validation matrix (8 cases)
 4. C1b sales record-only parity | 5. C2 Banking + statements
 
 ## Known issues / open decisions
-- 5 legacy unit tests fail at 989d9e4 (4x RLS 'pack_approvals' 42501, 1x Nina RLS assertion) - likely caused by slice-1 seed changes (Layla/emails). Listed in config.knownUnitFailures so they don't block; VERIFY-S1 must fix them and then empty that list.
+- Test (VERIFY-S1-fix1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
 - Company A month-1 golden is PROVISIONAL - owner to supply hand-computed values (Claude offered to prepare).
 - VAT on customer advances: policy TBD (not implemented).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
