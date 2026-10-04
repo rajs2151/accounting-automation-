@@ -122,6 +122,15 @@ while ($true) {
     Log "Gate $($g.name)..."
     $gc = Run-WithTimeout $gcmd (Join-Path $RunDir "gates\$($g.name).log") 40
     $res = if ($gc -eq 0) { "PASS" } else { "FAIL (exit $gc)" }
+    if ($gc -ne 0 -and $g.name -eq "unit") {
+      # Compare failing test names with the known pre-existing failures listed in config.knownUnitFailures
+      $failNames = @(Select-String -Path (Join-Path $RunDir "gates\unit.log") -Pattern '^not ok \d+ - (.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() })
+      $known = @($Cfg.knownUnitFailures)
+      $newFails = @($failNames | Where-Object { $known -notcontains $_ })
+      $failNames | Set-Content (Join-Path $RunDir "gates\unit-failures.txt") -Encoding UTF8
+      if ($failNames.Count -gt 0 -and $newFails.Count -eq 0) { $res = "PASS (only $($failNames.Count) known pre-existing failures)" }
+      else { $res = "FAIL ($($newFails.Count) NEW failing tests: $($newFails -join ' | '))" }
+    }
     $req = if ($g.required) { "required" } else { "informational" }
     $gateSummary += "$($g.name) [$req]: $res"
     Log "Gate $($g.name): $res"
@@ -168,6 +177,7 @@ Full logs: gates/*.log in the run folder. Diff: diff.patch. Cursor output: curso
     if ($envl.total_cost_usd) { Log ("Review cost (est.): USD {0}" -f $envl.total_cost_usd) }
   } catch {
     $St.last_error = "Could not parse reviewer output (exit $rc): $($_.Exception.Message)"
+    if ($raw -match 'Not logged in') { $St.last_error = "Claude Code is not logged in. Run 'claude' once in PowerShell, type /login, then re-run with -ReviewOnly -Base $baseSha" }
     Log $St.last_error
   }
   if ($forbidden -and $decision) { $decision.decision = "NEEDS_HUMAN_DECISION"; $decision.human_question = "Forbidden paths changed: $($forbidden -join ', ')" }

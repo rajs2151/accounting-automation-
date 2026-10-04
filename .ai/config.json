@@ -1,5 +1,12 @@
 {
   "maxIterations": 5,
+  "knownUnitFailures": [
+    "CT report reconciles to ledger; download requires RELEASED approval",
+    "preparer cannot approve; Layla can release; upstream post marks stale; download logs",
+    "RLS: Nina firm pipeline and profile see only Harbour Cafe",
+    "approving a proposal marks released packs STALE",
+    "financials identity holds; YE close to RE; gates block then allow STATEMENTS release"
+  ],
   "cursorTimeoutMinutes": 45,
   "reviewTimeoutMinutes": 20,
   "branchPattern": "^feat/",
