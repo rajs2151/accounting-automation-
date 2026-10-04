@@ -61,6 +61,34 @@ function optionalMinor(value: unknown): number | null {
   return assertMinor(value);
 }
 
+/** Intentional zero-VAT codes — do not raise check_vat. */
+const ZERO_VAT_OK = new Set(["ZR", "EX", "OS", "RC_IN", "RC_OUT"]);
+
+/**
+ * Supplier has TRN but a service/expense line carries no VAT and no intentional zero code.
+ * Returns a short reason string or null.
+ */
+export function detectCheckVatReason(
+  docType: string,
+  supplierTrn: string | null | undefined,
+  lines: Array<{ lineKind?: string | null; vatCode?: string | null; vatMinor?: number | null }>,
+): string | null {
+  if (docType !== "purchase_bill" && docType !== "debit_note") return null;
+  if (!supplierTrn || !String(supplierTrn).trim()) return null;
+  const bad: number[] = [];
+  lines.forEach((line, idx) => {
+    const kind = line.lineKind || "expense";
+    if (kind === "disbursement" || kind === "asset" || kind === "inventory") return;
+    const vat = Number(line.vatMinor || 0);
+    const code = line.vatCode ? String(line.vatCode) : null;
+    if (vat === 0 && (!code || !ZERO_VAT_OK.has(code))) {
+      bad.push(idx + 1);
+    }
+  });
+  if (!bad.length) return null;
+  return `service_line_missing_vat:lines=${bad.join(",")}`;
+}
+
 async function accountIdByCode(db: PoolClient, clientId: string, code: string) {
   const row = await db.query(
     `SELECT id FROM books_accounts WHERE client_id = $1 AND code = $2 AND active = true`,
@@ -178,6 +206,9 @@ export async function getBooksDocument(userId: string, clientId: string, documen
       printedPaidMinor: d.printed_paid_minor == null ? null : Number(d.printed_paid_minor),
       printedBalanceDueMinor:
         d.printed_balance_due_minor == null ? null : Number(d.printed_balance_due_minor),
+      checkVatReason: d.check_vat_reason == null ? null : String(d.check_vat_reason),
+      checkVatAckBy: d.check_vat_ack_by == null ? null : String(d.check_vat_ack_by),
+      checkVatAckAt: d.check_vat_ack_at == null ? null : d.check_vat_ack_at,
       netMinor: Number(d.net_minor),
       vatMinor: Number(d.vat_minor),
       grossMinor: Number(d.gross_minor),
@@ -278,6 +309,12 @@ export async function createBooksDocument(userId: string, clientId: string, body
     const printedPaid = optionalMinor(body.printedPaidMinor);
     const printedBalanceDue = optionalMinor(body.printedBalanceDueMinor);
 
+    const checkVatReason = detectCheckVatReason(
+      body.docType,
+      party.rows[0]?.trn as string | null,
+      lines.map((l) => ({ lineKind: l.lineKind, vatCode: l.vatCode, vatMinor: l.vatMinor })),
+    );
+
     const id = randomUUID();
     await db.query(
       `INSERT INTO books_documents (
@@ -286,10 +323,11 @@ export async function createBooksDocument(userId: string, clientId: string, body
          currency, fx_rate_scaled, original_total_minor, aed_total_minor,
          net_minor, vat_minor, gross_minor, memo, original_document_id, created_by,
          printed_net_minor, printed_vat_minor, printed_gross_minor,
-         printed_paid_minor, printed_balance_due_minor, extraction_id, file_id
+         printed_paid_minor, printed_balance_due_minor, extraction_id, file_id,
+         check_vat_reason
        ) VALUES (
          $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-         $22,$23,$24,$25,$26,$27,$28
+         $22,$23,$24,$25,$26,$27,$28,$29
        )`,
       [
         id,
@@ -320,6 +358,7 @@ export async function createBooksDocument(userId: string, clientId: string, body
         printedBalanceDue,
         body.extractionId || null,
         body.fileId || null,
+        checkVatReason,
       ],
     );
 
@@ -470,6 +509,8 @@ async function buildPostingLines(
   const deferred = await accountIdByCode(db, clientId, "2310");
   const revenueDefault = await accountIdByCode(db, clientId, "4100");
   const expenseDefault = await accountIdByCode(db, clientId, "6600");
+  const depositDefault = await accountIdByCode(db, clientId, "1420");
+  const inventoryDefault = await accountIdByCode(db, clientId, "1510");
 
   const party = await db.query(`SELECT trn, country FROM books_parties WHERE id = $1`, [
     doc.party_id,
@@ -483,17 +524,21 @@ async function buildPostingLines(
   const docType = doc.doc_type;
   const isSales = docType === "sales_invoice" || docType === "credit_note";
   const sign = docType === "credit_note" || docType === "debit_note" ? -1 : 1;
+  const isFx = String(doc.currency || "AED").toUpperCase() !== "AED";
 
   for (const line of lines) {
-    // Prefer storing line aed as net+vat already on line.aed_minor (gross). Split:
-    const grossAed = Number(line.aed_minor ?? line.net_minor + line.vat_minor);
-    const vatAed = Number(line.vat_minor);
-    const netAed = grossAed - vatAed;
+    const rate = Number(line.fx_rate_scaled ?? doc.fx_rate_scaled);
+    const netDoc = Number(line.net_minor);
+    const vatDoc = Number(line.vat_minor);
+    // Convert net and VAT separately so FX journals use AED minor units end-to-end.
+    const netAed = isFx ? aedFromOriginal(netDoc, rate) : netDoc;
+    const vatAed = isFx ? aedFromOriginal(vatDoc, rate) : vatDoc;
+    const grossAed = netAed + vatAed;
 
     const fx = {
       currency: doc.currency,
       originalMinor: line.original_minor,
-      fxRateScaled: line.fx_rate_scaled ?? doc.fx_rate_scaled,
+      fxRateScaled: rate,
       aedMinor: netAed,
     };
 
@@ -546,11 +591,20 @@ async function buildPostingLines(
           aedMinor: netAed,
         });
       } else {
-        const expAcct = line.account_id || expenseDefault;
+        const isAsset = line.line_kind === "asset";
+        const isInventory = line.line_kind === "inventory";
+        const expAcct =
+          line.account_id ||
+          (isAsset ? depositDefault : isInventory ? inventoryDefault : expenseDefault);
         const vatCode = line.vat_code;
         const vatMeta = vatCode ? await vatRateBp(db, vatCode) : { rateBp: 0, recoverable: false };
         const canRecover =
           Boolean(supplierTrn) && vatCode !== "NR" && vatMeta.recoverable && vatAed > 0;
+        const memoDefault = isAsset
+          ? "Deposit / asset"
+          : isInventory
+            ? "Inventory"
+            : "Expense";
 
         if (vatCode === "RC_IN" || vatCode === "RC_OUT") {
           // Foreign services: expense net; RC_OUT + RC_IN net zero on VAT controls
@@ -559,7 +613,7 @@ async function buildPostingLines(
             accountId: expAcct,
             debitMinor: sign > 0 ? netAed : 0,
             creditMinor: sign > 0 ? 0 : netAed,
-            lineMemo: line.description || "Expense",
+            lineMemo: line.description || memoDefault,
             vatCode,
             tags: line.tags,
             ...fx,
@@ -591,7 +645,7 @@ async function buildPostingLines(
             accountId: expAcct,
             debitMinor: sign > 0 ? netAed : 0,
             creditMinor: sign > 0 ? 0 : netAed,
-            lineMemo: line.description || "Expense",
+            lineMemo: line.description || memoDefault,
             vatCode,
             tags: line.tags,
             ...fx,
@@ -607,15 +661,15 @@ async function buildPostingLines(
             currency: doc.currency,
           });
         } else {
-          // VAT in cost
+          // VAT in cost (incl. no supplier TRN → recoverable = 0)
           const cost = netAed + vatAed;
           arApTotal += cost * sign;
           out.push({
             accountId: expAcct,
             debitMinor: sign > 0 ? cost : 0,
             creditMinor: sign > 0 ? 0 : cost,
-            lineMemo: line.description || "Expense (VAT in cost)",
-            vatCode: vatCode || "NR",
+            lineMemo: line.description || `${memoDefault}${vatAed > 0 ? " (VAT in cost)" : ""}`,
+            vatCode: vatCode || (vatAed > 0 ? "NR" : null),
             tags: line.tags,
             ...fx,
             aedMinor: cost,
@@ -692,6 +746,10 @@ export async function approveAndPostBooksDocument(
     const doc = docRes.rows[0];
     if (doc.status !== "draft") throw new BooksError("not_draft", "conflict");
     await requireDualControlActor(db, userId, String(doc.created_by), "post");
+
+    if (doc.check_vat_reason && !doc.check_vat_ack_at) {
+      throw new BooksError("check_vat_unacknowledged", "conflict");
+    }
 
     const linesRes = await db.query(
       `SELECT * FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
@@ -813,6 +871,65 @@ export async function approveAndPostBooksDocument(
   });
 
   return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
+}
+
+/** Acknowledge check_vat warning so Approve may proceed (audited). */
+export async function acknowledgeBooksDocumentCheckVat(
+  userId: string,
+  clientId: string,
+  documentId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT id, status, check_vat_reason, check_vat_ack_by, check_vat_ack_at
+       FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("document_not_found", "not_found");
+    if (before.rows[0].status !== "draft") throw new BooksError("not_draft", "conflict");
+    if (!before.rows[0].check_vat_reason) {
+      throw new BooksError("check_vat_not_required", "conflict");
+    }
+
+    const updated = await db.query(
+      `UPDATE books_documents SET
+         check_vat_ack_by = $3, check_vat_ack_at = now(), updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING check_vat_reason, check_vat_ack_by, check_vat_ack_at`,
+      [documentId, clientId, userId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "ack_check_vat",
+      entity: "books_document",
+      entityId: documentId,
+      before: {
+        check_vat_reason: before.rows[0].check_vat_reason,
+        check_vat_ack_by: before.rows[0].check_vat_ack_by,
+        check_vat_ack_at: before.rows[0].check_vat_ack_at,
+      },
+      after: {
+        check_vat_reason: updated.rows[0].check_vat_reason,
+        check_vat_ack_by: updated.rows[0].check_vat_ack_by,
+        check_vat_ack_at: updated.rows[0].check_vat_ack_at,
+      },
+    });
+    // Return from same transaction (nested withUser would not see uncommitted UPDATE).
+    return {
+      id: documentId,
+      checkVatReason:
+        updated.rows[0].check_vat_reason == null
+          ? null
+          : String(updated.rows[0].check_vat_reason),
+      checkVatAckBy:
+        updated.rows[0].check_vat_ack_by == null
+          ? null
+          : String(updated.rows[0].check_vat_ack_by),
+      checkVatAckAt: updated.rows[0].check_vat_ack_at,
+    };
+  });
 }
 
 /** Update printed totals / payments-made on a draft (editable on review). */

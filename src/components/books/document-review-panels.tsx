@@ -19,6 +19,9 @@ type Doc = {
   printedGrossMinor: number | null;
   printedPaidMinor: number | null;
   printedBalanceDueMinor: number | null;
+  checkVatReason?: string | null;
+  checkVatAckBy?: string | null;
+  checkVatAckAt?: string | null;
   currency?: string;
 };
 
@@ -93,8 +96,25 @@ export function DocumentReviewPanels({
     // Soft UI check for VAT rate (server is authoritative)
     const maxVat = Math.floor((Number(d.netMinor) * 500 + 5000) / 10000) + 1;
     if (Number(d.vatMinor) > maxVat) reasons.push("VAT exceeds 5% of net");
+    if (d.checkVatReason && !d.checkVatAckAt) {
+      reasons.push("Check VAT — acknowledge before approve");
+    }
     setBlockReason(reasons.length ? reasons.join("; ") : null);
   }, [documentId]);
+
+  async function ackCheckVat() {
+    const res = await fetch(`/api/books/documents/${documentId}/ack-check-vat`, {
+      method: "POST",
+      body: "{}",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error || "ack_failed");
+      return;
+    }
+    toast.success("VAT check acknowledged");
+    void load();
+  }
 
   useEffect(() => {
     void load();
@@ -295,6 +315,27 @@ export function DocumentReviewPanels({
           <p className="text-sm text-muted-foreground">Loading preview…</p>
         )}
       </section>
+
+      {doc.checkVatReason ? (
+        <section
+          className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"
+          data-testid="check-vat-banner"
+        >
+          <h3 className="text-sm font-semibold text-amber-900">Check VAT</h3>
+          <p className="text-sm text-amber-900" data-testid="check-vat-reason">
+            {doc.checkVatReason}
+          </p>
+          {doc.checkVatAckAt ? (
+            <p className="text-xs text-muted-foreground" data-testid="check-vat-acked">
+              Acknowledged
+            </p>
+          ) : doc.status === "draft" ? (
+            <Button size="sm" variant="outline" data-testid="ack-check-vat" onClick={() => void ackCheckVat()}>
+              Acknowledge
+            </Button>
+          ) : null}
+        </section>
+      ) : null}
 
       {doc.status === "draft" ? (
         <Button

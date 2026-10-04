@@ -133,13 +133,23 @@ export async function getBooksInboxReview(
   });
 }
 
+function classifyInboxDocType(detected: string): "sales_invoice" | "purchase_bill" {
+  const d = detected.toLowerCase();
+  if (d.includes("purchase") || d.includes("bill") || d === "debit_note") {
+    return "purchase_bill";
+  }
+  return "sales_invoice";
+}
+
 export async function uploadBooksInboxFiles(
   userId: string,
   clientId: string | null,
   files: Array<{ filename: string; contentType: string; bytes: Buffer }>,
+  opts?: { intendedType?: "sales_invoice" | "purchase_bill" | null },
 ) {
   return withUser(userId, async (db) => {
     if (clientId) await assertSyntheticTenant(db, clientId);
+    const intendedType = opts?.intendedType || null;
     const results: Array<{
       inboxItemId: string;
       fileId: string;
@@ -153,10 +163,10 @@ export async function uploadBooksInboxFiles(
       const existing = await db.query(`SELECT id FROM books_files WHERE sha256 = $1`, [sha256]);
       if (existing.rowCount) {
         const inbox = await db.query(
-          `INSERT INTO books_inbox_items (client_id, file_id, status, error)
-           VALUES ($1,$2,'failed','duplicate_file')
+          `INSERT INTO books_inbox_items (client_id, file_id, status, error, intended_type)
+           VALUES ($1,$2,'failed','duplicate_file',$3)
            RETURNING id`,
-          [clientId, existing.rows[0].id],
+          [clientId, existing.rows[0].id, intendedType],
         );
         results.push({
           inboxItemId: String(inbox.rows[0].id),
@@ -188,9 +198,9 @@ export async function uploadBooksInboxFiles(
 
       const inboxId = randomUUID();
       await db.query(
-        `INSERT INTO books_inbox_items (id, client_id, file_id, status)
-         VALUES ($1,$2,$3,'extracting')`,
-        [inboxId, clientId, fileId],
+        `INSERT INTO books_inbox_items (id, client_id, file_id, status, intended_type)
+         VALUES ($1,$2,$3,'extracting',$4)`,
+        [inboxId, clientId, fileId, intendedType],
       );
 
       // Sync text extract so review works without waiting on the worker (e2e).
@@ -354,12 +364,37 @@ export async function confirmInboxAsDocument(
   const review = await getBooksInboxReview(userId, clientId, inboxItemId);
   if (!review.extractionId) throw new BooksError("extraction_required", "invalid");
   const fields = (review.fieldsJson || {}) as Record<string, unknown>;
-  const detected = String(review.detectedType || review.extractionDocType || "").toLowerCase();
-  const docType: "sales_invoice" | "purchase_bill" =
-    body.docType ||
-    (detected.includes("purchase") || detected.includes("bill")
-      ? "purchase_bill"
-      : "sales_invoice");
+  const detected = String(review.detectedType || review.extractionDocType || "");
+  const classified = classifyInboxDocType(detected);
+
+  // Upload context (Purchases vs Sales) may request a type; classification can re-route.
+  let intended: "sales_invoice" | "purchase_bill" | null = body.docType || null;
+  await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const row = await db.query(
+      `SELECT intended_type FROM books_inbox_items WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    if (row.rowCount && row.rows[0].intended_type) {
+      const t = String(row.rows[0].intended_type);
+      if (t === "purchase_bill" || t === "sales_invoice") {
+        if (!intended) intended = t;
+      }
+    }
+  });
+
+  let docType: "sales_invoice" | "purchase_bill" = intended || classified;
+  let reroutedFrom: "purchase_bill" | null = null;
+  // Sales invoice uploaded under Purchases → move to Sales (never a purchase_bill).
+  if (
+    (intended === "purchase_bill" || body.docType === "purchase_bill") &&
+    classified === "sales_invoice"
+  ) {
+    docType = "sales_invoice";
+    reroutedFrom = "purchase_bill";
+  } else if (!intended) {
+    docType = classified;
+  }
 
   const lineItems = (review.lineItems || []) as Array<{
     description?: string;
@@ -422,6 +457,10 @@ export async function confirmInboxAsDocument(
     fileId: String(review.fileId),
   });
 
+  const notice = reroutedFrom
+    ? "Classified as sales invoice — moved to Sales (not posted as a purchase)."
+    : null;
+
   await withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     await db.query(
@@ -435,9 +474,33 @@ export async function confirmInboxAsDocument(
       action: "confirm_inbox_document",
       entity: "books_inbox_item",
       entityId: inboxItemId,
-      after: { documentId: created.id, printedGrossMinor: printedGross },
+      after: {
+        documentId: created.id,
+        printedGrossMinor: printedGross,
+        docType,
+        reroutedFrom,
+        notice,
+      },
     });
+    if (reroutedFrom) {
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "reroute_doc_type",
+        entity: "books_document",
+        entityId: String(created.id),
+        before: { docType: reroutedFrom },
+        after: { docType, notice, inboxItemId },
+      });
+    }
   });
 
-  return { inboxItemId, documentId: String(created.id), document: created };
+  return {
+    inboxItemId,
+    documentId: String(created.id),
+    document: created,
+    docType,
+    reroutedFrom,
+    notice,
+  };
 }

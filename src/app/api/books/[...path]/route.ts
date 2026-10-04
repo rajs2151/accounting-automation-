@@ -54,6 +54,7 @@ import {
   updateBooksTag,
 } from "@/server/books/tags";
 import {
+  acknowledgeBooksDocumentCheckVat,
   approveAndPostBooksDocument,
   createBooksDocument,
   getBooksDocument,
@@ -358,6 +359,9 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "inbox" && path[1] === "upload" && contentType.includes("multipart/form-data")) {
       const form = await request.formData();
       const unassigned = String(form.get("unassigned") || "") === "1";
+      const intendedRaw = String(form.get("intendedType") || "");
+      const intendedType =
+        intendedRaw === "purchase_bill" || intendedRaw === "sales_invoice" ? intendedRaw : null;
       const uploaded: Array<{ filename: string; contentType: string; bytes: Buffer }> = [];
       for (const [key, value] of form.entries()) {
         if (key !== "file" && key !== "files") continue;
@@ -375,6 +379,7 @@ export async function POST(request: Request, ctx: Ctx) {
           session.userId,
           unassigned ? null : session.clientId,
           uploaded,
+          { intendedType },
         ),
       );
     }
@@ -632,6 +637,11 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
       return NextResponse.json(
         await approveAndPostBooksDocument(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "documents" && path[2] === "ack-check-vat" && path.length === 3) {
+      return NextResponse.json(
+        await acknowledgeBooksDocumentCheckVat(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "inbox" && path[2] === "confirm" && path.length === 3) {

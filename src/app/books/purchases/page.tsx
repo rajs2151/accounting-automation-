@@ -74,6 +74,7 @@ export default function PurchasesPage() {
     if (!files?.length) return;
     const body = new FormData();
     for (const f of Array.from(files)) body.append("files", f);
+    body.append("intendedType", "purchase_bill");
     const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
     const data = await res.json();
     if (!res.ok) {

@@ -138,6 +138,7 @@ export default function SalesPage() {
                 if (!files?.length) return;
                 const body = new FormData();
                 for (const f of Array.from(files)) body.append("files", f);
+                body.append("intendedType", "sales_invoice");
                 void fetch("/api/books/inbox/upload", { method: "POST", body }).then(async (res) => {
                   const data = await res.json();
                   if (!res.ok) toast.error(data.error || "upload_failed");
