@@ -2,11 +2,12 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) → Addendum C slice 1 in progress (uncommitted on feat/books-phase1 at loop setup)
-- Current task: POC-001 (loop proof of concept)
+- Current task: VERIFY-S1 (fix 5 slice-1 regressions + verify slice-1 acceptance)
+- Done: POC-001 PASS (6d007c1, reviewed 2026-10-04)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
 
 ## Queue (next tasks, in order — reviewer may refine)
-1. POC-001 — hide UI gallery outside development (loop proof)
+1. (done) POC-001
 2. VERIFY-S1 — run all gates on Addendum C slice 1 and turn every "pass*" row in docs/phase1/slice1-acceptance.md into
    real evidence or a fix
 3. C1 remaining gaps — see docs/plan/arnibooks-cursor-prompts-addendum-C-gaps.md (KPI tiles, Item/Accounting mode,
@@ -23,3 +24,4 @@
 ## Log
 (the loop appends one line per run: date · task · iteration · decision · run folder)
 - 2026-10-04 15:53 | POC-001 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261004-153155-POC-001-i1
+- 2026-10-04 20:13 | POC-001 | i1 | PASS | .ai/runs/20261004-200719-POC-001-i1
