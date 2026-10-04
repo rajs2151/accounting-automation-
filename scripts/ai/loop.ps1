@@ -187,7 +187,7 @@ Full logs: gates/*.log in the run folder. Diff: diff.patch. Cursor output: curso
   $reviewMd = "# Review - $taskId iteration $iter`n`n**Decision: $d**`n`n" + $(if ($decision) { "$($decision.summary)`n`n" + (($decision.requirements | ForEach-Object { "- [$($_.result)] $($_.criterion) - $($_.evidence)" }) -join "`n") + "`n`nNeeds human validation: $((@($decision.needs_human_validation)) -join '; ')`n`nQuestion: $($decision.human_question)" } else { "Reviewer output unreadable - see review-raw.json" })
   $reviewMd | Set-Content (Join-Path $RunDir "review.md") -Encoding UTF8
   Copy-Item (Join-Path $RunDir "review.md") (Join-Path $AI "CLAUDE_REVIEW.md") -Force
-  Add-Content (Join-Path $AI "STATUS.md") ("- {0} | {1} | i{2} | {3} | {4}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $taskId, $iter, $d, $rel)
+  Add-Content -Encoding UTF8 (Join-Path $AI "STATUS.md") ("- {0} | {1} | i{2} | {3} | {4}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $taskId, $iter, $d, $rel)
   Log "Decision: $d"
 
   if ($d -eq "PASS") { Save "PASS - owner checks needs_human_validation items, then queue the next task"; break }

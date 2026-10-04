@@ -64,3 +64,4 @@ docs/reference/outputs/*
 /.ai/STOP
 /.ai/PAUSE
 /.ai/state.json
+/.ai/*.txt

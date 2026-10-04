@@ -1,68 +1,48 @@
-TASK ID: VERIFY-S1
-PHASE: Addendum C slice 1 - verification and regression fix
+TASK ID: VERIFY-S1-fix1
+PHASE: Addendum C slice 1 - verification (owner review of 6b1af5a)
 
 OBJECTIVE:
-Make slice 1 genuinely green: fix the 5 legacy unit tests that slice 1 broke, and turn every "pass*" row in
-docs/phase1/slice1-acceptance.md into real, re-runnable evidence (or a fix).
+Narrow db/26 so the approver role gets only the rights it needs to approve and release, nothing more.
 
 CONTEXT:
-The orchestrator's full `npm test` run (fresh daftar_test DB, all db/*.sql applied in order) fails 5 tests that passed
-before slice 1. These are listed in .ai/config.json "knownUnitFailures":
-1. CT report reconciles to ledger; download requires RELEASED approval
-2. preparer cannot approve; Layla can release; upstream post marks stale; download logs
-3. RLS: Nina firm pipeline and profile see only Harbour Cafe          (AssertionError expected true, actual false)
-4. approving a proposal marks released packs STALE
-5. financials identity holds; YE close to RE; gates block then allow STATEMENTS release
-Four fail with: new row violates row-level security policy for table "pack_approvals" (42501).
-Likely cause: slice-1 seed changes (db/02-seed.sql user emails -> @arnibooks.test, Layla role/access changes in
-db/17-books-seed.sql or db/25-books-slice1.sql) no longer match what the RLS policies / legacy tests expect.
-Slice 1's acceptance doc marks most rows "pass*" ("confirm by running Docker") - they were never verified by a full run.
+6b1af5a correctly found the root cause (approver role missing from legacy Stage B RLS) and fixed Nina's access.
+But db/26-books-approver-release-rls.sql grants `approver` INSERT, UPDATE **and DELETE** on release_packs,
+pack_approvals and download_events. An approver must never be able to delete approval records or download logs -
+those are the audit trail of dual control. Owner decision: least privilege for approver.
 
 FILES TO INSPECT:
-- db/02-seed.sql, db/12-security.sql, db/17-books-seed.sql, db/25-books-slice1.sql (and the RLS policy on pack_approvals)
-- src/server/ct.test.ts (#1), src/server/release.test.ts (#2), src/server/stage-g-regression.test.ts (#3, #4),
-  src/server/statements.test.ts (#5)
-- docs/phase1/slice1-acceptance.md
-- scripts/ai/unit-inner.sh (this is how the orchestrator runs tests - reproduce failures the same way)
-
-EXPECTED BEHAVIOR:
-- All 94 unit tests pass on a fresh DB with all migrations applied in order (same as scripts/ai/unit-inner.sh).
-- Legacy behaviour (release packs, Layla approval, Nina isolation, STALE marking, statements gates) is unchanged.
-- Slice 1 behaviour (arnibooks.test emails, Layla approver visible in books, company match, fiscal year) still works.
+- db/26-books-approver-release-rls.sql
+- the original Stage B policies (db/06-release-packs.sql, db/12-security.sql) - keep admin/accountant rights exactly as
+  they were before db/26 (do not change legacy behaviour for those roles)
+- src/server/release.test.ts
 
 IMPLEMENTATION REQUIREMENTS:
-- Find the ROOT CAUSE. Fix it in seeds/migrations or app code so both legacy and books rules hold. If a legacy test
-  asserted an old email literal, update the test literal only if the behaviour under test is unchanged - explain each
-  such change in the report.
-- Migrations must be additive/idempotent (no DROP of data; new numbered file if needed, e.g. db/26-...sql).
-- Update docs/phase1/slice1-acceptance.md: replace every "pass*" with the exact test name + "pass" (verified by the
-  orchestrator gate) or "fail" with reason. Remove the "confirm by running Docker" footnote.
-- In .ai/config.json set "knownUnitFailures" to an empty list [] once the 5 tests pass.
+- Do NOT edit db/26 (it may already be applied on existing volumes). Add db/27-books-approver-least-privilege.sql that
+  recreates the policies so that:
+  * admin / accountant: same INSERT/UPDATE/DELETE rights as before db/26 (restore originals exactly).
+  * approver: release_packs -> UPDATE only; pack_approvals -> INSERT only; download_events -> INSERT only.
+    No DELETE for approver anywhere. No approver UPDATE on pack_approvals or download_events.
+- Idempotent (DROP POLICY IF EXISTS / CREATE), no data deleted.
 
-CONSTRAINTS:
-- Work on feat/books-phase1. Local commits only, message prefix "VERIFY-S1:".
-- Do not touch fixtures/books-goldens/, docs/reference/, worker/ (unless the root cause is there - then explain).
-
-TESTS REQUIRED:
-- The full `npm test` must pass with 0 failures under scripts/ai/unit-inner.sh semantics.
-- If you changed RLS/seed logic, add one regression test proving Layla can approve a pack AND Omar (preparer) cannot,
-  under the new seed.
+TESTS REQUIRED (add to src/server/release.test.ts, using the app role connection like the existing tests):
+- Layla (approver) can still approve/release a pack (existing test keeps passing).
+- Layla (approver) DELETE on pack_approvals affects 0 rows / is denied; same for download_events.
+- Layla (approver) cannot UPDATE an existing pack_approvals row.
+- Omar (preparer) still cannot approve his own pack.
 
 ACCEPTANCE CRITERIA:
-1. The 5 previously failing tests pass; no other test fails or is skipped/narrowed.
-2. Root cause documented in the report (file + line + why slice 1 broke it).
-3. .ai/config.json knownUnitFailures is [].
-4. docs/phase1/slice1-acceptance.md has no "pass*" rows left; each row names a real test.
-5. e2e Phase 1 gate still passes.
-6. Any new migration is additive and numbered after 25.
+1. db/27 exists, is additive/idempotent, numbered after 26; db/26 untouched.
+2. Approver has exactly: UPDATE release_packs, INSERT pack_approvals, INSERT download_events.
+3. admin/accountant policies identical to the pre-db/26 originals (state the original file+lines in the report).
+4. New tests above pass; full npm test 0 failures; e2e gate passes.
+5. Do not commit docs/phase1/*.png re-captures, and do not leave scratch files in .ai/ (unit-before.txt etc.).
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- edit golden expected values, disable/skip/narrow any test, weaken an RLS policy just to make a test pass
-- commit anything under docs/reference/outputs/ or any real client data
+- edit golden expected values, disable/skip/narrow any test, weaken any RLS rule
+- commit docs/phase1/*.png, anything under docs/reference/outputs/, or real client data
 - run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If fixing the root cause requires weakening a security/RLS rule or changing dual-control behaviour, STOP and explain
-  in the report instead of changing it (the reviewer will escalate to the owner).
+- If the application genuinely needs approver DELETE/UPDATE somewhere, STOP and explain in the report (owner decides).
 - When done, write the report to the path given in the prompt and stop.
