@@ -1,83 +1,54 @@
-TASK ID: C1-2
-PHASE: Addendum C - C1 validation matrix (posting rules)
+﻿TASK ID: C1-2-fix1
+PHASE: Addendum C - C1 validation matrix (case 7 re-route correctness)
 
 OBJECTIVE:
-Make the 8 C1 validation cases from the plan true in the server and prove each one with a test:
-correct posting (disbursement 1220, deposit -> asset, exempt, VAT recoverability), "check VAT" flags, approve blocks,
-and sales-vs-bill re-routing. UI work (Item/Accounting mode, Approve & Next, party mismatch banner) is NOT in this task.
+Re-route a Purchases upload to Sales ONLY when the document is actually classified as a sales invoice. Unknown, empty, receipt or any other non-sales classification must keep the user's intended or explicit purchase_bill type.
 
 CONTEXT:
-Spec: docs/plan/arnibooks-cursor-prompts-addendum-C.md, "Validation rules to prove with tests" (lines 64-73).
-C1-1 (5755744, 02c7976) added printed totals + server checks printed_totals_mismatch / vat_exceeds_rate in
-approveAndPostBooksDocument (src/server/books/documents.ts:588). Posting lines come from buildPostingLines
-(documents.ts:441): purchase "disbursement" lines already go to 1220; supplier TRN + recoverable VAT code -> 1430.
-books_document_lines.line_kind allows revenue, disbursement, taxable_recharge, expense, asset, inventory
-(db/23-books-phase1.sql:246-247). Inbox -> draft conversion is in src/server/books/inbox.ts (~lines 330-390);
-classification is in worker/src/daftar/extraction/classify.py and books_extractions.doc_type.
+C1-2 (39b7bfc) added classifyInboxDocType() and re-route logic in src/server/books/inbox.ts confirmInboxAsDocument. classifyInboxDocType returns 'sales_invoice' for everything not containing 'purchase'/'bill'/'debit_note', including '' or null (worker classify.py returns doc_type None on no_rule_match), 'receipt', 'bank_statement', etc. The reroute condition `(intended === 'purchase_bill' || body.docType === 'purchase_bill') && classified === 'sales_invoice'` therefore moves unclassified supplier bills to Sales. The spec (addendum-C C1, case 7) only covers 'classified as a sales invoice'.
 
 FILES TO INSPECT:
-- docs/plan/arnibooks-cursor-prompts-addendum-C.md (C1 lines 64-73)
-- src/server/books/documents.ts (buildPostingLines, approveAndPostBooksDocument), src/server/books/vat-codes.ts
-- src/server/books/inbox.ts, src/server/books/extract-sync.ts (draft creation / doc type routing)
-- src/server/books/phase1.test.ts, src/server/books/c1*.test.ts (existing test style; reuse helpers)
-- db/20-books-coa-v2.sql (account codes: 1220, 1430, 2210, deposit/asset accounts), db/*vat* seeds (VAT codes)
+- src/server/books/inbox.ts (classifyInboxDocType, confirmInboxAsDocument)
+- src/server/books/c1-validation.test.ts (case 7 setup pattern: own customer/supplier, admin inserts into books_files / books_inbox_items / books_extractions)
+- worker/src/daftar/extraction/classify.py (DOC_TYPES; read-only, do not change)
 
-THE 8 CASES (each = one named test "C1-2 case N: ..."; synthetic parties/amounts only):
-1. Bill with mixed lines: gov-fee line with no VAT -> disbursement 1220; service lines at 5% -> expense + 1430 input VAT.
-2. Gov-authority bill with no VAT at all -> all lines disbursement (1220), no 1430 line.
-3. Supplier HAS a TRN but a service line has no VAT -> document gets a "check_vat" flag/warning (stored, visible via
-   the document API); it is NOT silently accepted. Decide: approve allowed only after the flag is acknowledged
-   (store who/when, audited). Do not block forever.
-4. Foreign-currency bill, supplier has no TRN -> recoverable VAT = 0 (no 1430 line; VAT goes to cost);
-   a "refundable security deposit" line with line_kind 'asset' -> asset/deposit account, not expense.
-5. Sales invoice in USD with "- Arnifi Fee" (5%) and "- Government Fee" (no VAT) lines -> revenue + 2210 output VAT
-   for the fee, Cr 1220 for the gov fee; AED amounts via the document FX rate, integer minor units.
-6. Exempt residential lease invoice -> exempt VAT code, no 2210 output VAT line.
-7. Document classified as a sales invoice but uploaded under Purchases -> becomes a sales_invoice draft (moved to
-   Sales with a notice/audit row), never a purchase_bill; it is never posted as a purchase.
-8. VAT > 5% of taxable (e.g. tax larger than subtotal) -> vat_exceeds_rate, approve blocked, nothing posted
-   (C1-1 already has the check - prove it for a multi-line document and keep one assertion that no journal exists).
+EXPECTED BEHAVIOR:
+- Re-route to sales_invoice (with reroutedFrom='purchase_bill', notice, and 'reroute_doc_type' audit) ONLY when the normalised detected type (review.detectedType || review.extractionDocType) is exactly 'sales_invoice' AND the intended/explicit type is purchase_bill.
+- If intended/explicit type is purchase_bill and detected is '', null, 'receipt', 'purchase_bill', 'debit_note' or any other value → docType stays 'purchase_bill', reroutedFrom null, no reroute audit row.
+- If intended/explicit type is sales_invoice → stays sales_invoice (unchanged from current behaviour).
+- With no intended and no explicit type, keep today's fallback (classification-based) unchanged.
 
 IMPLEMENTATION REQUIREMENTS:
-- Fix whatever the tests show is wrong in buildPostingLines / draft creation. Keep changes minimal and in the server.
-- If a deposit/asset account code is missing from the COA seed, add it in a NEW migration (next free number after 28,
-  additive/idempotent), not by editing older files.
-- check_vat flag (case 3): store on the document (new nullable columns in the same migration, e.g. check_vat_reason,
-  check_vat_ack_by, check_vat_ack_at) + POST .../documents/:id/ack-check-vat (audited). Approve without ack ->
-  BooksError("check_vat_unacknowledged", "conflict"). Show the flag + Acknowledge button on the review screen
-  (minimal UI only).
-- Every journal produced by the tests must balance in AED (sum Dr = sum Cr).
+- Minimal change in src/server/books/inbox.ts only. Separate 'is the document positively classified as sales' (exact match) from the existing fallback mapping; do not change the fallback for the no-intent case.
+- Remove the dead `else if (!intended) docType = classified;` branch if it becomes redundant; behaviour must stay as above.
 
 CONSTRAINTS:
-- Work on feat/books-phase1. Local commits only, message prefix "C1-2:".
-- Integer minor units only. Follow .cursor/rules/arnibooks.mdc.
-- Tests must only measure rows they create (tests run in parallel against shared synthetic companies - see
-  02c7976 for the pattern: own party per test, document-scoped counts).
-- Do not change dual control, RLS policies, period locking, voucher numbering, or C1-1 printed-total behaviour.
+- Work on feat/books-phase1; local commit with prefix 'C1-2-fix1:'. Stage only the files you change.
+- Tests use their own synthetic parties and only count rows they create (pattern from 02c7976 / case 7).
+- Do not change dual control, RLS, period locking, voucher numbering, C1-1 printed totals, check_vat, or buildPostingLines.
 
-TESTS REQUIRED:
-- New file src/server/books/c1-validation.test.ts with the 8 named tests above, registered in package.json "test".
-- Each posting test asserts the exact journal lines (account code, Dr, Cr, VAT code) - not just "it posted".
-- Full npm test 0 failures; e2e gate passes; typecheck passes.
+TESTS REQUIRED (add to src/server/books/c1-validation.test.ts; existing 8 cases unchanged):
+- 'C1-2 case 7b: unknown classification under Purchases stays purchase_bill': inbox intended_type='purchase_bill', detected_type NULL and extraction doc_type NULL (or 'unknown' if the column is NOT NULL), confirm with docType 'purchase_bill' → confirmed.docType === 'purchase_bill', reroutedFrom === null, books_documents.doc_type === 'purchase_bill', zero 'reroute_doc_type' audit rows for that document.
+- 'C1-2 case 7c: receipt classification under Purchases stays purchase_bill': same with detected_type/doc_type 'receipt'.
+- 'C1-2 case 7d: purchase_bill classification under Purchases stays purchase_bill': detected 'purchase_bill'.
+- Full npm test: 0 failures; e2e gate passes; typecheck passes.
 
 ACCEPTANCE CRITERIA:
-1. All 8 case tests exist, are named "C1-2 case N: ...", and pass in the orchestrator's unit gate.
-2. Exact journal lines asserted for cases 1, 2, 4, 5, 6.
-3. check_vat flag requires an audited acknowledgement before approve; case 7 never creates a purchase_bill.
-4. Any new migration is additive/idempotent and numbered after 28; earlier migrations untouched.
-5. No golden values edited; no test skipped, narrowed or loosened; existing tests unchanged except new helpers.
-6. Report maps each case to its test and lists every file changed.
+1. Tests 7b, 7c, 7d exist with those names and pass in the orchestrator unit gate (not skipped).
+2. Existing 'C1-2 case 7' still passes unchanged: sales_invoice classification under Purchases → sales_invoice draft + reroute_doc_type audit.
+3. Re-route happens only on exact 'sales_invoice' classification; verified by code inspection of inbox.ts.
+4. No other files changed except inbox.ts and c1-validation.test.ts (plus the report).
+5. No test skipped, narrowed or loosened; no golden values edited.
+6. Report lists files changed and maps 7b/7c/7d to tests.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- implement Item/Accounting mode, Approve & Next, party mismatch banner (C1-3)
-- edit golden expected values, disable/skip/narrow any test, weaken any RLS rule
+- edit golden expected values, disable/skip/narrow any test, weaken RLS
+- change worker/src/daftar/extraction/classify.py or buildPostingLines
 - commit docs/phase1/*.png, anything under docs/reference/outputs/, or real client data
-- run `git add -A` blindly - stage only the files for this task
+- run `git add -A` blindly
 
 STOP CONDITIONS:
-- If a case conflicts with an existing golden or passing test (e.g. the PROVISIONAL Company A golden), STOP and explain
-  in the report - the owner decides the accounting treatment.
-- If the correct VAT treatment for a case is genuinely ambiguous under UAE VAT, implement the plan's wording, and
-  list the question in the report.
+- If books_inbox_items.detected_type or books_extractions.doc_type cannot hold NULL/'receipt' under current constraints, use the closest allowed non-sales value and explain in the report.
+- If fixing this breaks an existing test, STOP and report; do not modify that test.
 - When done, write the report to the path given in the prompt and stop.
