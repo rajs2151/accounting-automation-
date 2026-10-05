@@ -52,15 +52,60 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     ocr_used = False
     parsed = None
     page_methods: list[tuple[int, str]] = []
+    company_trn: str | None = None
+    company_name: str | None = None
+
+    is_pdf = (frow["content_type"] or mime or "").startswith("application/pdf") or (
+        frow["filename"] or ""
+    ).lower().endswith(".pdf")
+
+    # Text-layer word boxes (PDF points, origin top-left) for review highlights.
+    if is_pdf:
+        try:
+            from daftar.extraction.pdf_words import collect_pdf_word_boxes
+
+            word_boxes, page_texts_early, wb_methods = collect_pdf_word_boxes(content)
+            if page_texts_early:
+                raw_text = "\n".join(page_texts_early)[:20000]
+            if wb_methods:
+                page_methods = list(wb_methods)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pdf_word_boxes_failed: %s", exc)
 
     if parser:
         parsed = parser.parse(frow["filename"], frow["content_type"] or "", content)
         ocr_used = bool(parsed.ocr_used)
-        raw_text = json.dumps(parsed.extras or {})[:20000]
+        extras = parsed.extras or {}
+        # Prefer human-readable text so classifiers see TRNs / invoice keywords.
+        raw_from_parser = str(extras.get("raw_text") or "")[:20000]
+        if raw_from_parser.strip():
+            raw_text = raw_from_parser
+        elif not raw_text.strip():
+            raw_text = json.dumps(extras)[:20000]
+        if extras.get("word_boxes"):
+            word_boxes = list(extras["word_boxes"])
+        if extras.get("page_methods"):
+            page_methods = list(extras["page_methods"])
+
         fields = {
-            "party": {"value": parsed.party, "confidence": parsed.confidence / 100.0},
-            "document_date": {"value": parsed.document_date, "confidence": parsed.confidence / 100.0},
-            "currency": {"value": parsed.currency, "confidence": 0.99},
+            "party": {
+                "value": parsed.party,
+                "confidence": parsed.confidence / 100.0,
+                "status": "ok" if parsed.party else "missing",
+                "source": None,
+            },
+            "document_date": {
+                "value": parsed.document_date,
+                "confidence": parsed.confidence / 100.0,
+                "status": "ok" if parsed.document_date else "missing",
+                "source": None,
+            },
+            "currency": {
+                "value": parsed.currency,
+                "confidence": 0.99,
+                "status": "ok" if parsed.currency else "missing",
+                "source": None,
+            },
             "lines": {
                 "value": [
                     {
@@ -73,6 +118,26 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 "confidence": parsed.confidence / 100.0,
             },
         }
+        # Merge structured invoice fields (with source page+bbox) when present.
+        structured = extras.get("fields") or {}
+        for key in (
+            "document_number",
+            "document_date",
+            "issuer_name",
+            "issuer_trn",
+            "customer_name",
+            "customer_trn",
+            "currency",
+            "net",
+            "vat",
+            "gross",
+            "invoice_no",
+            "invoice_date",
+            "supplier_trn",
+            "grand_total",
+        ):
+            if key in structured and isinstance(structured[key], dict):
+                fields[key] = structured[key]
         if ocr_used:
             for _key, field in fields.items():
                 if isinstance(field, dict) and field.get("confidence", 1) > 0.79:
@@ -80,16 +145,18 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     field["status"] = "low"
 
     # Prefer full extract.py route for PDFs/images when available (text vs OCR per page).
-    if (frow["content_type"] or mime or "").startswith("application/pdf") or (
-        frow["filename"] or ""
-    ).lower().endswith(".pdf"):
+    if is_pdf:
         try:
             from daftar.extract import extract_file
 
             extraction = extract_file(content, "pdf")
-            page_methods = list(extraction.methods or [])
+            extract_methods = list(extraction.methods or [])
+            if extract_methods:
+                page_methods = extract_methods
             ocr_used = ocr_used or any(m != "pdf_text" for _, m in page_methods)
-            raw_text = (raw_text + "\n" + "\n".join(getattr(extraction, "raw_pages", []) or []))[:20000]
+            page_text = "\n".join(getattr(extraction, "raw_pages", []) or [])
+            if page_text.strip():
+                raw_text = (raw_text + "\n" + page_text).strip()[:20000]
             if not raw_text.strip() and extraction.rows:
                 raw_text = "\n".join(
                     " ".join(str(c) for c in (r.cells if hasattr(r, "cells") else []))
@@ -97,6 +164,17 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 )[:20000]
         except Exception as exc:  # noqa: BLE001
             logger.warning("extract_pdf_route_failed: %s", exc)
+
+    # Resolve company identity early so sales vs purchase uses company perspective.
+    client_id_early = frow["client_id"]
+    if client_id_early:
+        crow_early = conn.execute(
+            "SELECT trn, name FROM clients WHERE id = %s",
+            (client_id_early,),
+        ).fetchone()
+        if crow_early:
+            company_trn = crow_early.get("trn")
+            company_name = crow_early.get("name")
 
     if user_doc_type:
         classification = user_pick(str(user_doc_type))
@@ -106,6 +184,8 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
             raw_text,
             parsed.doc_type if parsed else None,
             (parsed.confidence / 100.0) if parsed else 0.0,
+            company_trn=company_trn,
+            company_name=company_name,
         )
 
     doc_type = classification.doc_type

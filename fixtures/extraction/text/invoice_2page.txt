@@ -1,0 +1,13 @@
+TAX INVOICE
+Desert Falcon Services FZE
+TRN 100000000000001
+Bill To: Oasis Retail LLC
+TRN 100123456700003
+Invoice No: INV-SYN-2PG
+Date: 15/05/2026
+Consulting services    100.00
+Continued on next page
+
+---PAGE2---
+VAT 5%                   5.00
+Total                  105.00

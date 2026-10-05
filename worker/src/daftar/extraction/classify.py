@@ -19,6 +19,20 @@ DOC_TYPES = (
 IBAN_RE = re.compile(r"\bAE\d{21}\b", re.I)
 TRN_RE = re.compile(r"\b100\d{12}\b")
 
+PARSER_ALIASES = {
+    "sales_invoice": "sales_invoice",
+    "purchase_bill": "purchase_bill",
+    "purchase_invoice": "purchase_bill",
+    "PURCHASE_INVOICE": "purchase_bill",
+    "SALES_INVOICE": "sales_invoice",
+    "bank_statement": "bank_statement",
+    "card_statement": "card_statement",
+    "gateway_statement": "gateway_statement",
+    "trial_balance": "trial_balance",
+    "receipt": "receipt",
+    "other": "other",
+}
+
 
 @dataclass
 class Classification:
@@ -28,11 +42,52 @@ class Classification:
     needs_user_pick: bool
 
 
+def _norm_company(value: str | None) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def _company_on_side(text: str, *, company_trn: str | None, company_name: str | None) -> str | None:
+    """Return 'issuer' | 'customer' | None based on where the company appears."""
+    if not company_trn and not company_name:
+        return None
+    bill_pos = re.search(r"(?i)Bill\s*To|Sold\s*To|Customer", text)
+    bill_at = bill_pos.start() if bill_pos else len(text)
+    before = text[:bill_at]
+    after = text[bill_at:]
+
+    trn = (company_trn or "").strip()
+    name = _norm_company(company_name)
+
+    if trn and re.search(rf"\b{re.escape(trn)}\b", before):
+        return "issuer"
+    if trn and re.search(rf"\b{re.escape(trn)}\b", after):
+        return "customer"
+    if name and name in _norm_company(before):
+        return "issuer"
+    if name and name in _norm_company(after):
+        return "customer"
+    # Whole-document fallback when layout cues are missing
+    blob = text
+    if trn and re.search(rf"\b{re.escape(trn)}\b", blob):
+        # Prefer Bill To framing: company in bill-to → purchase; else sales
+        if bill_pos and trn in after:
+            return "customer"
+        return "issuer"
+    if name and name in _norm_company(blob):
+        if bill_pos and name in _norm_company(after):
+            return "customer"
+        return "issuer"
+    return None
+
+
 def classify_document(
     filename: str,
     text: str,
     parser_type: str | None = None,
     parser_conf: float = 0.0,
+    *,
+    company_trn: str | None = None,
+    company_name: str | None = None,
 ) -> Classification:
     blob = f"{filename}\n{text or ''}"
     lower = blob.lower()
@@ -55,13 +110,27 @@ def classify_document(
     ):
         conf = 0.9 if IBAN_RE.search(blob) else 0.8
         return hit("bank_statement", conf, "bank_keyword_or_iban")
-    if "tax invoice" in lower or "tax invoice" in filename.lower():
-        # Sales vs purchase: if "bill to" + our customer framing → sales; "vendor"/"supplier" → purchase
+
+    looks_invoice = (
+        "tax invoice" in lower
+        or "tax invoice" in filename.lower()
+        or re.search(r"invoice\s*no", lower) is not None
+        or re.search(r"\binv-[a-z0-9-]+", lower) is not None
+        or "فاتورة" in (text or "")
+    )
+
+    if looks_invoice:
+        side = _company_on_side(text or "", company_trn=company_trn, company_name=company_name)
+        if side == "issuer":
+            return hit("sales_invoice", 0.92, "company_is_issuer")
+        if side == "customer":
+            return hit("purchase_bill", 0.92, "company_is_customer")
         if "bill to" in lower or "sold to" in lower:
             return hit("sales_invoice", 0.88, "tax_invoice_bill_to")
         if "vendor" in lower or "supplier invoice" in lower:
             return hit("purchase_bill", 0.82, "tax_invoice_vendor")
         return hit("sales_invoice", 0.78, "tax_invoice")
+
     if re.search(r"\bpurchase\s+bill\b", lower) or "vendor bill" in lower:
         return hit("purchase_bill", 0.85, "purchase_bill_keyword")
     if "receipt" in lower and "invoice" not in lower:
@@ -69,11 +138,13 @@ def classify_document(
     if "bill" in lower or "purchase" in lower:
         return hit("purchase_bill", 0.72, "bill_keyword")
 
-    if parser_type in DOC_TYPES:
-        conf = max(0.5, min(0.95, float(parser_conf)))
-        return hit(parser_type, conf, f"parser:{parser_type}")
+    if parser_type:
+        normalized = str(parser_type).strip()
+        mapped = PARSER_ALIASES.get(normalized) or PARSER_ALIASES.get(normalized.lower())
+        if mapped in DOC_TYPES:
+            conf = max(0.5, min(0.95, float(parser_conf)))
+            return hit(mapped, conf, f"parser:{mapped}")
 
-    # Ambiguous scrap — force user pick
     return Classification(None, 0.3, ["no_rule_match"], True)
 
 

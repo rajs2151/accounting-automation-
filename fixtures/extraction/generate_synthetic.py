@@ -86,6 +86,61 @@ def _write_pdf(path: Path, text: str) -> None:
     doc.close()
 
 
+def _write_multipage_pdf(path: Path, pages: list[str]) -> None:
+    import fitz
+
+    doc = fitz.open()
+    for text in pages:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((50, 72), text, fontsize=11, fontname="helv")
+    doc.save(path)
+    doc.close()
+
+
+def invoice_2page_bodies() -> tuple[str, str]:
+    """Header + line on page 1; VAT + Total on page 2 (page-aware totals fixture)."""
+    page1 = "\n".join(
+        [
+            "TAX INVOICE",
+            "Desert Falcon Services FZE",
+            "TRN 100000000000001",
+            "Bill To: Oasis Retail LLC",
+            "TRN 100123456700003",
+            "Invoice No: INV-SYN-2PG",
+            "Date: 15/05/2026",
+            "Consulting services    100.00",
+            "Continued on next page",
+        ]
+    ) + "\n"
+    page2 = "\n".join(
+        [
+            "VAT 5%                   5.00",
+            "Total                  105.00",
+        ]
+    ) + "\n"
+    return page1, page2
+
+
+def invoice_no_vat_body() -> str:
+    """Invoice with net + total but no VAT line — VAT must stay missing."""
+    return (
+        "\n".join(
+            [
+                "TAX INVOICE",
+                "Desert Falcon Services FZE",
+                "TRN 100000000000001",
+                "Bill To: Oasis Retail LLC",
+                "TRN 100123456700003",
+                "Invoice No: INV-SYN-NOVAT",
+                "Date: 15/05/2026",
+                "Consulting services    100.00",
+                "Total                  100.00",
+            ]
+        )
+        + "\n"
+    )
+
+
 def _write_image_pdf(path: Path, text: str) -> None:
     """Scan-like PDF: raster page with no text layer."""
     import fitz
@@ -199,6 +254,46 @@ def main() -> None:
                 "invoice_date": "2026-05-15",
                 "grand_total": 10500,
                 "supplier_trn": "100000000000001",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    p1, p2 = invoice_2page_bodies()
+    (ROOT / "text" / "invoice_2page.txt").write_text(p1 + "\n---PAGE2---\n" + p2, encoding="utf-8")
+    _write_multipage_pdf(ROOT / "pdfs" / "invoice_2page.pdf", [p1, p2])
+    (ROOT / "ground_truth" / "invoice_2page.json").write_text(
+        json.dumps(
+            {
+                "doc_type": "sales_invoice",
+                "route": "text",
+                "invoice_no": "INV-SYN-2PG",
+                "invoice_date": "2026-05-15",
+                "grand_total": 10500,
+                "supplier_trn": "100000000000001",
+                "gross_page": 2,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    no_vat = invoice_no_vat_body()
+    (ROOT / "text" / "invoice_no_vat.txt").write_text(no_vat, encoding="utf-8")
+    _write_pdf(ROOT / "pdfs" / "invoice_no_vat.pdf", no_vat)
+    (ROOT / "ground_truth" / "invoice_no_vat.json").write_text(
+        json.dumps(
+            {
+                "doc_type": "sales_invoice",
+                "route": "text",
+                "invoice_no": "INV-SYN-NOVAT",
+                "invoice_date": "2026-05-15",
+                "grand_total": 10000,
+                "supplier_trn": "100000000000001",
+                "vat_missing": True,
             },
             indent=2,
         )
