@@ -1,8 +1,9 @@
-﻿# arnibooks - Project status (maintained by the AI loop + reviewer)
+# arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E1 (worker invoice fields + page/bbox, Python only)
+- Current task: E2 (worker bank statements -> statement + lines, Python only)
+- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67)
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
@@ -48,3 +49,5 @@
 - 2026-10-05 15:25 | TEST-ISO-1 | i2 | FAIL | .ai/runs/20261005-151433-TEST-ISO-1-i2
 - 2026-10-05 15:32 | TEST-ISO-1 | i3 | PASS | .ai/runs/20261005-152522-TEST-ISO-1-i3
 - 2026-10-05 15:46 | PYTEST-0 | i1 | PASS | .ai/runs/20261005-153350-PYTEST-0-i1
+- 2026-10-05 16:04 | E1 | i1 | FAIL | .ai/runs/20261005-154808-E1-i1
+- 2026-10-05 16:17 | E1 | i2 | PASS | .ai/runs/20261005-160417-E1-i2

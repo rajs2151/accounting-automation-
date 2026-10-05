@@ -1,60 +1,56 @@
-TASK ID: E1
-PHASE: Extraction (Addendum A) step 1 of 5 - worker: invoice/bill fields with page + bbox (Python only)
+TASK ID: E2
+PHASE: Extraction (Addendum A) step 2 of 5 - worker: bank statement PDFs -> statement + lines (Python only)
 
 OBJECTIVE:
-In the Python worker only: classify invoices/bills correctly and extract their header fields from the text layer,
-page-aware, with each field's source page + bbox, and store real word boxes. No web/TypeScript changes.
+In the Python worker only: recognise bank statement PDFs and extract header (bank, IBAN, currency, period, opening,
+closing) and lines (date, description, debit, credit, running balance, each with page + bbox), run the balance check,
+and write books_statement_extractions + books_statement_lines. No web/TypeScript changes.
 
 CONTEXT:
-- Plan: docs/plan/arnibooks-cursor-prompts-addendum.md "ADDENDUM A" (lines 23-60). Local only: PyMuPDF/pdfplumber
-  for text pages, docTR for scanned pages; no external OCR/LLM.
-- worker/src/daftar/extraction/__init__.py process_extract_document: stores word_boxes = [] (always empty); on the
-  running app invoice_03.pdf came back detectedType null, conf 0.3, flags no_rule_match (text PDF, so the classifier
-  and parser are the problem, not OCR).
-- worker/src/daftar/extract.py already opens PDFs per page with PyMuPDF (fitz).
-- Shelved, UNVERIFIED reference code from a timed-out attempt: branch wip/demo-1-shelved (classify.py,
-  invoice_generic.py changes). You may reuse ideas; do not copy blindly - its parser hardcoded a line description.
+- Plan: docs/plan/arnibooks-cursor-prompts-addendum-C.md C2 (lines 131-163): multi-IBAN statements split per account,
+  balance gate opening + credits - debits = closing and running-balance continuity, else status needs_review.
+- worker/src/daftar/extraction/__init__.py (~line 222) already inserts books_statement_extractions for
+  bank/card/gateway statements, but bank_c_multi_iban.pdf was not classified as a statement on the running app.
+- E1 added page-aware word_boxes and field source page+bbox for invoices - reuse that.
+- Shelved, UNVERIFIED reference: branch wip/demo-1-shelved worker/src/daftar/parsers/bank_statement_pdf.py. Its
+  multi-IBAN split invented an empty second statement (opening 0, closing 0, "balance_ok") - do not repeat that.
 
 FILES TO INSPECT:
-- worker/src/daftar/extraction/__init__.py, extraction/classify.py, extract.py, parsers/invoice_generic.py,
-  parsers/base.py, worker/tests/*
-- fixtures/extraction/pdfs/invoice_01..10.pdf, ground_truth/*.json, generate_synthetic.py, README.md
+- worker/src/daftar/extraction/__init__.py, extraction/classify.py, parsers/bank_uae_b.py, parsers/*
+- fixtures/extraction/pdfs/bank_a.pdf, bank_b_bilingual.pdf, bank_c_multi_iban.pdf + ground_truth + text/
+- db/23-books-phase1.sql (books_statement_extractions, books_statement_lines columns)
 
 IMPLEMENTATION REQUIREMENTS:
-1. word_boxes: [{page, x0, y0, x1, y1, text, conf}] in PDF points, origin top-left, plus {page, width, height} per
-   page, for text-layer pages (PyMuPDF words). (OCR pages: keep existing behaviour; E1 does not need OCR boxes.)
-2. Classifier: sales_invoice vs purchase_bill vs other from document content (not filename), with reasons.
-   Company perspective: if the issuer TRN/name is the company's own -> sales_invoice; if the customer/bill-to is the
-   company -> purchase_bill.
-3. Fields: document number, document date (ISO), issuer name + TRN, customer name + TRN, currency, net, VAT, gross.
-   Each field = {value, confidence, status ok|low|missing, source: {page, bbox} | null}. Not found -> value null,
-   status "missing". Never invent amounts; never assume 5% VAT.
-4. Page-aware totals: take net/VAT/gross from the totals block (search last page first), not the first match in the
-   concatenated text.
-5. Add a synthetic 2-page invoice fixture (generate_synthetic.py + ground_truth) with the totals block on page 2.
+1. Classify bank statements by content (IBAN, opening/closing balance, transaction table), not filename.
+2. Extract header + lines; integer minor units; dates ISO; each line has source page + bbox.
+3. Multi-IBAN: one statement per IBAN with its own lines and balances, taken from the document. If a section's
+   balances are not printed, its statement is needs_review with reason "balances_not_found" - never invent 0/0.
+4. Balance check per statement; failure -> needs_review with the difference.
+5. Dedupe within a re-upload (same file twice -> no duplicate lines).
 
 CONSTRAINTS:
-- Work on feat/books-phase1. Local commits only, message prefix "E1:".
-- Python worker + fixtures ONLY. No changes under src/, e2e/, db/.
+- Work on feat/books-phase1. Local commits only, message prefix "E2:".
+- Python worker + fixtures ONLY. No changes under src/, e2e/, db/ (if a column is missing, STOP and say which).
 - Integer minor units. Synthetic fixtures only.
 
 TESTS REQUIRED (pytest; run via scripts/ai/gates.ps1 pytest):
-- Every invoice_01..10 + the new 2-page fixture: doc type, number, date, issuer TRN and gross match ground_truth.
-- 2-page fixture: gross.source.page == 2 and its bbox contains the word(s) of the printed total.
-- A fixture with no VAT line -> vat value null, status "missing" (no 5% assumption).
-- word_boxes non-empty with page numbers for text PDFs.
+- bank_a and bank_b_bilingual: header and every line match ground_truth; balance check passes.
+- bank_c_multi_iban: one statement per IBAN; each matches ground_truth where ground_truth has values; sections
+  without printed balances are needs_review "balances_not_found" (not 0/0).
+- A tampered copy (one line amount changed) -> needs_review with the right difference.
+- E1 invoice tests still pass.
 
 ACCEPTANCE CRITERIA:
-1. pytest gate green; all fixtures above match ground_truth.
-2. Every found field has source page+bbox; missing fields are null.
-3. No changes outside worker/ and fixtures/. No ground_truth edited (except the new fixture's own file).
+1. pytest gate green; bank_a/b/c behave as above.
+2. Lines carry page+bbox; nothing invented for missing balances.
+3. No changes outside worker/ and fixtures/.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- change src/, e2e/, db/; call external OCR/LLM/API
+- change src/, e2e/, db/; post statement lines to the journal; implement bank matching (Phase 2)
 - edit existing ground_truth or golden files, disable/skip/narrow any test
 - run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If an existing ground_truth looks wrong versus its PDF, STOP and list it (owner decides).
+- If a ground_truth file looks wrong versus its PDF, STOP and list it (owner decides).
 - When done, write the report to the path given in the prompt and stop.
