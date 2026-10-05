@@ -73,6 +73,7 @@ def migrated_database():
             "22-books-alignment.sql",
             "23-books-phase1.sql",
             "24-books-phase1-seed.sql",
+            "30-pytest0-force-rls-reference.sql",
         ):
             _psql(database, "-f", str(ROOT / "db" / name))
     from daftar.bootstrap import bootstrap
