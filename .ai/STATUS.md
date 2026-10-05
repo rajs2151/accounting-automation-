@@ -2,9 +2,9 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: UI polish in progress (UI-1..UI-4 after E5)
-- 2026-10-05: E4 + E5 PASS on feat/books-phase1 (pushed). Queue after E5:
-  **UI-1 → UI-2 → UI-3 → UI-4 → C1-3**
+- Current task: E1c (worker real-layout invoice fields) then UI-3-fix1 (scroll/flags)
+- 2026-10-05: E4 + E5 + UI-1..UI-4 PASS on feat/books-phase1 (pushed). Remaining queue:
+  **E1c → UI-3-fix1 (scroll/flags) → E1d (no-guess SR on confirm) → C1-3**
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
   generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
@@ -25,14 +25,13 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5
-2. UI-1 Shell & navigation (.ai/NEXT_TASK_UI-1.md)
-3. UI-2 Queues: status badges, empty states, pill tabs (.ai/NEXT_TASK_UI-2.md)
-4. UI-3 Review screen polish on E5 (.ai/NEXT_TASK_UI-3.md)
-5. UI-4 Statement review layout (.ai/NEXT_TASK_UI-4.md)
-6. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4
+2. E1c - worker real-layout invoice fields (TRN, roles, dates, lines, no VAT guess) (.ai/NEXT_TASK_E1c.md)
+3. UI-3-fix1 - fixed review panels, splitter, readable flag badges (NEXT_TASK_UI-3.md reqs 8-9)
+4. E1d - no invent SR on confirm/UI (written after E1c reports server fallback)
+5. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
    plus: filter menu with counts, bulk bar (Change type, Assign, Revert to draft audited), "New supplier" badge
-7. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
+6. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-fix1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.

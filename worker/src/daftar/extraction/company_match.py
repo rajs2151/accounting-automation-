@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-TRN_RE = re.compile(r"\b100\d{12}\b")
+# UAE TRN: 15 digits starting with 1 (spaces/dashes stripped before match).
+TRN_RE = re.compile(r"(?<!\d)1\d{14}(?!\d)")
 IBAN_RE = re.compile(r"\bAE\d{21}\b", re.I)
 
 
@@ -20,6 +21,10 @@ class CompanyMatchResult:
     needs_review: bool = False
     score: float | None = None
     label: str = ""
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"[\s\-]", "", value or "")
 
 
 def _name_score(blob: str, company_name: str | None) -> float:
@@ -42,17 +47,19 @@ def match_company(
     company_name: str | None,
 ) -> CompanyMatchResult:
     blob = f"{filename}\n{text or ''}"
-    compact = blob.replace(" ", "").upper()
+    compact = _compact(blob).upper()
 
-    if company_trn and company_trn in blob:
-        return CompanyMatchResult(
-            True,
-            "trn",
-            False,
-            needs_review=False,
-            score=1.0,
-            label=f"Matched — TRN exact ({company_trn})",
-        )
+    if company_trn:
+        trn = _compact(company_trn)
+        if trn and trn in _compact(blob):
+            return CompanyMatchResult(
+                True,
+                "trn",
+                False,
+                needs_review=False,
+                score=1.0,
+                label=f"Matched — TRN exact ({company_trn})",
+            )
     if company_iban:
         iban = company_iban.replace(" ", "").upper()
         if iban and iban in compact:
@@ -76,7 +83,7 @@ def match_company(
             label=f"Needs review — name fuzzy ({score * 100:.0f}%), not TRN",
         )
 
-    has_other = bool(TRN_RE.search(blob) or IBAN_RE.search(blob))
+    has_other = bool(TRN_RE.search(_compact(blob)) or IBAN_RE.search(blob))
     return CompanyMatchResult(
         False,
         "mismatch" if has_other else "no_identifiers",

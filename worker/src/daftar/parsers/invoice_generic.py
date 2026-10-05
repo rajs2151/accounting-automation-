@@ -14,6 +14,31 @@ def _pdf_pages(content: bytes) -> tuple[list[str], list[dict], list[tuple[int, s
     return page_texts, word_boxes, methods
 
 
+def _line_from_extracted(item: dict, *, invoice_date: str | None, currency: str, conf: int) -> ParsedLine:
+    vat_code = item.get("vat_code")
+    net = item.get("net")
+    if net is None:
+        net = item.get("amount_minor") or 0
+    return ParsedLine(
+        description=str(item.get("description") or "Invoice total"),
+        amount_minor=int(net),
+        currency=currency or "",
+        txn_date=invoice_date,
+        reference=None,
+        confidence=conf,
+        meta={
+            "vat_code": vat_code,
+            "vatCode": vat_code,
+            "net": net,
+            "netMinor": net,
+            "qty": item.get("qty"),
+            "rate": item.get("rate"),
+            "source": item.get("source"),
+            "taxableMinor": net,
+        },
+    )
+
+
 class InvoiceGenericParser:
     name = "invoice_generic"
 
@@ -96,6 +121,7 @@ class InvoiceGenericParser:
         net = fields.get("net")
         vat = fields.get("vat")
         currency = fields.get("currency")  # None when not printed; do not invent AED
+        extract_flags = list(fields.get("flags") or [])
 
         lower = (filename + "\n" + text).lower()
         if re.search(r"\bpurchase\s+bill\b", lower) or "vendor bill" in lower:
@@ -105,29 +131,22 @@ class InvoiceGenericParser:
 
         conf = 90 if invoice_no and grand is not None else 55
 
-        description = invoice_no or filename
-        for raw in text.splitlines():
-            m_line = re.match(r"^([A-Za-z][^0-9\n]*?)\s+([\d,]+\.\d{2})\s*$", raw.strip())
-            if not m_line:
-                continue
-            label = m_line.group(1).strip()
-            if re.match(r"^(vat|total|grand|subtotal|net)\b", label, re.I):
-                continue
-            description = label
-            break
-
-        amount_minor = int(grand) if grand is not None else 0
-
-        return ParsedDocument(
-            doc_type=doc_type,
-            party=customer_name or issuer_name,
-            document_date=invoice_date,
-            period_hint=invoice_date,
-            currency=currency or "",
-            lines=[
+        line_items = list(fields.get("line_items") or [])
+        parsed_lines = [
+            _line_from_extracted(
+                item,
+                invoice_date=invoice_date,
+                currency=currency or "",
+                conf=conf,
+            )
+            for item in line_items
+        ]
+        if not parsed_lines:
+            # Never use the filename as the line description.
+            parsed_lines = [
                 ParsedLine(
-                    description=description,
-                    amount_minor=amount_minor,
+                    description="Invoice total",
+                    amount_minor=int(grand) if grand is not None else 0,
                     currency=currency or "",
                     txn_date=invoice_date,
                     reference=invoice_no,
@@ -135,9 +154,23 @@ class InvoiceGenericParser:
                     meta={
                         "taxableMinor": net,
                         "vatMinor": vat,
+                        "vat_code": None,
+                        "vatCode": None,
                     },
                 )
-            ],
+            ]
+            extract_flags.append("vat_code_missing")
+        else:
+            for pl in parsed_lines:
+                pl.reference = invoice_no
+
+        return ParsedDocument(
+            doc_type=doc_type,
+            party=customer_name or issuer_name,
+            document_date=invoice_date,
+            period_hint=invoice_date,
+            currency=currency or "",
+            lines=parsed_lines,
             confidence=conf,
             ocr_used=False,
             extras={
@@ -160,5 +193,7 @@ class InvoiceGenericParser:
                 "word_boxes": word_boxes,
                 "page_methods": methods,
                 "fields": fields.get("fields") or {},
+                "line_items": line_items,
+                "flags": extract_flags,
             },
         )

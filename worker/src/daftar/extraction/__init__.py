@@ -160,6 +160,7 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     wb_methods: list[tuple[int, str]] = []
     company_trn: str | None = None
     company_name: str | None = None
+    extract_flags: list[str] = []
 
     is_pdf = (frow["content_type"] or mime or "").startswith("application/pdf") or (
         frow["filename"] or ""
@@ -193,6 +194,33 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
         if extras.get("page_methods"):
             page_methods = list(extras["page_methods"])
 
+        def _line_payload(ln: Any) -> dict[str, Any]:
+            meta = ln.meta or {}
+            vat_code = meta.get("vat_code")
+            if vat_code is None:
+                vat_code = meta.get("vatCode")
+            net_minor = meta.get("netMinor")
+            if net_minor is None:
+                net_minor = meta.get("net")
+            if net_minor is None:
+                net_minor = ln.amount_minor
+            vat_minor = meta.get("vatMinor")
+            if vat_minor is None:
+                vat_minor = meta.get("vat")
+            return {
+                "description": ln.description,
+                "amount_minor": ln.amount_minor,
+                "netMinor": int(net_minor) if net_minor is not None else None,
+                "vatMinor": int(vat_minor) if vat_minor is not None else None,
+                "vatCode": vat_code,  # null when no evidence — never invent SR
+                "vat_code": vat_code,
+                "qty": meta.get("qty"),
+                "rate": meta.get("rate"),
+                "confidence": ln.confidence / 100.0,
+                "source": meta.get("source"),
+            }
+
+        line_payloads = [_line_payload(ln) for ln in parsed.lines]
         fields = {
             "party": {
                 "value": parsed.party,
@@ -213,16 +241,11 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 "source": None,
             },
             "lines": {
-                "value": [
-                    {
-                        "description": ln.description,
-                        "amount_minor": ln.amount_minor,
-                        "confidence": ln.confidence / 100.0,
-                    }
-                    for ln in parsed.lines
-                ],
+                "value": line_payloads,
                 "confidence": parsed.confidence / 100.0,
             },
+            # Preferred by getBooksInboxReview; carries vatCode into confirm path.
+            "_line_items": line_payloads,
         }
         # Merge structured invoice fields (with source page+bbox) when present.
         structured = extras.get("fields") or {}
@@ -241,9 +264,12 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
             "invoice_date",
             "supplier_trn",
             "grand_total",
+            "line_items",
         ):
             if key in structured and isinstance(structured[key], dict):
                 fields[key] = structured[key]
+        # Stash until validation_flags list is built (after classify).
+        extract_flags = [str(f) for f in (extras.get("flags") or []) if f]
         if ocr_used:
             for _key, field in fields.items():
                 if isinstance(field, dict) and field.get("confidence", 1) > 0.79:
@@ -297,6 +323,9 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     doc_type = classification.doc_type
     class_conf = classification.confidence
     flags: list[str] = list(classification.reasons)
+    for f in extract_flags:
+        if f not in flags:
+            flags.append(f)
     if page_methods:
         flags.append("methods:" + ",".join(f"{n}:{m}" for n, m in page_methods))
     # Pages whose text layer was unmapped-font garbage were sent to OCR; record it so review knows why.

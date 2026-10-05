@@ -323,6 +323,127 @@ def purchase_bill_body() -> str:
     )
 
 
+# E1c real-layout synthetic (invented names only — never real client data).
+E1C_ISSUER = "Sample Holiday Homes LLC"
+E1C_ISSUER_TRN = "105181487700003"
+E1C_CUSTOMER = "Example Trading Inc"
+E1C_CUSTOMER_TRN = "100000000000099"
+E1C_INV = "INV-E1C-001"
+E1C_DATE = "28 Jan 2026"
+E1C_LINE = "4th Rental Payment"
+E1C_AMOUNT = "5000.00"
+E1C_IBAN = "AE070331234567890123456"
+
+
+def invoice_e1c_layout_text() -> str:
+    """Plain-text proxy of the E1c layout (for text/ ground_truth companions)."""
+    return (
+        "\n".join(
+            [
+                "TAX INVOICE",
+                E1C_CUSTOMER,
+                f"TRN {E1C_CUSTOMER_TRN}",
+                "Dubai Marina, UAE",
+                E1C_ISSUER,
+                f"TRN : {E1C_ISSUER_TRN}",
+                "Business Bay, Dubai",
+                "Invoice          Invoice Date",
+                "Number           28 Jan 2026",
+                E1C_INV,
+                "Description          Quantity    Rate       Tax           Amount AED",
+                f"{E1C_LINE}      1           {E1C_AMOUNT}   Tax Exempt    {E1C_AMOUNT}",
+                f"Subtotal                                    {E1C_AMOUNT}",
+                "Total No Tax 0%                              0.00",
+                f"Invoice Total AED                           {E1C_AMOUNT}",
+                f"Amount Due AED                              {E1C_AMOUNT}",
+                f"Payment to be made in favour of {E1C_ISSUER}",
+                f"Bank: Synthetic UAE Bank  IBAN: {E1C_IBAN}",
+            ]
+        )
+        + "\n"
+    )
+
+
+def _write_e1c_layout_pdf(path: Path) -> None:
+    """Issuer top-right, unlabelled customer top-left, stacked Invoice Number, Tax Exempt line."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    font = "helv"
+    # Customer block (top-left, no Bill To label)
+    page.insert_text((40, 60), E1C_CUSTOMER, fontsize=11, fontname=font)
+    page.insert_text((40, 76), f"TRN {E1C_CUSTOMER_TRN}", fontsize=9, fontname=font)
+    page.insert_text((40, 92), "Dubai Marina, UAE", fontsize=9, fontname=font)
+    # Issuer block (top-right) with TRN label
+    page.insert_text((320, 60), E1C_ISSUER, fontsize=11, fontname=font)
+    page.insert_text((320, 76), f"TRN : {E1C_ISSUER_TRN}", fontsize=9, fontname=font)
+    page.insert_text((320, 92), "Business Bay, Dubai", fontsize=9, fontname=font)
+    page.insert_text((40, 120), "TAX INVOICE", fontsize=14, fontname=font)
+    # Stacked labels: Invoice / Number  and Invoice Date / value
+    page.insert_text((40, 160), "Invoice", fontsize=9, fontname=font)
+    page.insert_text((40, 174), "Number", fontsize=9, fontname=font)
+    page.insert_text((40, 190), E1C_INV, fontsize=11, fontname=font)
+    page.insert_text((220, 160), "Invoice Date", fontsize=9, fontname=font)
+    page.insert_text((220, 174), E1C_DATE, fontsize=11, fontname=font)
+    # Table header + one Tax Exempt line
+    page.insert_text((40, 230), "Description", fontsize=9, fontname=font)
+    page.insert_text((250, 230), "Quantity", fontsize=9, fontname=font)
+    page.insert_text((320, 230), "Rate", fontsize=9, fontname=font)
+    page.insert_text((390, 230), "Tax", fontsize=9, fontname=font)
+    page.insert_text((470, 230), "Amount AED", fontsize=9, fontname=font)
+    page.insert_text((40, 250), E1C_LINE, fontsize=10, fontname=font)
+    page.insert_text((260, 250), "1", fontsize=10, fontname=font)
+    page.insert_text((320, 250), E1C_AMOUNT, fontsize=10, fontname=font)
+    page.insert_text((380, 250), "Tax Exempt", fontsize=10, fontname=font)
+    page.insert_text((480, 250), E1C_AMOUNT, fontsize=10, fontname=font)
+    # Totals
+    page.insert_text((320, 300), "Subtotal", fontsize=10, fontname=font)
+    page.insert_text((480, 300), E1C_AMOUNT, fontsize=10, fontname=font)
+    page.insert_text((320, 318), "Total No Tax 0%", fontsize=10, fontname=font)
+    page.insert_text((480, 318), "0.00", fontsize=10, fontname=font)
+    page.insert_text((320, 336), "Invoice Total AED", fontsize=10, fontname=font)
+    page.insert_text((480, 336), E1C_AMOUNT, fontsize=10, fontname=font)
+    page.insert_text((320, 354), "Amount Due AED", fontsize=10, fontname=font)
+    page.insert_text((480, 354), E1C_AMOUNT, fontsize=10, fontname=font)
+    # Bank footer / payment favour
+    page.insert_text(
+        (40, 420),
+        f"Payment to be made in favour of {E1C_ISSUER}",
+        fontsize=9,
+        fontname=font,
+    )
+    page.insert_text(
+        (40, 438),
+        f"Bank: Synthetic UAE Bank  IBAN: {E1C_IBAN}",
+        fontsize=9,
+        fontname=font,
+    )
+    page.insert_text((40, 470), "[stamp]", fontsize=8, fontname=font)
+    doc.save(path)
+    doc.close()
+
+
+def invoice_e1c_ground_truth() -> dict:
+    return {
+        "doc_type": "sales_invoice",
+        "route": "text",
+        "invoice_no": E1C_INV,
+        "invoice_date": "2026-01-28",
+        "issuer_name": E1C_ISSUER,
+        "issuer_trn": E1C_ISSUER_TRN,
+        "customer_name": E1C_CUSTOMER,
+        "customer_trn": E1C_CUSTOMER_TRN,
+        "currency": "AED",
+        "net": 500000,
+        "vat": 0,
+        "gross": 500000,
+        "grand_total": 500000,
+        "line_description": E1C_LINE,
+        "line_vat_code": "EX",
+    }
+
+
 def _write_image_pdf(path: Path, text: str) -> None:
     """Scan-like PDF: raster page with no text layer."""
     import fitz
@@ -502,6 +623,15 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    # E1c real-layout fixture (synthetic names only)
+    e1c_text = invoice_e1c_layout_text()
+    (ROOT / "text" / "invoice_e1c_layout.txt").write_text(e1c_text, encoding="utf-8")
+    _write_e1c_layout_pdf(ROOT / "pdfs" / "invoice_e1c_layout.pdf")
+    (ROOT / "ground_truth" / "invoice_e1c_layout.json").write_text(
+        json.dumps(invoice_e1c_ground_truth(), indent=2) + "\n",
+        encoding="utf-8",
+    )
+
     arabic = invoice_body(77, arabic=True)
     _write_png(ROOT / "scans" / "arabic_invoice.png", arabic, seed=77)
     (ROOT / "ground_truth" / "arabic_invoice.json").write_text(
@@ -554,6 +684,7 @@ def main() -> None:
     print(f"  stripe csv: 1")
     print(f"  mixed pdf: 1")
     print(f"  arabic scan: 1")
+    print(f"  e1c layout: 1")
 
 
 if __name__ == "__main__":

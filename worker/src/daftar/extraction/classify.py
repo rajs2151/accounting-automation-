@@ -17,7 +17,8 @@ DOC_TYPES = (
 )
 
 IBAN_RE = re.compile(r"\bAE\d{21}\b", re.I)
-TRN_RE = re.compile(r"\b100\d{12}\b")
+# UAE TRN: 15 digits starting with 1 (not only those starting 100…).
+TRN_RE = re.compile(r"(?<!\d)1\d{14}(?!\d)")
 
 PARSER_ALIASES = {
     "sales_invoice": "sales_invoice",
