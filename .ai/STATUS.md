@@ -2,7 +2,7 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: TEST-ISO-1 (per-test synthetic companies so parallel tests stop polluting DESERT)
+- Current task: PYTEST-0 (fix 3 pre-existing worker pytest failures)
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
@@ -15,8 +15,8 @@
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2
-2. TEST-ISO-1 -> TEST-ISO-2 - per-test synthetic companies + guard test
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 (ace66e8, 5b8a9b4, 4763c34 - also
+   covered TEST-ISO-2's scope: only the 2 read-only goldens use DESERT, enforced by test-isolation.test.ts)
 3. PYTEST-0 - fix 3 pre-existing worker pytest failures (statements_extraction_method_check x2, forced RLS test)
    (pytest gate first ran for real 2026-10-05: 32 pass / 3 fail at HEAD)
 4. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
@@ -44,3 +44,6 @@
   Next: owner restarts loop (C1-2 i2 fix for case 7 re-routing), then swap in .ai/NEXT_TASK_DEMO-1.md.
 - 2026-10-05 10:57 | C1-2-fix1 | i1 | PASS | .ai/runs/20261005-104227-C1-2-fix1-i1
 - 2026-10-05 12:05 | DEMO-1 | i1 | FAIL | .ai/runs/20261005-105927-DEMO-1-i1
+- 2026-10-05 15:14 | TEST-ISO-1 | i1 | FAIL | .ai/runs/20261005-145854-TEST-ISO-1-i1
+- 2026-10-05 15:25 | TEST-ISO-1 | i2 | FAIL | .ai/runs/20261005-151433-TEST-ISO-1-i2
+- 2026-10-05 15:32 | TEST-ISO-1 | i3 | PASS | .ai/runs/20261005-152522-TEST-ISO-1-i3
