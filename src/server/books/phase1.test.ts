@@ -422,7 +422,69 @@ test("rebuild open items matches table", async (t) => {
   if (!admin) return;
   try {
     const company = await createTestCompany(admin, "phase1-rebuild");
-    const result = await assertOpenItemsMatchRebuild(OMAR, company.clientId);
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const stamp = Date.now();
+    const customerId = await makeCustomer(clientId, `rebuild-${stamp}`);
+    const supplierId = await makeSupplier(clientId, `rebuild-${stamp}`);
+    const bank = accountId(company, "1120");
+
+    // (a) Sales invoice that stays fully open
+    const openInv = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: customerId,
+      issueDate: "2026-05-10",
+      periodId,
+      documentNumber: `REBUILD-OPEN-${stamp}`,
+      lines: [
+        { description: "Fully open svc", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(openInv.id));
+
+    // (b) Sales invoice partly settled by a receipt with an allocation
+    const partialInv = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: customerId,
+      issueDate: "2026-05-11",
+      periodId,
+      documentNumber: `REBUILD-PART-${stamp}`,
+      lines: [
+        { description: "Partial svc", lineKind: "revenue", vatCode: "SR", netMinor: 20000, vatMinor: 1000 },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(partialInv.id));
+    const oi = await listBooksOpenItems(OMAR, clientId, { partyId: customerId, status: "open" });
+    const partialItem = oi.find((x: { documentId: string }) => x.documentId === partialInv.id);
+    assert.ok(partialItem, "partial invoice must create an open item");
+    await createReceiptOrPayment(OMAR, LAYLA, clientId, {
+      docType: "receipt",
+      partyId: customerId,
+      issueDate: "2026-05-12",
+      periodId,
+      bankAccountId: bank,
+      originalAmountMinor: 10000,
+      allocations: [{ openItemId: String(partialItem!.id), allocatedOriginalMinor: 10000 }],
+    });
+
+    // (c) Purchase bill (stays open)
+    const bill = await createBooksDocument(OMAR, clientId, {
+      docType: "purchase_bill",
+      partyId: supplierId,
+      issueDate: "2026-05-13",
+      periodId,
+      documentNumber: `REBUILD-BILL-${stamp}`,
+      lines: [
+        { description: "Supplies", lineKind: "expense", vatCode: "SR", netMinor: 8000, vatMinor: 400 },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(bill.id));
+
+    const result = await assertOpenItemsMatchRebuild(OMAR, clientId);
+    assert.ok(
+      result.rebuiltCount >= 3,
+      `expected rebuiltCount >= 3 after seeding docs, got ${result.rebuiltCount}`,
+    );
     assert.equal(result.ok, true, result.mismatches.join(","));
   } finally {
     await admin.end().catch(() => undefined);
