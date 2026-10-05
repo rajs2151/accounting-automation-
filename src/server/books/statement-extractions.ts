@@ -19,21 +19,90 @@ export type StatementLineInput = {
   flags?: string[];
 };
 
+export type StatementListBalanceCheck = "ok" | "failed" | null;
+
+/** Derive list-column balance check from worker/seed validation_flags + status. */
+export function statementListBalanceCheck(
+  validationFlags: unknown,
+  status: string,
+): StatementListBalanceCheck {
+  if (status === "queued" || status === "extracting") return null;
+  if (status === "failed") return "failed";
+  const flags = Array.isArray(validationFlags) ? validationFlags.map(String) : [];
+  const failed = flags.some(
+    (f) =>
+      f === "closing_mismatch" ||
+      f.startsWith("closing_mismatch:") ||
+      f === "running_balance_break" ||
+      f.startsWith("running_balance_break") ||
+      f === "balances_not_found" ||
+      f === "balance_break",
+  );
+  if (failed) return "failed";
+  if (flags.includes("balance_ok")) return "ok";
+  // Empty flags with a finished statement (seed / CSV recheck) → treat as ok.
+  if (status === "ready" || status === "needs_review" || status === "confirmed") return "ok";
+  return null;
+}
+
 export async function listStatementExtractions(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    const rows = await db.query(
-      `SELECT id, file_id AS "fileId", account_label AS "accountLabel", iban,
-              bank_name AS "bankName", currency, period_from AS "periodFrom",
-              period_to AS "periodTo", opening_balance_minor AS "openingBalanceMinor",
-              closing_balance_minor AS "closingBalanceMinor", status,
-              validation_flags AS "validationFlags"
-       FROM books_statement_extractions
-       WHERE client_id = $1
-       ORDER BY created_at DESC`,
+    const extracted = await db.query(
+      `SELECT s.id, s.file_id AS "fileId", f.filename,
+              s.account_label AS "accountLabel", s.iban,
+              s.bank_name AS "bankName", s.currency,
+              s.period_from AS "periodFrom", s.period_to AS "periodTo",
+              s.opening_balance_minor AS "openingBalanceMinor",
+              s.closing_balance_minor AS "closingBalanceMinor",
+              s.status, s.validation_flags AS "validationFlags",
+              s.inbox_item_id AS "inboxItemId",
+              (SELECT count(*)::int FROM books_statement_lines l WHERE l.statement_id = s.id)
+                AS "lineCount",
+              NULL::text AS error,
+              'statement'::text AS "rowKind"
+       FROM books_statement_extractions s
+       JOIN books_files f ON f.id = s.file_id
+       WHERE s.client_id = $1
+       ORDER BY s.created_at DESC`,
       [clientId],
     );
-    return rows.rows;
+
+    // Uploads still Queued/Extracting/Failed before the worker writes statement rows.
+    const pending = await db.query(
+      `SELECT i.id, i.file_id AS "fileId", f.filename,
+              NULL::text AS "accountLabel", NULL::text AS iban,
+              NULL::text AS "bankName", 'AED'::text AS currency,
+              NULL::date AS "periodFrom", NULL::date AS "periodTo",
+              NULL::bigint AS "openingBalanceMinor",
+              NULL::bigint AS "closingBalanceMinor",
+              i.status, '[]'::jsonb AS "validationFlags",
+              i.id AS "inboxItemId",
+              0::int AS "lineCount",
+              i.error,
+              'pending'::text AS "rowKind"
+       FROM books_inbox_items i
+       JOIN books_files f ON f.id = i.file_id
+       WHERE i.client_id = $1
+         AND i.intended_type IN ('bank_statement', 'card_statement', 'gateway_statement')
+         AND NOT EXISTS (
+           SELECT 1 FROM books_statement_extractions s WHERE s.inbox_item_id = i.id
+         )
+       ORDER BY i.created_at DESC`,
+      [clientId],
+    );
+
+    const rows = [...pending.rows, ...extracted.rows].map((r) => ({
+      ...r,
+      openingBalanceMinor:
+        r.openingBalanceMinor == null ? null : Number(r.openingBalanceMinor),
+      closingBalanceMinor:
+        r.closingBalanceMinor == null ? null : Number(r.closingBalanceMinor),
+      lineCount: Number(r.lineCount || 0),
+      balanceCheck: statementListBalanceCheck(r.validationFlags, String(r.status)),
+    }));
+
+    return rows;
   });
 }
 

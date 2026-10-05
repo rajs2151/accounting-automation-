@@ -12,6 +12,7 @@ const STMT_BALANCED = "e7000001-0000-4000-8000-000000000098";
 const STMT_DROPPED = "e7000001-0000-4000-8000-000000000088";
 const PHASE1_DIR = path.join(process.cwd(), "docs", "phase1");
 const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "invoice_02.pdf");
+const BANK_A_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "bank_a.pdf");
 
 /**
  * e2e profile does not run the Python worker. After upload (status=queued), insert a
@@ -313,6 +314,133 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await page.goto("/books/parties");
   await expect(page.getByRole("heading", { name: "Parties" })).toBeVisible();
   await savePhase1("parties.png", await page.screenshot({ fullPage: true }));
+});
+
+/**
+ * e2e has no Python worker process. After bank_statement upload, seed the same
+ * books_statement_extractions + lines shape process_extract_document writes for bank_a.
+ */
+async function insertWorkerShapedStatement(args: {
+  inboxItemId: string;
+  fileId: string;
+  clientId: string;
+}) {
+  const admin = new pg.Client({
+    connectionString:
+      process.env.DATABASE_URL_SUPER ||
+      "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+  });
+  await admin.connect();
+  try {
+    const extractionId = randomUUID();
+    const stmtId = randomUUID();
+    await admin.query(`DELETE FROM books_extractions WHERE inbox_item_id = $1`, [
+      args.inboxItemId,
+    ]);
+    await admin.query(
+      `INSERT INTO books_extractions (
+         id, client_id, file_id, inbox_item_id, doc_type, status,
+         fields_json, raw_text, word_boxes, validation_flags, extractor_version
+       ) VALUES ($1,$2,$3,$4,'bank_statement','ready',$5::jsonb,$6,'[]'::jsonb,
+                 '["balance_ok"]'::jsonb,'phase1-v1')`,
+      [
+        extractionId,
+        args.clientId,
+        args.fileId,
+        args.inboxItemId,
+        JSON.stringify({
+          currency: { value: "AED", confidence: 0.99, status: "ok", source: null },
+        }),
+        "ACCOUNT STATEMENT\nIBAN AE070331234567890123456\n",
+      ],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_extractions (
+         id, client_id, file_id, inbox_item_id, account_label, iban, bank_name, currency,
+         period_from, period_to, opening_balance_minor, closing_balance_minor,
+         status, validation_flags
+       ) VALUES ($1,$2,$3,$4,'Synthetic UAE Bank A','AE070331234567890123456',
+                 'Synthetic UAE Bank A','AED','2026-05-01','2026-05-31',
+                 100000,130000,'ready','["balance_ok"]'::jsonb)`,
+      [stmtId, args.clientId, args.fileId, args.inboxItemId],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_lines (
+         id, statement_id, client_id, line_date, description,
+         debit_minor, credit_minor, running_balance_minor, currency, confidence, flags, sort_index
+       ) VALUES
+         ($1,$2,$3,'2026-05-05','CLIENT RECEIPT',0,50000,NULL,'AED',0.99,'{}',0),
+         ($4,$2,$3,'2026-05-10','OFFICE RENT',20000,0,NULL,'AED',0.99,'{}',1)`,
+      [randomUUID(), stmtId, args.clientId, randomUUID()],
+    );
+    await admin.query(
+      `UPDATE books_inbox_items
+       SET status = 'ready', detected_type = 'bank_statement',
+           classification_confidence = 1, error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [args.inboxItemId],
+    );
+    return stmtId;
+  } finally {
+    await admin.end();
+  }
+}
+
+test("phase1: upload bank statement from /books/statements", async ({ page }) => {
+  await page.goto("/books/statements");
+  await expect(page.getByRole("heading", { name: "Statement staging" })).toBeVisible({
+    timeout: 15000,
+  });
+  await expect(page.getByTestId("statement-upload")).toBeVisible();
+  await expect(page.getByTestId("statements-table")).toBeVisible();
+  await expect(page.getByTestId("stripe-csv-textarea")).toBeVisible();
+
+  const base = fs.readFileSync(BANK_A_PDF);
+  const bytes = Buffer.concat([
+    base,
+    Buffer.from(`\n% e2e-bank-${Date.now()}-${Math.random()}\n`),
+  ]);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+  const upload = await page.request.post("/api/books/inbox/upload", {
+    multipart: {
+      files: {
+        name: "bank_a.pdf",
+        mimeType: "application/pdf",
+        buffer: bytes,
+      },
+      userDocType: "bank_statement",
+    },
+  });
+  const uploaded = await upload.json();
+  expect(upload.ok(), `upload failed: ${JSON.stringify(uploaded)}`).toBeTruthy();
+  const inboxId = uploaded.results?.[0]?.inboxItemId as string;
+  expect(inboxId, `upload body: ${JSON.stringify(uploaded)}`).toBeTruthy();
+  expect(uploaded.results[0].sha256).toBe(sha256);
+  expect(uploaded.results[0].status).toBe("queued");
+
+  // Pending row appears as Queued before the worker finishes.
+  await page.reload();
+  await expect(page.getByText("bank_a.pdf")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId(`statement-status-${inboxId}`)).toContainText(/Queued|Extracting/i);
+
+  // e2e has no worker — seed worker-shaped statement rows (same shape as bank_a extraction).
+  const stmtId = await insertWorkerShapedStatement({
+    inboxItemId: inboxId,
+    fileId: uploaded.results[0].fileId as string,
+    clientId: DESERT,
+  });
+
+  await page.reload();
+  await expect(page.getByTestId(`statement-row-${stmtId}`)).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId(`statement-status-${stmtId}`)).toContainText(/Extracted|Ready/i);
+  const row = page.getByTestId(`statement-row-${stmtId}`);
+  await expect(row).toContainText("bank_a.pdf");
+  await expect(row).toContainText("2"); // line count
+  await expect(page.getByTestId(`balance-check-${stmtId}`)).toContainText(/ok/i);
+  await expect(row).toContainText(/AE07/);
+  await expect(row).toContainText("1,000.00");
+  await expect(row).toContainText("1,300.00");
 });
 
 test("phase1: upload bill → approve → journal visible", async ({ page, context }) => {

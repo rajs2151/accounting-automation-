@@ -169,15 +169,23 @@ function classifyInboxDocType(detected: string): "sales_invoice" | "purchase_bil
   return "sales_invoice";
 }
 
+export type InboxIntendedType =
+  | "sales_invoice"
+  | "purchase_bill"
+  | "bank_statement"
+  | "card_statement"
+  | "gateway_statement";
+
 export async function uploadBooksInboxFiles(
   userId: string,
   clientId: string | null,
   files: Array<{ filename: string; contentType: string; bytes: Buffer }>,
-  opts?: { intendedType?: "sales_invoice" | "purchase_bill" | null },
+  opts?: { intendedType?: InboxIntendedType | null; userDocType?: string | null },
 ) {
   return withUser(userId, async (db) => {
     if (clientId) await assertSyntheticTenant(db, clientId);
     const intendedType = opts?.intendedType || null;
+    const userDocType = opts?.userDocType || null;
     const results: Array<{
       inboxItemId: string;
       fileId: string;
@@ -256,19 +264,28 @@ export async function uploadBooksInboxFiles(
 
       // Store + enqueue only — field extraction is the worker's job (no TS sync extract).
       if (clientId) {
-        await enqueueBooksJob(db, clientId, "extract_document", {
+        const payload: Record<string, unknown> = {
           inboxItemId: inboxId,
           fileId,
           storageKey,
           filename: file.filename,
-        });
+        };
+        // Statements page (and manual picks) pass userDocType so the worker skips auto-classify.
+        if (userDocType) payload.userDocType = userDocType;
+        await enqueueBooksJob(db, clientId, "extract_document", payload);
         await writeBooksAudit(db, {
           clientId,
           actor: userId,
           action: "upload",
           entity: "books_inbox_item",
           entityId: inboxId,
-          after: { filename: file.filename, sha256, status: "queued" },
+          after: {
+            filename: file.filename,
+            sha256,
+            status: "queued",
+            intendedType,
+            userDocType,
+          },
         });
       }
 
@@ -292,7 +309,7 @@ export async function retryBooksInboxExtract(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const item = await db.query(
-      `SELECT i.id, i.file_id, f.storage_key, f.filename, f.content_type
+      `SELECT i.id, i.file_id, i.intended_type, f.storage_key, f.filename, f.content_type
        FROM books_inbox_items i
        JOIN books_files f ON f.id = i.file_id
        WHERE i.id = $1 AND (i.client_id = $2 OR i.client_id IS NULL)`,
@@ -308,12 +325,14 @@ export async function retryBooksInboxExtract(
     );
     // Touch storage so missing objects fail early; extraction itself is worker-only.
     await getObjectBytes(String(row.storage_key));
-    await enqueueBooksJob(db, clientId, "extract_document", {
+    const retryPayload: Record<string, unknown> = {
       inboxItemId,
       fileId: String(row.file_id),
       storageKey: String(row.storage_key),
       filename: String(row.filename),
-    });
+    };
+    if (row.intended_type) retryPayload.userDocType = String(row.intended_type);
+    await enqueueBooksJob(db, clientId, "extract_document", retryPayload);
     await writeBooksAudit(db, {
       clientId,
       actor: userId,

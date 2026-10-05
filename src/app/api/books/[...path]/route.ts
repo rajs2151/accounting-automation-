@@ -363,9 +363,31 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "inbox" && path[1] === "upload" && contentType.includes("multipart/form-data")) {
       const form = await request.formData();
       const unassigned = String(form.get("unassigned") || "") === "1";
-      const intendedRaw = String(form.get("intendedType") || "");
-      const intendedType =
-        intendedRaw === "purchase_bill" || intendedRaw === "sales_invoice" ? intendedRaw : null;
+      // Statements UI sends userDocType=bank_statement; sales/purchases still use intendedType.
+      const userDocRaw = String(form.get("userDocType") || "");
+      const intendedRaw = String(form.get("intendedType") || userDocRaw || "");
+      const allowedIntended = new Set([
+        "purchase_bill",
+        "sales_invoice",
+        "bank_statement",
+        "card_statement",
+        "gateway_statement",
+      ]);
+      const intendedType = allowedIntended.has(intendedRaw)
+        ? (intendedRaw as
+            | "purchase_bill"
+            | "sales_invoice"
+            | "bank_statement"
+            | "card_statement"
+            | "gateway_statement")
+        : null;
+      const userDocType =
+        userDocRaw ||
+        (intendedType === "bank_statement" ||
+        intendedType === "card_statement" ||
+        intendedType === "gateway_statement"
+          ? intendedType
+          : null);
       const uploaded: Array<{ filename: string; contentType: string; bytes: Buffer }> = [];
       for (const [key, value] of form.entries()) {
         if (key !== "file" && key !== "files") continue;
@@ -383,7 +405,7 @@ export async function POST(request: Request, ctx: Ctx) {
           session.userId,
           unassigned ? null : session.clientId,
           uploaded,
-          { intendedType },
+          { intendedType, userDocType },
         ),
       );
     }
