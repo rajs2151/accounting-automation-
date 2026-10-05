@@ -1,20 +1,26 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { FileText } from "lucide-react";
 import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
+import { CellAmount } from "@/components/books/cells";
+import { RowKebabMenu, RowReviewLink } from "@/components/books/row-kebab-menu";
+import { StatusBadge } from "@/components/books/status-badge";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
+import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/status-labels";
 
 type Doc = {
   id: string;
@@ -176,18 +182,14 @@ export default function PurchasesPage() {
 
       <OpenItemKpiTiles side="AP" />
 
-      <div className="flex gap-2" data-testid="purchase-tabs">
-        <Button variant={tab === "bills" ? "default" : "outline"} onClick={() => setTab("bills")}>
-          Bills
-        </Button>
-        <Button
-          variant={tab === "uploads" ? "default" : "outline"}
-          onClick={() => setTab("uploads")}
-          data-testid="purchase-uploads-tab"
-        >
-          Uploads
-        </Button>
-      </div>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} data-testid="purchase-tabs">
+        <TabsList>
+          <TabsTrigger value="bills">Bills</TabsTrigger>
+          <TabsTrigger value="uploads" data-testid="purchase-uploads-tab">
+            Uploads
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {tab === "uploads" ? (
         <table className="w-full text-sm" data-testid="purchase-uploads-table">
@@ -201,28 +203,35 @@ export default function PurchasesPage() {
           </thead>
           <tbody>
             {uploads.map((u) => (
-              <tr key={u.id} className="border-t border-border">
+              <tr
+                key={u.id}
+                className="group border-t border-border hover:bg-muted/30"
+                onClick={() => {
+                  window.location.href = `/books/inbox/${u.id}`;
+                }}
+              >
                 <td className="py-2">
-                  <Link className="text-primary underline" href={`/books/inbox/${u.id}`}>
+                  <span className="inline-flex items-center gap-2">
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
                     {u.filename}
-                  </Link>
+                  </span>
                 </td>
                 <td data-testid={`upload-status-${u.id}`}>
-                  {u.error === "duplicate_file" ? "Duplicate" : u.status}
+                  <StatusBadge
+                    meta={inboxStatusLabel(u.status, u.error === "duplicate_file")}
+                  />
                 </td>
-                <td>{u.detectedType || "—"}</td>
-                <td className="space-x-2 text-right">
-                  {u.error !== "duplicate_file" && (u.status === "failed" || u.status === "needs_review") ? (
-                    <Button size="sm" variant="outline" onClick={() => void retry(u.id)}>
-                      Retry
-                    </Button>
-                  ) : null}
-                  <Link
-                    className="text-sm text-primary underline"
-                    href={`/books/inbox/${u.id}`}
-                  >
-                    Review
-                  </Link>
+                <td>
+                  <StatusBadge meta={docTypeLabel(u.detectedType)} />
+                </td>
+                <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <RowKebabMenu data-testid={`upload-row-menu-${u.id}`}>
+                    {u.error !== "duplicate_file" &&
+                    (u.status === "failed" || u.status === "needs_review") ? (
+                      <DropdownMenuItem onClick={() => void retry(u.id)}>Retry</DropdownMenuItem>
+                    ) : null}
+                    <RowReviewLink href={`/books/inbox/${u.id}`} testId={`upload-review-${u.id}`} />
+                  </RowKebabMenu>
                 </td>
               </tr>
             ))}
@@ -328,8 +337,12 @@ export default function PurchasesPage() {
                   <td className="py-2">{r.documentNumber || "—"}</td>
                   <td>{r.partyName}</td>
                   <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
-                  <td>{formatMinor(r.grossMinor)}</td>
-                  <td>{r.status}</td>
+                  <td className="text-end tabular-nums">
+                    {r.grossMinor != null ? <CellAmount minor={r.grossMinor} /> : "—"}
+                  </td>
+                  <td>
+                    <StatusBadge meta={documentStatusLabel(r.status)} />
+                  </td>
                   <td className="space-x-2 text-right">
                     <Button size="sm" variant="outline" onClick={() => setReviewId(r.id)}>
                       Review

@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/books/empty-state";
+import { StatusBadge } from "@/components/books/status-badge";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
+import { docTypeLabel, inboxStatusLabel } from "@/lib/status-labels";
+import { Inbox } from "lucide-react";
 import { apiErrorMessage } from "@/lib/api-error";
 
 type InboxRow = {
@@ -19,6 +24,8 @@ type InboxRow = {
 };
 
 export default function InboxPage() {
+  const searchParams = useSearchParams();
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<InboxRow[]>([]);
   const [unassigned, setUnassigned] = useState(false);
 
@@ -31,6 +38,14 @@ export default function InboxPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (searchParams.get("upload") !== "1") return;
+    uploadInputRef.current?.click();
+    const url = new URL(window.location.href);
+    url.searchParams.delete("upload");
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }, [searchParams]);
 
   async function onUpload(files: FileList | null) {
     if (!files?.length) return;
@@ -84,9 +99,11 @@ export default function InboxPage() {
           <label className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground">
             Upload
             <input
+              ref={uploadInputRef}
               type="file"
               multiple
               className="hidden"
+              data-testid="inbox-upload"
               onChange={(e) => void onUpload(e.target.files)}
             />
           </label>
@@ -96,6 +113,16 @@ export default function InboxPage() {
         Nothing extracted posts without human confirmation. Low-confidence types need a manual pick.
       </p>
 
+      {!rows.length ? (
+        <EmptyState
+          data-testid="inbox-empty-state"
+          icon={Inbox}
+          title="No documents yet"
+          hint="Upload invoices or statements to start review."
+          actionLabel="Upload"
+          onAction={() => uploadInputRef.current?.click()}
+        />
+      ) : (
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-left">
@@ -109,23 +136,33 @@ export default function InboxPage() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className="border-t border-border">
+              <tr
+                key={r.id}
+                className="group cursor-pointer border-t border-border hover:bg-muted/30"
+                onClick={() => {
+                  window.location.href = `/books/inbox/${r.id}`;
+                }}
+              >
                 <td className="px-3 py-2">
-                  <a className="text-primary underline" href={`/books/inbox/${r.id}`}>
-                    {r.filename}
-                  </a>
+                  <span className="text-foreground">{r.filename}</span>
                   {r.error === "duplicate_file" && (
                     <span className="ml-2 text-xs text-amber-700">already uploaded - see the original</span>
                   )}
                 </td>
-                <td className="px-3 py-2">{r.detectedType || "—"}</td>
+                <td className="px-3 py-2">
+                  <StatusBadge meta={docTypeLabel(r.detectedType)} />
+                </td>
                 <td className="px-3 py-2">
                   {r.classificationConfidence == null
                     ? "—"
                     : `${Math.round(Number(r.classificationConfidence) * 100)}%`}
                 </td>
-                <td className="px-3 py-2">{r.error === "duplicate_file" ? "Duplicate" : r.status}</td>
-                <td className="px-3 py-2 space-x-2">
+                <td className="px-3 py-2">
+                  <StatusBadge
+                    meta={inboxStatusLabel(r.status, r.error === "duplicate_file")}
+                  />
+                </td>
+                <td className="px-3 py-2 space-x-2" onClick={(e) => e.stopPropagation()}>
                   {unassigned && (
                     <Button size="sm" variant="outline" onClick={() => void routeHere(r.id)}>
                       Route here
@@ -154,6 +191,7 @@ export default function InboxPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

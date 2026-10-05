@@ -4,16 +4,20 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
+import { CellAmount } from "@/components/books/cells";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { StatusBadge } from "@/components/books/status-badge";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiErrorMessage } from "@/lib/api-error";
-import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
+import { formatDateUae } from "@/lib/date";
+import { displayToMinor, MoneyTypeError } from "@/lib/money";
+import { documentStatusLabel } from "@/lib/status-labels";
 
 type Doc = {
   id: string;
@@ -248,11 +252,17 @@ export default function SalesPage() {
               <tr key={r.id} className="border-t border-border">
                 <td className="px-3 py-2">{r.documentNumber || "—"}</td>
                 <td className="px-3 py-2">{r.partyName}</td>
-                <td className="px-3 py-2">{String(r.issueDate).slice(0, 10)}</td>
-                <td className="px-3 py-2">{formatMinor(r.grossMinor)}</td>
+                <td className="px-3 py-2">{formatDateUae(String(r.issueDate).slice(0, 10))}</td>
                 <td className="px-3 py-2">
-                  {r.status}
-                  {r.deferRevenue ? " · deferred" : ""}
+                  {r.grossMinor != null ? <CellAmount minor={r.grossMinor} /> : "—"}
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <StatusBadge meta={documentStatusLabel(r.status)} />
+                    {r.deferRevenue ? (
+                      <StatusBadge meta={{ label: "Deferred", tone: "info" }} />
+                    ) : null}
+                  </div>
                 </td>
                 <td className="space-x-2 px-3 py-2">
                   <Button size="sm" variant="outline" onClick={() => setReviewId(r.id)}>

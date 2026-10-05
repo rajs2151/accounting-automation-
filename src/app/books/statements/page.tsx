@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { StatusBadge } from "@/components/books/status-badge";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
 import { formatMinor } from "@/lib/money";
+import { balanceCheckLabel, statementStatusLabel } from "@/lib/status-labels";
 
 type Row = {
   id: string;
@@ -28,25 +30,6 @@ type Row = {
   rowKind?: "statement" | "pending";
   validationFlags?: unknown;
 };
-
-function statusLabel(status: string): string {
-  switch (status) {
-    case "queued":
-      return "Queued";
-    case "extracting":
-      return "Extracting";
-    case "needs_review":
-      return "Needs review";
-    case "ready":
-      return "Extracted";
-    case "failed":
-      return "Failed";
-    case "confirmed":
-      return "Confirmed";
-    default:
-      return status;
-  }
-}
 
 function periodLabel(from: string | null | undefined, to: string | null | undefined): string {
   if (!from && !to) return "—";
@@ -197,16 +180,14 @@ export default function StatementsListPage() {
                       {r.closingBalanceMinor == null ? "—" : formatMinor(r.closingBalanceMinor)}
                     </td>
                     <td className="px-3 py-2" data-testid={`balance-check-${r.id}`}>
-                      {r.balanceCheck === "ok" ? (
-                        <span className="text-emerald-700">ok</span>
-                      ) : r.balanceCheck === "failed" ? (
-                        <span className="text-red-600">failed</span>
+                      {r.balanceCheck ? (
+                        <StatusBadge meta={balanceCheckLabel(r.balanceCheck)} />
                       ) : (
                         "—"
                       )}
                     </td>
                     <td className="px-3 py-2" data-testid={`statement-status-${r.id}`}>
-                      {statusLabel(r.status)}
+                      <StatusBadge meta={statementStatusLabel(r.status)} />
                       {r.status === "failed" && r.error ? (
                         <div className="text-xs text-red-600">{r.error}</div>
                       ) : null}
