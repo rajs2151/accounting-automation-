@@ -5,9 +5,10 @@
 set -euo pipefail
 
 # System deps the worker tests need (psql for conftest migrations; same OCR/GL libs as worker/Dockerfile).
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq --no-install-recommends postgresql-client libgl1 libglib2.0-0 libgomp1 \
-  tesseract-ocr tesseract-ocr-eng tesseract-ocr-ara >/dev/null 2>&1
+APT="apt-get -o Acquire::Retries=5 -qq"
+$APT update >/tmp/apt.log 2>&1 || { cat /tmp/apt.log; echo "apt-get update failed"; exit 100; }
+$APT install -y --no-install-recommends postgresql-client libgl1 libglib2.0-0 libgomp1 \
+  tesseract-ocr tesseract-ocr-eng tesseract-ocr-ara >/tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; echo "apt-get install failed"; exit 100; }
 
 mkdir -p /work
 tar -C /src --exclude=./node_modules --exclude=./.next --exclude=./.git --exclude=./.ai \
