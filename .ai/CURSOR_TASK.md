@@ -1,70 +1,59 @@
-TASK ID: E2-fix1
-PHASE: Extraction (Addendum A) step 2 of 5 - bank statements: owner decisions + review defects
+TASK ID: E3
+PHASE: Extraction (Addendum A) step 3 of 5 - API: uploads use only the worker; remove the TypeScript extractor
 
 OBJECTIVE:
-Apply the owner's two decisions on E2 (commit 20f6674) and fix the three defects the review found. Python worker +
-fixtures only.
+An upload only stores the file, creates the inbox item and enqueues the worker's extract_document job. The web app
+no longer computes any field values. The inbox item shows Queued -> Extracting -> Needs review / Ready / Failed.
 
-OWNER DECISIONS (2026-10-05, Raj):
-1. Ambiguous multi-IBAN activity (bank_c_multi_iban.pdf: two IBANs in the header, then one opening 500.00, one
-   TRANSFER IN 250.00 CR, closing 750.00, nothing tying the activity to either account):
-   -> Produce TWO statements, BOTH status needs_review. Attribute the activity block by POSITION: to the IBAN whose
-      section contains it (the text after that IBAN's line and before the next IBAN's line); if no section contains
-      it, to the first-listed IBAN. Add flag "account_attribution_ambiguous" to that statement. It must NEVER be
-      'ready' or balance_ok-as-confirmed while that flag is set. The other IBAN gets balances null +
-      "balances_not_found" (as now).
-2. Ground truth source:
-   -> Fill fixtures/extraction/ground_truth/bank_a.json, bank_b_bilingual.json, bank_c_multi_iban.json from the
-      generator's own input constants BANK_A / BANK_B / BANK_C in fixtures/extraction/generate_synthetic.py (lines
-      35-62): bank, IBAN(s), currency, period if printed, opening/closing in fils, and every line (date ISO,
-      description, debit/credit, amount in fils, printed running balance if any). Keep the existing doc_type and
-      route keys. Derive each value from those constants (show the mapping in the report) - never from the
-      extractor's output. The reviewer will cross-check against the constants.
-   This is an owner-approved ground_truth edit, limited to these three files and to ADDING keys.
-
-DEFECTS TO FIX (from the E2 review):
-a. Remove the within-statement dedupe that drops identical transactions when no running balance is present
-   (two identical fees on the same day are both real). Re-upload dedupe stays as is (delete-and-reinsert).
-b. Running balance: when the statement prints a balance column, READ it (do not compute it), and implement the C2
-   continuity check (each line's printed balance = previous balance +/- amount; break -> needs_review with the line
-   and difference). When no balance column exists, leave running balance null (do not compute and present it as
-   printed).
-c. Line pattern: accept lines with a printed balance column and lines without CR/DR suffixes where debit/credit
-   columns are used; do not silently drop lines. Add a synthetic fixture variant with a balance column (generated
-   via generate_synthetic.py, with ground_truth from its constants) to prove it.
+CONTEXT:
+- src/server/books/inbox.ts (~lines 230-245) runs the TypeScript sync extractor src/server/books/extract-sync.ts AND
+  enqueues the worker job; the worker row then replaces the sync row. The sync extractor invents values
+  (fallback 100.00 + 5.00 VAT, assumes 5% VAT, forces sales_invoice, fixed bboxes from invoiceSynPdfBboxes()).
+- E1/E2 made the worker produce correct invoice and bank statement extractions with page+bbox.
+- Draft creation from an extraction (confirm/convert to document) lives in inbox.ts; C1-1 printed totals are filled
+  from the extraction; C1-2 case 7 re-routes only on exact sales_invoice classification. Both must keep working
+  with the worker's fields_json shape.
 
 FILES TO INSPECT:
-- worker/src/daftar/parsers/ (the E2 bank statement parser), worker/src/daftar/extraction/__init__.py,
-  worker/tests/ (E2 tests)
-- fixtures/extraction/generate_synthetic.py, fixtures/extraction/ground_truth/bank_*.json, text/bank_*.txt
-- docs/plan/arnibooks-cursor-prompts-addendum-C.md C2 (lines 131-163)
+- src/server/books/inbox.ts, src/server/books/extract-sync.ts, src/server/books/jobs.ts,
+  src/app/api/books/[...path]/route.ts, src/app/books/inbox/[id]/page.tsx (status only)
+- src/server/books/inbox-review.test.ts, c1-money-checks.test.ts, c1-validation.test.ts (consumers of extractions)
+- worker/src/daftar/extraction/__init__.py (fields_json shape written by the worker)
+
+IMPLEMENTATION REQUIREMENTS:
+1. Upload path: store file + inbox item (status queued) + enqueue extract_document. No sync field extraction.
+2. Remove from the runtime path: parseInvoiceFieldsFromText, pdfTextFromStreams, the 100.00/5.00 fallbacks,
+   invoiceSynPdfBboxes as runtime data. Delete dead code; keep only what tests still need as fixtures, moved under a
+   test-only location.
+3. Inbox/review API returns status + error reason; the review page shows "Extracting..." and refreshes until the
+   worker finishes (no viewer changes - that is E5).
+4. Draft creation and printed totals read the worker's fields_json (value + source). Missing values stay empty.
+5. Exactly one books_extractions row per inbox item per run; retry replaces it.
 
 CONSTRAINTS:
-- Work on feat/books-phase1. Local commits only, message prefix "E2-fix1:".
-- worker/ and fixtures/extraction/ only. No src/, e2e/, db/ changes.
-- Integer minor units. Synthetic data only.
+- Work on feat/books-phase1. Local commits only, message prefix "E3:".
+- No worker/ changes (if the worker shape is insufficient, STOP and describe what is missing).
+- Do not change dual control, RLS, periods, voucher numbering, C1-1/C1-2 rules.
 
-TESTS REQUIRED (scripts/ai/gates.ps1 pytest; also unit + typecheck must stay green):
-- bank_a, bank_b_bilingual: header + every line equal the new ground_truth (plain equality).
-- bank_c: two statements, both needs_review; activity statement has "account_attribution_ambiguous" and is never
-  ready; other IBAN balances_not_found; values equal ground_truth.
-- Two identical same-day fees without running balance -> both lines kept.
-- Balance-column fixture: lines extracted with printed balances; continuity check passes; a tampered balance ->
-  needs_review naming the line.
-- Tampered amount still -> needs_review with the right difference. All E1 tests still pass.
+TESTS REQUIRED:
+- Port tests that relied on the sync path to use worker-shaped extraction rows (insert fields_json as the worker
+  writes it). Keep their assertions.
+- Unit: upload -> inbox item queued + one extract_document job + zero field values written by the web app.
+- e2e: existing upload/review e2e still passes (it may need to wait for the worker; use the e2e worker or insert the
+  worker-shaped extraction in setup - explain which).
+- Full npm test 0 failures; typecheck; e2e green.
 
 ACCEPTANCE CRITERIA:
-1. Owner decisions 1 and 2 implemented exactly as written; report maps every ground_truth value to the generator
-   constant it came from.
-2. Defects a, b, c fixed and each proven by a test.
-3. pytest, unit, typecheck green. Only worker/ and fixtures/extraction/ changed.
+1. No field values are produced by TypeScript at runtime (report lists removed code).
+2. Status flow visible; one extraction row per run.
+3. C1-1/C1-2 tests still pass unchanged in meaning.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- edit any ground_truth other than the three bank files (and new fixtures' own files); remove existing keys
-- change src/, e2e/, db/; post statement lines to the journal; implement bank matching
+- change worker/ or the review viewer component
+- edit golden expected values, disable/skip/narrow any test, weaken any RLS rule
 - run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If the generator constants disagree with the generated PDF text, STOP and report the difference (owner decides).
+- If removing the sync path changes C1-1/C1-2 behaviour in a way that needs a decision, STOP and explain.
 - When done, write the report to the path given in the prompt and stop.

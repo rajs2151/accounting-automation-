@@ -2,11 +2,11 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E2-fix1 (owner decisions on E2 + 3 review defects)
+- Current task: E3 (uploads use only the worker; remove TypeScript extractor)
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
   generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
-- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67)
+- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67) | E2 (20f6674, 069baf3, b32abe0)
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
@@ -17,6 +17,8 @@
   2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
 - CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
+- 2026-10-05 ~17:45: localhost updated to tag local-e2-2026-10-05 (E1+E2, worker+web rebuilt; db/29-30 applied;
+  backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 Â· VERIFY-S1 Â· VERIFY-S1-fix1 Â· C1-1 Â· C1-2 Â· TEST-ISO-1 (ace66e8, 5b8a9b4, 4763c34 - also
@@ -55,3 +57,5 @@
 - 2026-10-05 16:04 | E1 | i1 | FAIL | .ai/runs/20261005-154808-E1-i1
 - 2026-10-05 16:17 | E1 | i2 | PASS | .ai/runs/20261005-160417-E1-i2
 - 2026-10-05 16:45 | E2 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-161902-E2-i1
+- 2026-10-05 17:16 | E2-fix1 | i1 | FAIL | .ai/runs/20261005-164758-E2-fix1-i1
+- 2026-10-05 17:39 | E2-fix1 | i2 | PASS | .ai/runs/20261005-171632-E2-fix1-i2
