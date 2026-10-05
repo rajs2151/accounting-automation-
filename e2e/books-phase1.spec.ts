@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import pg from "pg";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
@@ -11,6 +12,115 @@ const STMT_BALANCED = "e7000001-0000-4000-8000-000000000098";
 const STMT_DROPPED = "e7000001-0000-4000-8000-000000000088";
 const PHASE1_DIR = path.join(process.cwd(), "docs", "phase1");
 const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "invoice_02.pdf");
+
+/**
+ * e2e profile does not run the Python worker. After upload (status=queued), insert a
+ * worker-shaped books_extractions row so review UI can assert fields without waiting.
+ */
+async function insertWorkerShapedExtraction(args: {
+  inboxItemId: string;
+  fileId: string;
+  clientId: string;
+}) {
+  const admin = new pg.Client({
+    connectionString:
+      process.env.DATABASE_URL_SUPER ||
+      "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+  });
+  await admin.connect();
+  try {
+    const extractionId = randomUUID();
+    const fields = {
+      invoice_no: {
+        value: "INV-SYN-002",
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [72, 120, 180, 134] },
+      },
+      document_number: {
+        value: "INV-SYN-002",
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [72, 120, 180, 134] },
+      },
+      invoice_date: {
+        value: "2026-05-15",
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [72, 140, 160, 154] },
+      },
+      currency: {
+        value: "AED",
+        confidence: 0.99,
+        status: "ok",
+        source: null,
+      },
+      net: {
+        value: 10000,
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [400, 200, 460, 214] },
+      },
+      vat: {
+        value: 500,
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [400, 220, 460, 234] },
+      },
+      gross: {
+        value: 10500,
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [400, 240, 460, 254] },
+      },
+      // UI FIELD_ORDER still keys on sync names until E5; mirror as display strings.
+      subtotal: {
+        value: "100.00",
+        confidence: 0.95,
+        status: "ok",
+        source: null,
+      },
+      vat_total: {
+        value: "5.00",
+        confidence: 0.95,
+        status: "ok",
+        source: null,
+      },
+      grand_total: {
+        value: "105.00",
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [400, 240, 460, 254] },
+      },
+    };
+    await admin.query(`DELETE FROM books_extractions WHERE inbox_item_id = $1`, [
+      args.inboxItemId,
+    ]);
+    await admin.query(
+      `INSERT INTO books_extractions (
+         id, client_id, file_id, inbox_item_id, doc_type, status,
+         fields_json, raw_text, word_boxes, validation_flags, extractor_version
+       ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,$6,'[]'::jsonb,'[]'::jsonb,'phase1-v1')`,
+      [
+        extractionId,
+        args.clientId,
+        args.fileId,
+        args.inboxItemId,
+        JSON.stringify(fields),
+        "TAX INVOICE\nInvoice No: INV-SYN-002\nTotal 105.00\n",
+      ],
+    );
+    await admin.query(
+      `UPDATE books_inbox_items
+       SET status = 'needs_review', detected_type = 'sales_invoice',
+           classification_confidence = 0.9, error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [args.inboxItemId],
+    );
+  } finally {
+    await admin.end();
+  }
+}
 
 async function savePhase1(name: string, buffer: Buffer) {
   // Committed docs screenshots are only refreshed on purpose (UPDATE_SCREENSHOTS=1).
@@ -99,14 +209,22 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   const inboxId = uploaded.results?.[0]?.inboxItemId as string;
   expect(inboxId, `upload body: ${JSON.stringify(uploaded)}`).toBeTruthy();
   expect(uploaded.results[0].sha256).toBe(sha256);
-  expect(uploaded.results[0].status, `sync status: ${JSON.stringify(uploaded)}`).toBe(
-    "needs_review",
+  expect(uploaded.results[0].status, `upload status: ${JSON.stringify(uploaded)}`).toBe(
+    "queued",
   );
+
+  // e2e has no worker process — seed worker-shaped extraction (see insertWorkerShapedExtraction).
+  await insertWorkerShapedExtraction({
+    inboxItemId: inboxId,
+    fileId: uploaded.results[0].fileId as string,
+    clientId: DESERT,
+  });
 
   const apiReview = await page.request.get(`/api/books/inbox/${inboxId}`);
   const reviewBody = await apiReview.json();
   expect(apiReview.ok(), `review API: ${JSON.stringify(reviewBody)}`).toBeTruthy();
   expect(reviewBody.extractionId, `review: ${JSON.stringify(reviewBody)}`).toBeTruthy();
+  expect(reviewBody.status).toBe("needs_review");
   expect(reviewBody.fieldsJson?.invoice_no?.value).toBe("INV-SYN-002");
   expect(reviewBody.sha256).toBe(sha256);
 

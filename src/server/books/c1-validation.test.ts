@@ -14,6 +14,7 @@ import { confirmInboxAsDocument } from "@/server/books/inbox";
 import { createBooksParty } from "@/server/books/parties";
 import { aedFromOriginal, parseFxRateToScaled } from "@/lib/fx";
 import { createTestCompany } from "@/server/books/test-company";
+import { workerInvoiceFieldsJson } from "@/server/books/test-fixtures/worker-extraction";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
@@ -454,12 +455,14 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
         clientId,
         fileId,
         inboxId,
-        JSON.stringify({
-          invoice_no: { value: `${tag}-INV` },
-          subtotal: { value: "100.00" },
-          vat_total: { value: "5.00" },
-          grand_total: { value: "105.00" },
-        }),
+        JSON.stringify(
+          workerInvoiceFieldsJson({
+            invoiceNo: `${tag}-INV`,
+            netMinor: 10000,
+            vatMinor: 500,
+            grossMinor: 10500,
+          }),
+        ),
       ],
     );
 
@@ -532,12 +535,14 @@ async function seedPurchaseConfirmFixture(
       fileId,
       inboxId,
       opts.extractionDocType,
-      JSON.stringify({
-        invoice_no: { value: `${opts.tag}-INV` },
-        subtotal: { value: "100.00" },
-        vat_total: { value: "5.00" },
-        grand_total: { value: "105.00" },
-      }),
+      JSON.stringify(
+        workerInvoiceFieldsJson({
+          invoiceNo: `${opts.tag}-INV`,
+          netMinor: 10000,
+          vatMinor: 500,
+          grossMinor: 10500,
+        }),
+      ),
     ],
   );
 

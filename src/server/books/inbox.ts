@@ -6,20 +6,27 @@ import { getObjectBytes, putObject, signedGetUrl } from "@/lib/storage";
 import { writeBooksAudit } from "@/server/books/audit";
 import { createBooksDocument } from "@/server/books/documents";
 import { BooksError } from "@/server/books/errors";
-import { syncExtractInboxItem } from "@/server/books/extract-sync";
 import { enqueueBooksJob } from "@/server/books/jobs";
 import { parseAmountToFils } from "@/server/books/parsing";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
+/** Read a money field from worker fields_json (value may be fils int or display string). */
 function fieldMinor(fields: Record<string, unknown>, key: string): number | null {
-  const raw = fields[key] as { value?: string } | string | undefined;
-  const value = typeof raw === "string" ? raw : raw?.value;
-  if (!value || !String(value).trim()) return null;
+  const raw = fields[key] as { value?: unknown } | string | number | undefined;
+  if (raw == null) return null;
+  const value =
+    typeof raw === "string" || typeof raw === "number"
+      ? raw
+      : (raw as { value?: unknown }).value;
+  if (value == null || value === "") return null;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  const s = String(value).trim();
+  if (!s) return null;
   try {
-    return displayToMinor(String(value).trim()) ?? parseAmountToFils(String(value));
+    return displayToMinor(s) ?? parseAmountToFils(s);
   } catch {
     try {
-      return parseAmountToFils(String(value));
+      return parseAmountToFils(s);
     } catch {
       return null;
     }
@@ -27,9 +34,30 @@ function fieldMinor(fields: Record<string, unknown>, key: string): number | null
 }
 
 function fieldStr(fields: Record<string, unknown>, key: string): string {
-  const raw = fields[key] as { value?: string } | string | undefined;
+  const raw = fields[key] as { value?: unknown } | string | undefined;
   if (typeof raw === "string") return raw;
-  return raw?.value ? String(raw.value) : "";
+  if (raw?.value == null || raw.value === "") return "";
+  return String(raw.value);
+}
+
+/** Prefer primary key, then worker aliases (net/vat/gross, document_number). */
+function fieldMinorAlias(
+  fields: Record<string, unknown>,
+  keys: string[],
+): number | null {
+  for (const k of keys) {
+    const v = fieldMinor(fields, k);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function fieldStrAlias(fields: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = fieldStr(fields, k);
+    if (v) return v;
+  }
+  return "";
 }
 
 export async function listBooksInbox(
@@ -199,45 +227,25 @@ export async function uploadBooksInboxFiles(
       const inboxId = randomUUID();
       await db.query(
         `INSERT INTO books_inbox_items (id, client_id, file_id, status, intended_type)
-         VALUES ($1,$2,$3,'extracting',$4)`,
+         VALUES ($1,$2,$3,'queued',$4)`,
         [inboxId, clientId, fileId, intendedType],
       );
 
-      // Sync text extract so review works without waiting on the worker (e2e).
-      const sync = await syncExtractInboxItem(db, {
-        inboxItemId: inboxId,
-        fileId,
-        clientId,
-        filename: file.filename,
-        bytes: file.bytes,
-        contentType: file.contentType,
-      });
-
-      if (clientId && sync.status === "queued") {
-        await enqueueBooksJob(db, clientId, "extract_document", {
-          inboxItemId: inboxId,
-          fileId,
-          storageKey,
-          filename: file.filename,
-        });
-      } else if (clientId) {
-        // Still enqueue worker for OCR enrichment; unique index replaces sync row.
-        await enqueueBooksJob(db, clientId, "extract_document", {
-          inboxItemId: inboxId,
-          fileId,
-          storageKey,
-          filename: file.filename,
-        });
-      }
-
+      // Store + enqueue only — field extraction is the worker's job (no TS sync extract).
       if (clientId) {
+        await enqueueBooksJob(db, clientId, "extract_document", {
+          inboxItemId: inboxId,
+          fileId,
+          storageKey,
+          filename: file.filename,
+        });
         await writeBooksAudit(db, {
           clientId,
           actor: userId,
           action: "upload",
           entity: "books_inbox_item",
           entityId: inboxId,
-          after: { filename: file.filename, sha256, syncStatus: sync.status },
+          after: { filename: file.filename, sha256, status: "queued" },
         });
       }
 
@@ -246,7 +254,7 @@ export async function uploadBooksInboxFiles(
         fileId,
         duplicate: false,
         sha256,
-        status: sync.status,
+        status: "queued",
       });
     }
     return { results };
@@ -271,19 +279,12 @@ export async function retryBooksInboxExtract(
     const row = item.rows[0];
     await db.query(
       `UPDATE books_inbox_items
-       SET client_id = $2, status = 'extracting', error = NULL, updated_at = now()
+       SET client_id = $2, status = 'queued', error = NULL, updated_at = now()
        WHERE id = $1`,
       [inboxItemId, clientId],
     );
-    const bytes = await getObjectBytes(String(row.storage_key));
-    const sync = await syncExtractInboxItem(db, {
-      inboxItemId,
-      fileId: String(row.file_id),
-      clientId,
-      filename: String(row.filename),
-      bytes,
-      contentType: String(row.content_type || ""),
-    });
+    // Touch storage so missing objects fail early; extraction itself is worker-only.
+    await getObjectBytes(String(row.storage_key));
     await enqueueBooksJob(db, clientId, "extract_document", {
       inboxItemId,
       fileId: String(row.file_id),
@@ -296,9 +297,9 @@ export async function retryBooksInboxExtract(
       action: "retry_extract",
       entity: "books_inbox_item",
       entityId: inboxItemId,
-      after: { status: sync.status },
+      after: { status: "queued" },
     });
-    return { id: inboxItemId, status: sync.status };
+    return { id: inboxItemId, status: "queued" };
   });
 }
 
@@ -418,22 +419,28 @@ export async function confirmInboxAsDocument(
             description: "Extracted line",
             lineKind: (docType === "purchase_bill" ? "expense" : "revenue") as "expense" | "revenue",
             vatCode: "SR",
-            netMinor: fieldMinor(fields, "subtotal") ?? 0,
-            vatMinor: fieldMinor(fields, "vat_total") ?? 0,
+            netMinor: fieldMinorAlias(fields, ["subtotal", "net"]) ?? 0,
+            vatMinor: fieldMinorAlias(fields, ["vat_total", "vat"]) ?? 0,
           },
         ];
 
-  const invoiceDateRaw = fieldStr(fields, "invoice_date");
+  const invoiceDateRaw =
+    fieldStrAlias(fields, ["invoice_date", "document_date"]);
   let issueDate = body.issueDate;
   if (!issueDate && invoiceDateRaw) {
-    const m = invoiceDateRaw.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-    if (m) issueDate = `${m[3]}-${m[2]}-${m[1]}`;
+    if (/^\d{4}-\d{2}-\d{2}/.test(invoiceDateRaw)) {
+      issueDate = invoiceDateRaw.slice(0, 10);
+    } else {
+      const m = invoiceDateRaw.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      if (m) issueDate = `${m[3]}-${m[2]}-${m[1]}`;
+    }
   }
   if (!issueDate) issueDate = new Date().toISOString().slice(0, 10);
 
-  const printedNet = fieldMinor(fields, "subtotal");
-  const printedVat = fieldMinor(fields, "vat_total");
-  const printedGross = fieldMinor(fields, "grand_total");
+  // Worker fields_json uses net/vat/gross (fils int); legacy aliases kept for fixtures.
+  const printedNet = fieldMinorAlias(fields, ["subtotal", "net"]);
+  const printedVat = fieldMinorAlias(fields, ["vat_total", "vat"]);
+  const printedGross = fieldMinorAlias(fields, ["grand_total", "gross"]);
   const printedPaid =
     fieldMinor(fields, "amount_paid") ?? fieldMinor(fields, "payments_made");
   const printedBalanceDue =
@@ -445,7 +452,8 @@ export async function confirmInboxAsDocument(
     periodId: body.periodId,
     issueDate,
     dueDate: body.dueDate ?? null,
-    documentNumber: fieldStr(fields, "invoice_no") || null,
+    documentNumber:
+      fieldStrAlias(fields, ["invoice_no", "document_number"]) || null,
     currency: fieldStr(fields, "currency") || "AED",
     lines,
     printedNetMinor: printedNet,

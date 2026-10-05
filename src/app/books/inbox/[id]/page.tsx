@@ -116,9 +116,11 @@ export default function InboxReviewPage() {
   const [parties, setParties] = useState<Array<{ id: string; name: string }>>([]);
   const [partyId, setPartyId] = useState("");
 
-  async function load() {
-    setLoading(true);
-    setError("");
+  async function load(opts?: { quiet?: boolean }) {
+    if (!opts?.quiet) {
+      setLoading(true);
+      setError("");
+    }
     const res = await fetch(`/api/books/inbox/${params.id}`);
     const data = await res.json();
     if (res.status === 404) {
@@ -151,6 +153,17 @@ export default function InboxReviewPage() {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
+
+  // Poll while the worker is still extracting (Queued → Extracting → done).
+  useEffect(() => {
+    if (!review) return;
+    if (review.status !== "queued" && review.status !== "extracting") return;
+    const timer = setInterval(() => {
+      void load({ quiet: true });
+    }, 2000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review?.status, params.id]);
 
   async function confirmFields() {
     if (!partyId || !periodId) {
