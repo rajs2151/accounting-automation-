@@ -2,9 +2,10 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E1c (worker real-layout invoice fields) then UI-3-fix1 (scroll/flags)
-- 2026-10-05: E4 + E5 + UI-1..UI-4 PASS on feat/books-phase1 (pushed). Remaining queue:
-  **E1c → UI-3-fix1 (scroll/flags) → E1d (no-guess SR on confirm) → C1-3**
+- Current task: next is E1d (no invent SR on confirm) then C1-3
+- 2026-10-06: E1c PASS (24a77ca) + UI-3-fix1 scroll/flags PASS (8e9b4f9). Queue:
+  **E1d → C1-3**
+- 2026-10-05: E4 + E5 + UI-1..UI-4 PASS on feat/books-phase1 (pushed).
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
   generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
