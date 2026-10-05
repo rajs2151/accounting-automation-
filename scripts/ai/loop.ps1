@@ -62,13 +62,21 @@ $phaseLine = Select-String -Path $taskFile -Pattern '^PHASE:\s*(.+)$' | Select-O
 if ($phaseLine) { $St.phase = $phaseLine.Matches[0].Groups[1].Value.Trim() }
 function Save([string]$next = "") { if ($next) { $St.next_action = $next }; Write-State $St }
 
-function Run-WithTimeout([string]$cmd, [string]$logPath, [int]$minutes) {
-  # Write the command to a temp script (avoids Windows argument-quoting problems), run it with a hard timeout.
+function Start-Background([string]$cmd, [string]$logPath) {
+  # Write the command to a temp script (avoids Windows argument-quoting problems) and start it hidden.
   $tmp = "$logPath.cmd.ps1"
   ("Set-Location -LiteralPath '{0}'`r`n{1}`r`nexit `$LASTEXITCODE" -f $Repo, $cmd) | Set-Content -Path $tmp -Encoding UTF8
   $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$tmp`"") `
         -WorkingDirectory $Repo -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" -PassThru -WindowStyle Hidden
   $null = $p.Handle   # PS 5.1: needed so ExitCode is populated
+  return $p
+}
+
+function Run-WithTimeout([string]$cmd, [string]$logPath, [int]$minutes) {
+  return Wait-Background (Start-Background $cmd $logPath) $logPath $minutes
+}
+
+function Wait-Background($p, [string]$logPath, [int]$minutes) {
   if (-not $p.WaitForExit($minutes * 60 * 1000)) {
     try { & taskkill /PID $p.Id /T /F | Out-Null } catch {}
     $null = $p.WaitForExit(30000)   # let the killed tree release the redirected log file
@@ -99,7 +107,8 @@ while ($true) {
     $St.cursor = "running"; Save "waiting for Cursor"
     $report = (Join-Path $RunDir "cursor-report.md").Replace('\','/')
     $prompt = "Read .ai/CURSOR_TASK.md and implement exactly that task in this repository, following .cursor/rules/arnibooks.mdc. " +
-              "Before you finish, verify with the orchestrator's own gates (same Docker commands the reviewer trusts): " +
+              "While iterating, run only the affected test files for fast feedback: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai/test-files.ps1 <ts test files> (or -Py <worker test files>); do not run the full suites after every edit. " +
+              "Before you finish, verify ONCE with the orchestrator's own gates (same Docker commands the reviewer trusts): " +
               "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai/gates.ps1 unit typecheck (add pytest if you changed worker/, e2e if you changed src/app, src/components, e2e or db). " +
               "Report the exact pass/fail counts they print; do not claim a pass you did not see. " +
               "Keep the change small; if the task cannot be finished in about 35 minutes, commit what is green, write the report with what is left, and stop. " +
@@ -123,14 +132,30 @@ while ($true) {
 
   # ---------- 3. gates (re-run by the orchestrator, not trusted from Cursor) ----------
   $gateSummary = @()
+  # Gates marked "parallel" (no DB, e.g. typecheck) start now and run alongside the others. Not when
+  # package-lock.json changed: unit and typecheck share the node_modules volume and both would run npm ci.
+  $bg = @{}
+  $lockChanged = @($changed | Where-Object { $_ -eq "package-lock.json" }).Count -gt 0
+  foreach ($g in $Cfg.gates) {
+    $applies = ($g.when -eq "*") -or (@($g.when -split ',') | Where-Object { $p = $_; $changed | Where-Object { $_.StartsWith($p) } })
+    if ($applies -and $g.parallel -and -not $lockChanged) {
+      Log "Gate $($g.name) started in parallel..."
+      $bg[$g.name] = Start-Background ($g.command.Replace('${REPO}', $Repo.Replace('\','/'))) (Join-Path $RunDir "gates\$($g.name).log")
+    }
+  }
   foreach ($g in $Cfg.gates) {
     $applies = ($g.when -eq "*") -or (@($g.when -split ',') | Where-Object { $p = $_; $changed | Where-Object { $_.StartsWith($p) } })
     if (-not $applies) { $gateSummary += "$($g.name): SKIPPED (no matching changes)"; continue }
     Check-Control
     $St.tests = "running $($g.name)"; Save
     $gcmd = $g.command.Replace('${REPO}', $Repo.Replace('\','/'))
-    Log "Gate $($g.name)..."
-    $gc = Run-WithTimeout $gcmd (Join-Path $RunDir "gates\$($g.name).log") 40
+    $glog = Join-Path $RunDir "gates\$($g.name).log"
+    if ($bg.ContainsKey($g.name)) {
+      $gc = Wait-Background $bg[$g.name] $glog 40
+    } else {
+      Log "Gate $($g.name)..."
+      $gc = Run-WithTimeout $gcmd $glog 40
+    }
     $res = if ($gc -eq 0) { "PASS" } else { "FAIL (exit $gc)" }
     if ($gc -ne 0 -and $g.name -eq "unit") {
       # Compare failing test names with the known pre-existing failures listed in config.knownUnitFailures

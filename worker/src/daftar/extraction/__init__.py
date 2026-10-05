@@ -157,6 +157,7 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     ocr_used = False
     parsed = None
     page_methods: list[tuple[int, str]] = []
+    wb_methods: list[tuple[int, str]] = []
     company_trn: str | None = None
     company_name: str | None = None
 
@@ -298,6 +299,10 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     flags: list[str] = list(classification.reasons)
     if page_methods:
         flags.append("methods:" + ",".join(f"{n}:{m}" for n, m in page_methods))
+    # Pages whose text layer was unmapped-font garbage were sent to OCR; record it so review knows why.
+    for n, m in wb_methods:
+        if m == "text_layer_unreliable":
+            flags.append(f"text_layer_unreliable:{n}")
 
     client_id = frow["client_id"]
     if client_id:

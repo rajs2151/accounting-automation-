@@ -5,9 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from daftar.textclean import clean_text, text_layer_unreliable
+
 
 def _has_text_layer(text: str, words: list) -> bool:
-    """True when the page has a usable text layer (not a scanned image page)."""
+    """True when the page has a usable text layer (not a scanned image page, not unmapped-font garbage)."""
+    if text_layer_unreliable(text):
+        return False
     if words:
         return True
     compact = re.sub(r"\s+", "", text or "")
@@ -39,9 +43,15 @@ def collect_pdf_word_boxes(content: bytes) -> tuple[list[dict[str, Any]], list[s
                     "height": float(rect.height),
                 }
             )
-            text = page.get_text("text") or ""
-            page_texts.append(text)
+            raw = page.get_text("text") or ""
             words = page.get_text("words") or []
+            if text_layer_unreliable(raw):
+                # Unmapped CID fonts: the text layer is garbage. Treat like a scanned page (OCR route).
+                page_texts.append("")
+                methods.append((index, "text_layer_unreliable"))
+                continue
+            text = clean_text(raw)
+            page_texts.append(text)
             if _has_text_layer(text, words):
                 methods.append((index, "pdf_text"))
                 for word in words:
@@ -53,7 +63,7 @@ def collect_pdf_word_boxes(content: bytes) -> tuple[list[dict[str, Any]], list[s
                             "y0": float(word[1]),
                             "x1": float(word[2]),
                             "y1": float(word[3]),
-                            "text": str(word[4]),
+                            "text": clean_text(str(word[4])),
                             "conf": 1.0,
                         }
                     )

@@ -24,6 +24,7 @@ from daftar.money import MoneyError, parse_amount
 from daftar.settings import Settings, load_settings
 from daftar.sniff import sniff
 from daftar.storage import ObjectStore
+from daftar.textclean import clean_param
 from daftar.validate import Txn, apply_validation
 
 logger = logging.getLogger("daftar.worker")
@@ -51,7 +52,8 @@ class AppConn:
     def execute(self, query, params=None, **kwargs):
         if self.user_id:
             self._raw.execute("SELECT set_config('app.current_user_id', %s, true)", (self.user_id,))
-        return self._raw.execute(query, params, **kwargs)
+        # Every worker write goes through here: strip NUL/control chars so garbled PDF text never fails a job.
+        return self._raw.execute(query, clean_param(params), **kwargs)
 
     def commit(self):
         return self._raw.commit()
