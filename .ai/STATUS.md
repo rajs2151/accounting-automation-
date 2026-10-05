@@ -26,6 +26,8 @@
 3. PYTEST-0 - fix 3 pre-existing worker pytest failures (statements_extraction_method_check x2, forced RLS test)
    (pytest gate first ran for real 2026-10-05: 32 pass / 3 fail at HEAD)
 4. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
+   E3b NUL-byte/garbled PDF text must not fail uploads (owner hit it on a real PDF 2026-10-05) ->
+   UX-1 duplicate notice instead of 'failed', readable errors instead of 'request failed', login as Raj ->
    E4 Upload statement UI -> E5 multi-page viewer
 4. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
 5. C1b sales record-only parity | 6. C2 remaining (bank accounts page, coverage/gaps)
@@ -59,3 +61,5 @@
 - 2026-10-05 16:45 | E2 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-161902-E2-i1
 - 2026-10-05 17:16 | E2-fix1 | i1 | FAIL | .ai/runs/20261005-164758-E2-fix1-i1
 - 2026-10-05 17:39 | E2-fix1 | i2 | PASS | .ai/runs/20261005-171632-E2-fix1-i2
+- 2026-10-05 18:16 | E3 | i1 | FAIL | .ai/runs/20261005-175649-E3-i1
+- 2026-10-05 18:35 | E3 | i2 | PASS | .ai/runs/20261005-181636-E3-i2
