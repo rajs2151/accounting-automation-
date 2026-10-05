@@ -395,39 +395,73 @@ test("phase1: upload bank statement from /books/statements", async ({ page }) =>
   await expect(page.getByTestId("statements-table")).toBeVisible();
   await expect(page.getByTestId("stripe-csv-textarea")).toBeVisible();
 
+  // Unique bytes so per-company hash does not collide with prior runs.
   const base = fs.readFileSync(BANK_A_PDF);
   const bytes = Buffer.concat([
     base,
     Buffer.from(`\n% e2e-bank-${Date.now()}-${Math.random()}\n`),
   ]);
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const tmpPdf = path.join(process.cwd(), "e2e", "artifacts", `bank_a-${Date.now()}.pdf`);
+  fs.mkdirSync(path.dirname(tmpPdf), { recursive: true });
+  fs.writeFileSync(tmpPdf, bytes);
 
-  const upload = await page.request.post("/api/books/inbox/upload", {
-    multipart: {
-      files: {
-        name: "bank_a.pdf",
-        mimeType: "application/pdf",
-        buffer: bytes,
-      },
-      userDocType: "bank_statement",
-    },
+  // Prove the Upload statement control (not a bare API call).
+  await page.getByTestId("statement-upload").locator("input[type=file]").setInputFiles(tmpPdf);
+  await expect(page.getByText("bank_a-").or(page.getByText("bank_a.pdf"))).toBeVisible({
+    timeout: 20000,
   });
-  const uploaded = await upload.json();
-  expect(upload.ok(), `upload failed: ${JSON.stringify(uploaded)}`).toBeTruthy();
-  const inboxId = uploaded.results?.[0]?.inboxItemId as string;
-  expect(inboxId, `upload body: ${JSON.stringify(uploaded)}`).toBeTruthy();
-  expect(uploaded.results[0].sha256).toBe(sha256);
-  expect(uploaded.results[0].status).toBe("queued");
 
-  // Pending row appears as Queued before the worker finishes.
-  await page.reload();
-  await expect(page.getByText("bank_a.pdf")).toBeVisible({ timeout: 15000 });
+  // Resolve the pending inbox row from the list API (queued before worker finishes).
+  let inboxId = "";
+  let fileId = "";
+  await expect
+    .poll(
+      async () => {
+        const list = await page.request.get("/api/books/statements");
+        const rows = (await list.json()) as Array<{
+          id: string;
+          filename?: string;
+          status: string;
+          rowKind?: string;
+          fileId?: string;
+        }>;
+        const pending = rows.find(
+          (r) =>
+            (r.rowKind === "pending" || r.status === "queued" || r.status === "extracting") &&
+            String(r.filename || "").includes("bank_a"),
+        );
+        if (!pending) return null;
+        inboxId = pending.id;
+        fileId = String(pending.fileId || "");
+        return pending.status;
+      },
+      { timeout: 20000 },
+    )
+    .toMatch(/queued|extracting/i);
+  expect(inboxId).toBeTruthy();
   await expect(page.getByTestId(`statement-status-${inboxId}`)).toContainText(/Queued|Extracting/i);
 
-  // e2e has no worker — seed worker-shaped statement rows (same shape as bank_a extraction).
+  // e2e Playwright profile does not run the Python worker. Seed the same
+  // books_statement_extractions + lines shape process_extract_document writes for bank_a.
+  if (!fileId) {
+    const admin = new pg.Client({
+      connectionString:
+        process.env.DATABASE_URL_SUPER ||
+        "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+    });
+    await admin.connect();
+    try {
+      const f = await admin.query(`SELECT file_id FROM books_inbox_items WHERE id = $1`, [inboxId]);
+      fileId = String(f.rows[0]?.file_id || "");
+    } finally {
+      await admin.end();
+    }
+  }
+  expect(fileId, "fileId required to seed worker-shaped statement").toBeTruthy();
+
   const stmtId = await insertWorkerShapedStatement({
     inboxItemId: inboxId,
-    fileId: uploaded.results[0].fileId as string,
+    fileId,
     clientId: DESERT,
   });
 
@@ -435,12 +469,18 @@ test("phase1: upload bank statement from /books/statements", async ({ page }) =>
   await expect(page.getByTestId(`statement-row-${stmtId}`)).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId(`statement-status-${stmtId}`)).toContainText(/Extracted|Ready/i);
   const row = page.getByTestId(`statement-row-${stmtId}`);
-  await expect(row).toContainText("bank_a.pdf");
+  await expect(row).toContainText(/bank_a/);
   await expect(row).toContainText("2"); // line count
   await expect(page.getByTestId(`balance-check-${stmtId}`)).toContainText(/ok/i);
   await expect(row).toContainText(/AE07/);
   await expect(row).toContainText("1,000.00");
   await expect(row).toContainText("1,300.00");
+
+  try {
+    fs.unlinkSync(tmpPdf);
+  } catch {
+    /* ignore */
+  }
 });
 
 test("phase1: upload bill → approve → journal visible", async ({ page, context }) => {
