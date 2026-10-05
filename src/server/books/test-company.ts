@@ -17,11 +17,20 @@ export type TestCompany = {
   accountIdByCode: Record<string, string>;
 };
 
+export type CreateTestCompanyOptions = {
+  /** Period labels to leave LOCKED after create (default: all OPEN). */
+  lockPeriodLabels?: string[];
+};
+
 /**
  * Creates a new synthetic client with DESERT's COA (via template), VAT codes (global),
- * monthly periods (all OPEN), voucher sequences, and Omar/Layla access.
+ * monthly periods (all OPEN unless lockPeriodLabels), voucher sequences, and Omar/Layla access.
  */
-export async function createTestCompany(admin: pg.Client, label: string): Promise<TestCompany> {
+export async function createTestCompany(
+  admin: pg.Client,
+  label: string,
+  options: CreateTestCompanyOptions = {},
+): Promise<TestCompany> {
   const clientId = randomUUID();
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const name = `Test Co ${label} ${stamp}`;
@@ -86,6 +95,13 @@ export async function createTestCompany(admin: pg.Client, label: string): Promis
   const periods: Record<string, string> = {};
   for (const r of periodRows.rows) {
     periods[String(r.label)] = String(r.id);
+  }
+
+  for (const labelToLock of options.lockPeriodLabels ?? []) {
+    const pid = periods[labelToLock];
+    if (pid) {
+      await admin.query(`UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`, [pid]);
+    }
   }
 
   const accountRows = await admin.query(

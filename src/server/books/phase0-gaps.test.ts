@@ -18,22 +18,29 @@ import { lockBooksPeriod, reopenBooksPeriod } from "./periods";
 import { listBooksAudit } from "./audit";
 import { booksCoaTree, listBooksAccounts } from "./accounts";
 import { BooksError } from "./errors";
+import { createTestCompany } from "./test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
 const A_ONLY = "e5000001-0000-4000-8000-000000000001";
-const DESERT = "e1000001-0000-4000-8000-000000000001";
-const GULF = "e1000001-0000-4000-8000-000000000002";
-const BANK = "e3000001-0000-4000-8000-000000000001";
-const REVENUE = "e3000001-0000-4000-8000-000000000007";
 const PARENT_CASH = "1100"; // Cash & Bank header (non-postable) under COA v2
 
 async function createThenPost(
+  clientId: string,
   periodId: string,
-  body: Omit<Parameters<typeof createBooksJournal>[2], "periodId" | "post">,
+  bank: string,
+  revenue: string,
+  body: Omit<Parameters<typeof createBooksJournal>[2], "periodId" | "post" | "lines"> & {
+    lines?: Parameters<typeof createBooksJournal>[2]["lines"];
+  },
 ) {
-  const draft = await createBooksJournal(OMAR, DESERT, { ...body, periodId, post: false });
-  const posted = await postBooksJournal(LAYLA, DESERT, draft.id);
+  const lines = body.lines ?? [
+    { accountId: bank, debitMinor: 777 },
+    { accountId: revenue, creditMinor: 777 },
+  ];
+  const { lines: _ignored, ...rest } = body;
+  const draft = await createBooksJournal(OMAR, clientId, { ...rest, periodId, lines, post: false });
+  const posted = await postBooksJournal(LAYLA, clientId, draft.id);
   return { ...draft, ...posted, id: draft.id, status: "posted" as const };
 }
 
@@ -66,11 +73,11 @@ async function connectAdmin(t: test.TestContext) {
   return admin;
 }
 
-async function tempPeriod(admin: pg.Client, label: string) {
+async function tempPeriod(admin: pg.Client, clientId: string, label: string) {
   const row = await admin.query(
     `INSERT INTO books_periods (client_id, label, period_start, period_end, status)
      VALUES ($1,$2,'2026-09-01','2026-09-30','OPEN') RETURNING id`,
-    [DESERT, label],
+    [clientId, label],
   );
   return String(row.rows[0].id);
 }
@@ -79,19 +86,24 @@ test("1 SQL-level unbalanced post is rejected by balance trigger", async (t) => 
   const admin = await connectAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await tempPeriod(admin, `sql-unbal-${Date.now()}`);
+    const company = await createTestCompany(admin, "p0-sql-unbal");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const revenue = company.accountIdByCode["4100"];
+    assert.ok(bank && revenue);
+    const periodId = await tempPeriod(admin, clientId, `sql-unbal-${Date.now()}`);
     const entryId = randomUUID();
     await admin.query("BEGIN");
     await admin.query(
       `INSERT INTO books_journal_entries (
          id, client_id, period_id, memo, entry_date, status, content_hash, created_by
        ) VALUES ($1,$2,$3,'sql-unbal','2026-09-02','draft','x',$4)`,
-      [entryId, DESERT, periodId, OMAR],
+      [entryId, clientId, periodId, OMAR],
     );
     await admin.query(
       `INSERT INTO books_journal_lines (entry_id, client_id, account_id, debit_minor, credit_minor)
        VALUES ($1,$2,$3,100,0), ($1,$2,$4,0,40)`,
-      [entryId, DESERT, BANK, REVENUE],
+      [entryId, clientId, bank, revenue],
     );
     await admin.query(`UPDATE books_journal_entries SET status = 'posted', posted_at = now() WHERE id = $1`, [
       entryId,
@@ -111,16 +123,21 @@ test("2 reversal sets reversed_by_entry_id and reverses_entry_id with opposite l
   const admin = await connectAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await tempPeriod(admin, `rev-${Date.now()}`);
-    const created = await createThenPost(periodId, {
+    const company = await createTestCompany(admin, "p0-rev");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const revenue = company.accountIdByCode["4100"];
+    assert.ok(bank && revenue);
+    const periodId = await tempPeriod(admin, clientId, `rev-${Date.now()}`);
+    const created = await createThenPost(clientId, periodId, bank, revenue, {
       entryDate: "2026-09-03",
       memo: `rev-src-${Date.now()}`,
       lines: [
-        { accountId: BANK, debitMinor: 777 },
-        { accountId: REVENUE, creditMinor: 777 },
+        { accountId: bank, debitMinor: 777 },
+        { accountId: revenue, creditMinor: 777 },
       ],
     });
-    const rev = await reverseBooksJournal(LAYLA, DESERT, created.id, "2026-09-04");
+    const rev = await reverseBooksJournal(LAYLA, clientId, created.id, "2026-09-04");
     assert.equal(rev.reversedByEntryId, rev.reversalId);
     assert.equal(rev.reversesEntryId, created.id);
 
@@ -166,23 +183,28 @@ test("3 JV-YYYY-#### gapless per company/year under concurrent posts", async (t)
   const admin = await connectAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await tempPeriod(admin, `je-conc-${Date.now()}`);
+    const company = await createTestCompany(admin, "p0-conc");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const revenue = company.accountIdByCode["4100"];
+    assert.ok(bank && revenue);
+    const periodId = await tempPeriod(admin, clientId, `je-conc-${Date.now()}`);
     const n = 8;
     const drafts = await Promise.all(
       Array.from({ length: n }, (_, i) =>
-        createBooksJournal(OMAR, DESERT, {
+        createBooksJournal(OMAR, clientId, {
           periodId,
           entryDate: "2026-09-05",
           memo: `conc-${Date.now()}-${i}`,
           lines: [
-            { accountId: BANK, debitMinor: 100 + i },
-            { accountId: REVENUE, creditMinor: 100 + i },
+            { accountId: bank, debitMinor: 100 + i },
+            { accountId: revenue, creditMinor: 100 + i },
           ],
           post: false,
         }),
       ),
     );
-    const results = await Promise.all(drafts.map((d) => postBooksJournal(LAYLA, DESERT, d.id)));
+    const results = await Promise.all(drafts.map((d) => postBooksJournal(LAYLA, clientId, d.id)));
     const nos = results.map((r) => r.entryNo).filter(Boolean) as string[];
     assert.equal(nos.length, n);
     for (const no of nos) assert.match(no, /^(JV|JE)-2026-\d{4}$/);
@@ -203,36 +225,53 @@ test("4 RLS A≠B via API and daftar_app role (read + write)", async (t) => {
   const app = new pg.Client({ connectionString: appUrl() });
   try {
     await app.connect();
-    const own = await listBooksJournals(A_ONLY, DESERT);
-    assert.ok(own.length > 0, "A-only user can read Desert journals");
+    const companyA = await createTestCompany(admin, "p0-rls-a");
+    const companyB = await createTestCompany(admin, "p0-rls-b");
+    const clientA = companyA.clientId;
+    const clientB = companyB.clientId;
+    const bankA = companyA.accountIdByCode["1120"];
+    const revenueA = companyA.accountIdByCode["4100"];
+    assert.ok(bankA && revenueA);
 
-    // API: A-only cannot resolve / read Gulf Crest (clients + books RLS)
+    // Grant A-only user access to company A only (not B).
+    await admin.query(
+      `INSERT INTO user_client_access (user_id, client_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [A_ONLY, clientA],
+    );
+
+    // Seed a posted journal so A-only has something to read on A.
+    const periodA = await tempPeriod(admin, clientA, `rls-a-${Date.now()}`);
+    const seed = await createBooksJournal(OMAR, clientA, {
+      periodId: periodA,
+      entryDate: "2026-09-10",
+      memo: "rls-seed",
+      lines: [
+        { accountId: bankA, debitMinor: 50 },
+        { accountId: revenueA, creditMinor: 50 },
+      ],
+      post: false,
+    });
+    await postBooksJournal(LAYLA, clientA, seed.id);
+
+    const own = await listBooksJournals(A_ONLY, clientA);
+    assert.ok(own.length > 0, "A-only user can read company A journals");
+
+    // API: A-only cannot resolve / read company B (clients + books RLS)
     await assert.rejects(
-      () => listBooksJournals(A_ONLY, GULF),
+      () => listBooksJournals(A_ONLY, clientB),
       (error: unknown) =>
         error instanceof Error &&
         (error.message === "client_not_found" || String(error).includes("client_not_found")),
     );
 
-    const gulfPeriod = await admin.query(
-      `SELECT id FROM books_periods WHERE client_id = $1 LIMIT 1`,
-      [GULF],
-    );
-    if (!gulfPeriod.rowCount) {
-      t.skip("Gulf Crest period missing");
-      return;
-    }
-    const gulfAccts = await admin.query(
-      `SELECT code, id FROM books_accounts WHERE client_id = $1 AND code IN ('1120','4100')`,
-      [GULF],
-    );
-    const gulfBank = gulfAccts.rows.find((r) => r.code === "1120")?.id;
-    const gulfRev = gulfAccts.rows.find((r) => r.code === "4100")?.id;
+    const gulfPeriod = companyB.periods["May 2026"] || (await tempPeriod(admin, clientB, `rls-b-${Date.now()}`));
+    const gulfBank = companyB.accountIdByCode["1120"];
+    const gulfRev = companyB.accountIdByCode["4100"];
     assert.ok(gulfBank && gulfRev);
     await assert.rejects(
       () =>
-        createBooksJournal(A_ONLY, GULF, {
-          periodId: String(gulfPeriod.rows[0].id),
+        createBooksJournal(A_ONLY, clientB, {
+          periodId: String(gulfPeriod),
           entryDate: "2026-04-15",
           memo: "rls-write-block",
           lines: [
@@ -249,12 +288,12 @@ test("4 RLS A≠B via API and daftar_app role (read + write)", async (t) => {
     await app.query(`SELECT set_config('app.current_user_id', $1, true)`, [A_ONLY]);
     const readB = await app.query(
       `SELECT count(*)::int AS n FROM books_journal_entries WHERE client_id = $1`,
-      [GULF],
+      [clientB],
     );
     assert.equal(readB.rows[0].n, 0);
     const readA = await app.query(
       `SELECT count(*)::int AS n FROM books_journal_entries WHERE client_id = $1`,
-      [DESERT],
+      [clientA],
     );
     assert.ok(readA.rows[0].n > 0);
     await assert.rejects(
@@ -263,7 +302,7 @@ test("4 RLS A≠B via API and daftar_app role (read + write)", async (t) => {
           `INSERT INTO books_journal_entries (
              client_id, period_id, memo, entry_date, status, content_hash, created_by
            ) VALUES ($1,$2,'rls','2026-04-16','draft','h',$3)`,
-          [GULF, gulfPeriod.rows[0].id, A_ONLY],
+          [clientB, gulfPeriod, A_ONLY],
         ),
       () => true,
     );
@@ -278,30 +317,35 @@ test("5 audit one assertion per action", async (t) => {
   const admin = await connectAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await tempPeriod(admin, `audit-${Date.now()}`);
-    const draft = await createBooksJournal(OMAR, DESERT, {
+    const company = await createTestCompany(admin, "p0-audit");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const revenue = company.accountIdByCode["4100"];
+    assert.ok(bank && revenue);
+    const periodId = await tempPeriod(admin, clientId, `audit-${Date.now()}`);
+    const draft = await createBooksJournal(OMAR, clientId, {
       periodId,
       entryDate: "2026-09-06",
       memo: "audit-desc",
       lines: [
-        { accountId: BANK, debitMinor: 300, tags: [] },
-        { accountId: REVENUE, creditMinor: 300 },
+        { accountId: bank, debitMinor: 300, tags: [] },
+        { accountId: revenue, creditMinor: 300 },
       ],
       post: false,
     });
-    await updateBooksJournalTags(OMAR, DESERT, draft.id, ["ops", "q3"]);
-    const posted = await postBooksJournal(LAYLA, DESERT, draft.id);
+    await updateBooksJournalTags(OMAR, clientId, draft.id, ["ops", "q3"]);
+    const posted = await postBooksJournal(LAYLA, clientId, draft.id);
     assert.ok(posted.entryNo);
-    await updateBooksJournalMemo(OMAR, DESERT, draft.id, "audit-desc-edited");
-    await updateBooksJournalNote(OMAR, DESERT, draft.id, "cashier note");
-    await updateBooksJournalTags(OMAR, DESERT, draft.id, ["ops", "q3", "posted-tag"]);
-    await reverseBooksJournal(LAYLA, DESERT, draft.id, "2026-09-07");
+    await updateBooksJournalMemo(OMAR, clientId, draft.id, "audit-desc-edited");
+    await updateBooksJournalNote(OMAR, clientId, draft.id, "cashier note");
+    await updateBooksJournalTags(OMAR, clientId, draft.id, ["ops", "q3", "posted-tag"]);
+    await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-09-07");
 
     const periodAuditId = periodId;
-    await lockBooksPeriod(LAYLA, DESERT, periodAuditId);
-    await reopenBooksPeriod(LAYLA, DESERT, periodAuditId, "audit unlock");
+    await lockBooksPeriod(LAYLA, clientId, periodAuditId);
+    await reopenBooksPeriod(LAYLA, clientId, periodAuditId, "audit unlock");
 
-    const entryAudit = await listBooksAudit(OMAR, DESERT, draft.id);
+    const entryAudit = await listBooksAudit(OMAR, clientId, draft.id);
     const actions = new Set(entryAudit.map((r) => r.action));
     for (const need of ["create", "post", "reverse", "edit_description", "edit_note", "tag"]) {
       assert.ok(actions.has(need), `missing audit action ${need}`);
@@ -322,9 +366,15 @@ test("6 COA template, hierarchy, postable guard, delete blocked", async (t) => {
   const admin = await connectAdmin(t);
   if (!admin) return;
   try {
-    const tree = await booksCoaTree(OMAR, DESERT);
+    const company = await createTestCompany(admin, "p0-coa");
+    const clientId = company.clientId;
+    const bankId = company.accountIdByCode["1120"];
+    const revenueId = company.accountIdByCode["4100"];
+    assert.ok(bankId && revenueId);
+
+    const tree = await booksCoaTree(OMAR, clientId);
     assert.ok(tree.length > 0);
-    const flat = await listBooksAccounts(OMAR, DESERT);
+    const flat = await listBooksAccounts(OMAR, clientId);
     const codes = new Set(flat.map((a) => a.code));
     for (const code of ["1000", "1100", "1120", "1210", "2210", "3100", "4100", "6600"]) {
       assert.ok(codes.has(code), `missing COA code ${code}`);
@@ -335,25 +385,38 @@ test("6 COA template, hierarchy, postable guard, delete blocked", async (t) => {
     assert.equal(bank?.isPostable, true);
     assert.ok(bank?.parentId);
 
-    const periodId = await tempPeriod(admin, `coa-${Date.now()}`);
+    const periodId = await tempPeriod(admin, clientId, `coa-${Date.now()}`);
     const parentId = String(cash!.id);
     await assert.rejects(
       () =>
-        createBooksJournal(OMAR, DESERT, {
+        createBooksJournal(OMAR, clientId, {
           periodId,
           entryDate: "2026-09-08",
           memo: "non-postable",
           lines: [
             { accountId: parentId, debitMinor: 10 },
-            { accountId: REVENUE, creditMinor: 10 },
+            { accountId: revenueId, creditMinor: 10 },
           ],
           post: true,
         }),
       (error: unknown) => error instanceof BooksError || String(error).includes("not_postable"),
     );
 
+    // Post once so account has postings — delete must be blocked.
+    const draft = await createBooksJournal(OMAR, clientId, {
+      periodId,
+      entryDate: "2026-09-08",
+      memo: "coa-posting",
+      lines: [
+        { accountId: bankId, debitMinor: 10 },
+        { accountId: revenueId, creditMinor: 10 },
+      ],
+      post: false,
+    });
+    await postBooksJournal(LAYLA, clientId, draft.id);
+
     await assert.rejects(
-      () => admin.query(`DELETE FROM books_accounts WHERE id = $1`, [BANK]),
+      () => admin.query(`DELETE FROM books_accounts WHERE id = $1`, [bankId]),
       (error: unknown) => String(error).includes("books_account_has_postings"),
     );
   } finally {

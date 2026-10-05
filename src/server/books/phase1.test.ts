@@ -25,13 +25,10 @@ import {
 } from "@/server/books/settlements";
 import { recheckStatementBalances } from "@/server/books/statement-extractions";
 import { BooksError } from "@/server/books/errors";
+import { createTestCompany, type TestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
-const DESERT = "e1000001-0000-4000-8000-000000000001";
-const CUSTOMER = "e9000001-0000-4000-8000-000000000001";
-const SUPPLIER = "e9000001-0000-4000-8000-000000000002";
-const SUPPLIER_FOREIGN = "e9000001-0000-4000-8000-000000000003";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -54,20 +51,48 @@ async function withAdmin(t: test.TestContext) {
   return admin;
 }
 
-async function mayPeriod(admin: pg.Client) {
-  const row = await admin.query(
-    `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'May 2026'`,
-    [DESERT],
-  );
-  return String(row.rows[0].id);
+async function makeCustomer(clientId: string, tag: string) {
+  const created = await createBooksParty(OMAR, clientId, {
+    partyType: "customer",
+    name: `Phase1 Customer ${tag}`,
+    force: true,
+  });
+  assert.ok(created.id);
+  return String(created.id);
 }
 
-async function accountId(admin: pg.Client, code: string) {
-  const row = await admin.query(
-    `SELECT id FROM books_accounts WHERE client_id = $1 AND code = $2`,
-    [DESERT, code],
-  );
-  return String(row.rows[0].id);
+async function makeSupplier(clientId: string, tag: string, trn?: string | null) {
+  const created = await createBooksParty(OMAR, clientId, {
+    partyType: "supplier",
+    name: `Phase1 Supplier ${tag}`,
+    trn: trn === undefined ? `100${Date.now().toString().slice(-10)}004` : trn,
+    force: true,
+  });
+  assert.ok(created.id);
+  return String(created.id);
+}
+
+async function makeForeignSupplier(clientId: string, tag: string) {
+  const created = await createBooksParty(OMAR, clientId, {
+    partyType: "supplier",
+    name: `Phase1 Foreign ${tag}`,
+    trn: null,
+    country: "US",
+    defaultVatCode: "RC_IN",
+    force: true,
+  });
+  assert.ok(created.id);
+  return String(created.id);
+}
+
+function mayPeriod(company: TestCompany) {
+  return company.periods["May 2026"];
+}
+
+function accountId(company: TestCompany, code: string) {
+  const id = company.accountIdByCode[code];
+  assert.ok(id, `missing account ${code}`);
+  return id;
 }
 
 test("parsing: fils, Arabic-Indic, TRN, IBAN, dates", () => {
@@ -118,7 +143,13 @@ test("party fuzzy de-dupe", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const created = await createBooksParty(OMAR, DESERT, {
+    const company = await createTestCompany(admin, "phase1-fuzzy");
+    await createBooksParty(OMAR, company.clientId, {
+      partyType: "customer",
+      name: "Oasis Retail LLC",
+      force: true,
+    });
+    const created = await createBooksParty(OMAR, company.clientId, {
       partyType: "customer",
       name: "Oasis Retail LLC",
       force: false,
@@ -134,10 +165,13 @@ test("sales invoice approve → SV voucher + open item; disbursement uses 1220",
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const company = await createTestCompany(admin, "phase1-sv");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `sv-${Date.now()}`);
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-10",
       periodId,
       documentNumber: `SV-TEST-${Date.now()}`,
@@ -146,7 +180,7 @@ test("sales invoice approve → SV voucher + open item; disbursement uses 1220",
         { description: "Gov fee", lineKind: "disbursement", netMinor: 2000, vatMinor: 0 },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     assert.match(String(posted.entryNo), /^SV-2026-\d+$/);
 
     const lines = await admin.query(
@@ -161,10 +195,10 @@ test("sales invoice approve → SV voucher + open item; disbursement uses 1220",
     assert.ok(codes.has("1210"));
     assert.ok(codes.has("2210"));
 
-    const oi = await listBooksOpenItems(OMAR, DESERT, { partyId: CUSTOMER, status: "open" });
+    const oi = await listBooksOpenItems(OMAR, clientId, { partyId: customerId, status: "open" });
     assert.ok(oi.some((x: { documentId: string }) => x.documentId === doc.id));
 
-    const net = await partyDisbursementNet(OMAR, DESERT, CUSTOMER);
+    const net = await partyDisbursementNet(OMAR, clientId, customerId);
     // purchase leg not posted yet — sales Cr 1220 → net negative or non-zero warning path
     assert.equal(typeof net.netMinor, "number");
   } finally {
@@ -176,15 +210,17 @@ test("purchase without TRN puts VAT in cost; RCM for foreign", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "phase1-rcm");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
     // Create no-TRN supplier
-    const noTrn = await createBooksParty(OMAR, DESERT, {
+    const noTrn = await createBooksParty(OMAR, clientId, {
       partyType: "supplier",
       name: `Cash Vendor ${Date.now()}`,
       trn: null,
       force: true,
     });
-    const bill = await createBooksDocument(OMAR, DESERT, {
+    const bill = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId: String(noTrn.id),
       issueDate: "2026-05-11",
@@ -192,7 +228,7 @@ test("purchase without TRN puts VAT in cost; RCM for foreign", async (t) => {
       documentNumber: `PV-NOTRN-${Date.now()}`,
       lines: [{ description: "Supplies", lineKind: "expense", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(bill.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(bill.id));
     const lines = await admin.query(
       `SELECT a.code, l.debit_minor FROM books_journal_lines l
        JOIN books_accounts a ON a.id = l.account_id WHERE l.entry_id = $1`,
@@ -200,9 +236,10 @@ test("purchase without TRN puts VAT in cost; RCM for foreign", async (t) => {
     );
     assert.ok(!lines.rows.some((r) => r.code === "1430"));
 
-    const rcm = await createBooksDocument(OMAR, DESERT, {
+    const foreignId = await makeForeignSupplier(clientId, `rcm-${Date.now()}`);
+    const rcm = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER_FOREIGN,
+      partyId: foreignId,
       issueDate: "2026-05-12",
       periodId,
       documentNumber: `PV-RCM-${Date.now()}`,
@@ -216,7 +253,7 @@ test("purchase without TRN puts VAT in cost; RCM for foreign", async (t) => {
         },
       ],
     });
-    const rcmPosted = await approveAndPostBooksDocument(LAYLA, DESERT, String(rcm.id));
+    const rcmPosted = await approveAndPostBooksDocument(LAYLA, clientId, String(rcm.id));
     const rcmLines = await admin.query(
       `SELECT a.code FROM books_journal_lines l
        JOIN books_accounts a ON a.id = l.account_id WHERE l.entry_id = $1`,
@@ -234,12 +271,15 @@ test("USD invoice paid at new rate posts FX to 7300", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "phase1-fx");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `fx-${Date.now()}`);
     const rate1 = Number(parseFxRateToScaled("3.67"));
     const rate2 = Number(parseFxRateToScaled("3.70"));
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-13",
       periodId,
       documentNumber: `USD-${Date.now()}`,
@@ -258,15 +298,15 @@ test("USD invoice paid at new rate posts FX to 7300", async (t) => {
       ],
     });
     // Fix AED totals on lines — createBooksDocument computes aed from original
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
-    const oi = await listBooksOpenItems(OMAR, DESERT, { partyId: CUSTOMER });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
+    const oi = await listBooksOpenItems(OMAR, clientId, { partyId: customerId });
     const item = oi.find((x: { documentId: string }) => x.documentId === doc.id);
     assert.ok(item);
 
-    const bank = await accountId(admin, "1121");
-    const settlement = await createReceiptOrPayment(OMAR, LAYLA, DESERT, {
+    const bank = accountId(company, "1121");
+    const settlement = await createReceiptOrPayment(OMAR, LAYLA, clientId, {
       docType: "receipt",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-14",
       periodId,
       bankAccountId: bank,
@@ -295,10 +335,12 @@ test("contra does not allocate; CV voucher", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const from = await accountId(admin, "1120");
-    const to = await accountId(admin, "1110");
-    const result = await createContra(OMAR, LAYLA, DESERT, {
+    const company = await createTestCompany(admin, "phase1-contra");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const from = accountId(company, "1120");
+    const to = accountId(company, "1110");
+    const result = await createContra(OMAR, LAYLA, clientId, {
       issueDate: "2026-05-15",
       periodId,
       fromAccountId: from,
@@ -320,11 +362,14 @@ test("unallocated receipt → 2320 advance", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const bank = await accountId(admin, "1120");
-    const result = await createReceiptOrPayment(OMAR, LAYLA, DESERT, {
+    const company = await createTestCompany(admin, "phase1-adv");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `adv-${Date.now()}`);
+    const bank = accountId(company, "1120");
+    const result = await createReceiptOrPayment(OMAR, LAYLA, clientId, {
       docType: "receipt",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-16",
       periodId,
       bankAccountId: bank,
@@ -340,7 +385,7 @@ test("unallocated receipt → 2320 advance", async (t) => {
     const adv = await admin.query(
       `SELECT balance_aed_minor FROM books_party_advances
        WHERE client_id = $1 AND party_id = $2`,
-      [DESERT, CUSTOMER],
+      [clientId, customerId],
     );
     assert.ok(Number(adv.rows[0].balance_aed_minor) >= 5000);
   } finally {
@@ -352,14 +397,14 @@ test("opening import rejected when first period locked", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const apr = await admin.query(
-      `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'Apr 2026'`,
-      [DESERT],
-    );
+    const company = await createTestCompany(admin, "phase1-ob-lock", {
+      lockPeriodLabels: ["Apr 2026"],
+    });
+    const aprId = company.periods["Apr 2026"];
     await assert.rejects(
       () =>
-        createOpeningImport(OMAR, DESERT, {
-          forceBooksStartPeriodId: String(apr.rows[0].id),
+        createOpeningImport(OMAR, company.clientId, {
+          forceBooksStartPeriodId: String(aprId),
           lines: [
             { accountCode: "1120", debitMinor: 1000 },
             { accountCode: "3900", creditMinor: 1000 },
@@ -376,7 +421,8 @@ test("rebuild open items matches table", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const result = await assertOpenItemsMatchRebuild(OMAR, DESERT);
+    const company = await createTestCompany(admin, "phase1-rebuild");
+    const result = await assertOpenItemsMatchRebuild(OMAR, company.clientId);
     assert.equal(result.ok, true, result.mismatches.join(","));
   } finally {
     await admin.end().catch(() => undefined);
@@ -387,21 +433,24 @@ test("CN cannot exceed original remaining balance", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const inv = await createBooksDocument(OMAR, DESERT, {
+    const company = await createTestCompany(admin, "phase1-cn-cap");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `cn-cap-${Date.now()}`);
+    const inv = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-17",
       periodId,
       documentNumber: `CN-BASE-${Date.now()}`,
       lines: [{ description: "Svc", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(inv.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
     await assert.rejects(
       () =>
-        createBooksDocument(OMAR, DESERT, {
+        createBooksDocument(OMAR, clientId, {
           docType: "credit_note",
-          partyId: CUSTOMER,
+          partyId: customerId,
           issueDate: "2026-05-18",
           periodId,
           originalDocumentId: String(inv.id),
@@ -419,22 +468,24 @@ test("CN cannot exceed original remaining balance", async (t) => {
 test("deferred release schedule + blocked when target period locked", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
+  let junId = "";
+  let clientId = "";
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "phase1-def");
+    clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `def-${Date.now()}`);
     // Lock June so second release month is blocked
-    const jun = await admin.query(
-      `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'Jun 2026'`,
-      [DESERT],
-    );
-    if (!jun.rowCount) {
+    junId = company.periods["Jun 2026"];
+    if (!junId) {
       t.skip("Jun 2026 period missing");
       return;
     }
-    await lockBooksPeriod(LAYLA, DESERT, String(jun.rows[0].id));
+    await lockBooksPeriod(LAYLA, clientId, String(junId));
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-19",
       periodId,
       documentNumber: `DEF-${Date.now()}`,
@@ -443,7 +494,7 @@ test("deferred release schedule + blocked when target period locked", async (t) 
       deferRevenue: true,
       lines: [{ description: "Retainer", lineKind: "revenue", vatCode: "SR", netMinor: 20000, vatMinor: 1000 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const sched = await admin.query(
       `SELECT status, amount_aed_minor FROM books_deferred_schedules
        WHERE document_id = $1 ORDER BY release_date`,
@@ -453,12 +504,9 @@ test("deferred release schedule + blocked when target period locked", async (t) 
     assert.ok(sched.rows.some((r) => r.status === "pending" || r.status === "posted"));
     assert.ok(sched.rows.some((r) => r.status === "blocked"));
   } finally {
-    const jun = await admin
-      .query(`SELECT id FROM books_periods WHERE client_id = $1 AND label = 'Jun 2026'`, [DESERT])
-      .catch(() => null);
-    if (jun?.rowCount) {
+    if (junId && clientId) {
       await admin
-        .query(`UPDATE books_periods SET status = 'OPEN' WHERE id = $1`, [jun.rows[0].id])
+        .query(`UPDATE books_periods SET status = 'OPEN' WHERE id = $1`, [junId])
         .catch(() => undefined);
     }
     await admin.end().catch(() => undefined);
@@ -469,26 +517,30 @@ test("1220 nets to zero per client after bill + rebill", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "phase1-1220");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `1220-c-${Date.now()}`);
+    const supplierId = await makeSupplier(clientId, `1220-s-${Date.now()}`);
     const amount = 4500;
-    const bill = await createBooksDocument(OMAR, DESERT, {
+    const bill = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-20",
       periodId,
       documentNumber: `PV-DISB-${Date.now()}`,
       lines: [{ description: "Gov fee paid", lineKind: "disbursement", netMinor: amount, vatMinor: 0 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(bill.id));
-    const rebill = await createBooksDocument(OMAR, DESERT, {
+    await approveAndPostBooksDocument(LAYLA, clientId, String(bill.id));
+    const rebill = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-20",
       periodId,
       documentNumber: `SV-DISB-${Date.now()}`,
       lines: [{ description: "Gov fee rebill", lineKind: "disbursement", netMinor: amount, vatMinor: 0 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(rebill.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(rebill.id));
 
     const net = await admin.query(
       `SELECT COALESCE(SUM(l.debit_minor - l.credit_minor), 0)::bigint AS net_minor
@@ -496,7 +548,7 @@ test("1220 nets to zero per client after bill + rebill", async (t) => {
        JOIN books_journal_entries e ON e.id = l.entry_id
        JOIN books_accounts a ON a.id = l.account_id
        WHERE e.client_id = $1 AND e.status IN ('posted','reversed') AND a.code = '1220'`,
-      [DESERT],
+      [clientId],
     );
     // May include earlier tests' 1220 activity — assert this pair nets (check delta via both docs)
     const pair = await admin.query(
@@ -506,7 +558,7 @@ test("1220 nets to zero per client after bill + rebill", async (t) => {
        JOIN books_accounts a ON a.id = l.account_id
        JOIN books_documents d ON d.journal_entry_id = e.id
        WHERE e.client_id = $1 AND a.code = '1220' AND d.id = ANY($2::uuid[])`,
-      [DESERT, [bill.id, rebill.id]],
+      [clientId, [bill.id, rebill.id]],
     );
     assert.equal(Number(pair.rows[0].net_minor), 0);
     void net;
@@ -520,26 +572,29 @@ test("CN reverses VAT with same code", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const inv = await createBooksDocument(OMAR, DESERT, {
+    const company = await createTestCompany(admin, "phase1-cn-vat");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `cn-vat-${Date.now()}`);
+    const inv = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-21",
       periodId,
       documentNumber: `CN-VAT-${Date.now()}`,
       lines: [{ description: "Svc", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(inv.id));
-    const cn = await createBooksDocument(OMAR, DESERT, {
+    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
+    const cn = await createBooksDocument(OMAR, clientId, {
       docType: "credit_note",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-22",
       periodId,
       originalDocumentId: String(inv.id),
       documentNumber: `CN-${Date.now()}`,
       lines: [{ description: "CN", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(cn.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(cn.id));
     const vat = await admin.query(
       `SELECT l.vat_code, l.vat_treatment, l.debit_minor, l.credit_minor
        FROM books_journal_lines l
@@ -560,31 +615,34 @@ test("2320 advance later allocated to an invoice", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
-    const bank = await accountId(admin, "1120");
-    await createReceiptOrPayment(OMAR, LAYLA, DESERT, {
+    const company = await createTestCompany(admin, "phase1-alloc");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const customerId = await makeCustomer(clientId, `alloc-${Date.now()}`);
+    const bank = accountId(company, "1120");
+    await createReceiptOrPayment(OMAR, LAYLA, clientId, {
       docType: "receipt",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-23",
       periodId,
       bankAccountId: bank,
       originalAmountMinor: 8000,
       allocations: [],
     });
-    const inv = await createBooksDocument(OMAR, DESERT, {
+    const inv = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
-      partyId: CUSTOMER,
+      partyId: customerId,
       issueDate: "2026-05-24",
       periodId,
       documentNumber: `ADV-INV-${Date.now()}`,
       lines: [{ description: "Later work", lineKind: "revenue", vatCode: "SR", netMinor: 8000, vatMinor: 400 }],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(inv.id));
-    const oi = await listBooksOpenItems(OMAR, DESERT, { partyId: CUSTOMER, status: "open" });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
+    const oi = await listBooksOpenItems(OMAR, clientId, { partyId: customerId, status: "open" });
     const item = oi.find((x: { documentId: string }) => x.documentId === inv.id);
     assert.ok(item);
-    const alloc = await allocatePartyAdvance(OMAR, LAYLA, DESERT, {
-      partyId: CUSTOMER,
+    const alloc = await allocatePartyAdvance(OMAR, LAYLA, clientId, {
+      partyId: customerId,
       openItemId: String(item!.id),
       periodId,
       issueDate: "2026-05-25",
@@ -594,7 +652,7 @@ test("2320 advance later allocated to an invoice", async (t) => {
     const adv = await admin.query(
       `SELECT balance_original_minor FROM books_party_advances
        WHERE client_id = $1 AND party_id = $2 AND currency = 'AED'`,
-      [DESERT, CUSTOMER],
+      [clientId, customerId],
     );
     // Prior tests may leave residual advances; this allocation must have reduced by 8000 from pre-state.
     // Assert open item reduced:
@@ -614,34 +672,35 @@ test("opening import unlock → import → relock path audited", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   let aprId = "";
+  let clientId = "";
   try {
-    const apr = await admin.query(
-      `SELECT id, status FROM books_periods WHERE client_id = $1 AND label = 'Apr 2026'`,
-      [DESERT],
-    );
-    aprId = String(apr.rows[0].id);
+    const company = await createTestCompany(admin, "phase1-ob-path", {
+      lockPeriodLabels: ["Apr 2026"],
+    });
+    clientId = company.clientId;
+    aprId = company.periods["Apr 2026"];
     // Point books_start at April for this path
     await admin.query(`UPDATE clients SET books_start_period_id = $2 WHERE id = $1`, [
-      DESERT,
+      clientId,
       aprId,
     ]);
-    await reopenBooksPeriod(LAYLA, DESERT, aprId, "Cut-over OB import for Phase 1 proof");
-    const mapped = await createOpeningImport(OMAR, DESERT, {
+    await reopenBooksPeriod(LAYLA, clientId, aprId, "Cut-over OB import for Phase 1 proof");
+    const mapped = await createOpeningImport(OMAR, clientId, {
       lines: [
         { accountCode: "1120", debitMinor: 2500 },
         { accountCode: "3900", creditMinor: 2500 },
       ],
     });
-    const posted = await postOpeningImport(LAYLA, DESERT, String(mapped.id));
+    const posted = await postOpeningImport(LAYLA, clientId, String(mapped.id));
     assert.ok(posted.entryNo);
-    await lockBooksPeriod(LAYLA, DESERT, aprId);
+    await lockBooksPeriod(LAYLA, clientId, aprId);
 
     const audits = await admin.query(
       `SELECT action FROM books_audit_events
        WHERE client_id = $1 AND entity_id = $2
          AND action = ANY($3::text[])
        ORDER BY at`,
-      [DESERT, aprId, ["unlock", "lock"]],
+      [clientId, aprId, ["unlock", "lock"]],
     );
     const actions = audits.rows.map((r) => r.action);
     assert.ok(actions.includes("unlock"));
@@ -649,23 +708,23 @@ test("opening import unlock → import → relock path audited", async (t) => {
     const obAudit = await admin.query(
       `SELECT action FROM books_audit_events
        WHERE client_id = $1 AND entity = 'books_opening_import' AND action = 'post_opening'`,
-      [DESERT],
+      [clientId],
     );
     assert.ok(obAudit.rowCount);
   } finally {
-    // Restore May start + Apr locked
-    if (aprId) {
+    // Restore May start + Apr locked (test company only)
+    if (aprId && clientId) {
       await admin.query(
         `UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`,
         [aprId],
       ).catch(() => undefined);
       const may = await admin.query(
         `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'May 2026'`,
-        [DESERT],
+        [clientId],
       );
       if (may.rowCount) {
         await admin.query(`UPDATE clients SET books_start_period_id = $2 WHERE id = $1`, [
-          DESERT,
+          clientId,
           may.rows[0].id,
         ]).catch(() => undefined);
       }

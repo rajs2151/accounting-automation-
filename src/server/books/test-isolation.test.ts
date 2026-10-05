@@ -1,6 +1,6 @@
 /**
  * Guard: writer tests must not hard-code DESERT's id (parallel pollution).
- * Allow-list = read-only goldens + writers deferred to TEST-ISO-2.
+ * Allow-list = read-only goldens only.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -10,16 +10,10 @@ import test from "node:test";
 // Assembled so this guard file itself does not contain the literal UUID.
 const DESERT_ID = ["e1000001", "0000", "4000", "8000", "000000000001"].join("-");
 
-/** Files still allowed to reference DESERT. Shrink in TEST-ISO-2. */
+/** Files still allowed to reference DESERT (read-only goldens). */
 const ALLOW_LIST = new Set([
-  // Read-only goldens — must stay on DESERT
   "trial-balance.test.ts",
   "company-a-golden.test.ts",
-  // Writers not migrated in TEST-ISO-1 — TEST-ISO-2
-  "phase1.test.ts",
-  "journals.test.ts",
-  "schedule-post.test.ts",
-  "phase0-gaps.test.ts",
 ]);
 
 function walkTestFiles(dir: string, out: string[] = []): string[] {
