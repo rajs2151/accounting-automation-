@@ -13,10 +13,10 @@ import { BooksError } from "@/server/books/errors";
 import { confirmInboxAsDocument } from "@/server/books/inbox";
 import { createBooksParty } from "@/server/books/parties";
 import { aedFromOriginal, parseFxRateToScaled } from "@/lib/fx";
+import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
-const DESERT = "e1000001-0000-4000-8000-000000000001";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -48,16 +48,8 @@ async function withAdmin(t: test.TestContext) {
   return admin;
 }
 
-async function mayPeriod(admin: pg.Client) {
-  const row = await admin.query(
-    `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'May 2026'`,
-    [DESERT],
-  );
-  return String(row.rows[0].id);
-}
-
-async function uniqueSupplier(tag: string, trn: string | null) {
-  const created = await createBooksParty(OMAR, DESERT, {
+async function uniqueSupplier(clientId: string, tag: string, trn: string | null) {
+  const created = await createBooksParty(OMAR, clientId, {
     partyType: "supplier",
     name: `C1-2 Supplier ${tag}`,
     trn,
@@ -66,8 +58,8 @@ async function uniqueSupplier(tag: string, trn: string | null) {
   return String(created.id);
 }
 
-async function uniqueCustomer(tag: string) {
-  const created = await createBooksParty(OMAR, DESERT, {
+async function uniqueCustomer(clientId: string, tag: string) {
+  const created = await createBooksParty(OMAR, clientId, {
     partyType: "customer",
     name: `C1-2 Customer ${tag}`,
     force: true,
@@ -133,11 +125,13 @@ test("C1-2 case 1: mixed bill — disbursement 1220 + service expense + 1430", a
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C1-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag, `100${Date.now().toString().slice(-10)}003`);
+    const partyId = await uniqueSupplier(clientId, tag, `100${Date.now().toString().slice(-10)}003`);
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-10",
@@ -154,7 +148,7 @@ test("C1-2 case 1: mixed bill — disbursement 1220 + service expense + 1430", a
         },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
     assertHas(lines, "1220", 2000, 0);
@@ -171,11 +165,13 @@ test("C1-2 case 2: gov-authority bill no VAT — all lines 1220, no 1430", async
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag, `100${Date.now().toString().slice(-10)}004`);
+    const partyId = await uniqueSupplier(clientId, tag, `100${Date.now().toString().slice(-10)}004`);
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-11",
@@ -186,7 +182,7 @@ test("C1-2 case 2: gov-authority bill no VAT — all lines 1220, no 1430", async
         { description: "Immigration fee", lineKind: "disbursement", netMinor: 1500, vatMinor: 0 },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
     assertHas(lines, "1220", 3000, 0);
@@ -203,11 +199,13 @@ test("C1-2 case 3: supplier TRN + service line no VAT → check_vat requires ack
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C3-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag, `100${Date.now().toString().slice(-10)}005`);
+    const partyId = await uniqueSupplier(clientId, tag, `100${Date.now().toString().slice(-10)}005`);
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-12",
@@ -224,13 +222,13 @@ test("C1-2 case 3: supplier TRN + service line no VAT → check_vat requires ack
       ],
     });
 
-    const got = await getBooksDocument(OMAR, DESERT, String(doc.id));
+    const got = await getBooksDocument(OMAR, clientId, String(doc.id));
     assert.ok(got.checkVatReason, "check_vat flag must be stored");
     assert.match(String(got.checkVatReason), /service_line_missing_vat/);
     assert.equal(got.checkVatAckAt, null);
 
     await assert.rejects(
-      () => approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id)),
+      () => approveAndPostBooksDocument(LAYLA, clientId, String(doc.id)),
       (e: unknown) =>
         e instanceof BooksError &&
         e.code === "conflict" &&
@@ -244,22 +242,22 @@ test("C1-2 case 3: supplier TRN + service line no VAT → check_vat requires ack
     assert.equal(still.rows[0].journal_entry_id, null);
     assert.equal(still.rows[0].status, "draft");
 
-    const acked = await acknowledgeBooksDocumentCheckVat(OMAR, DESERT, String(doc.id));
+    const acked = await acknowledgeBooksDocumentCheckVat(OMAR, clientId, String(doc.id));
     assert.ok(acked.checkVatAckAt, "ack response must include timestamp");
     assert.equal(String(acked.checkVatAckBy), OMAR);
 
-    const afterAck = await getBooksDocument(OMAR, DESERT, String(doc.id));
+    const afterAck = await getBooksDocument(OMAR, clientId, String(doc.id));
     assert.ok(afterAck.checkVatAckAt, "ack must persist on document");
     assert.equal(String(afterAck.checkVatAckBy), OMAR);
 
     const audit = await admin.query(
       `SELECT action FROM books_audit_events
        WHERE client_id = $1 AND entity_id = $2 AND action = 'ack_check_vat'`,
-      [DESERT, doc.id],
+      [clientId, doc.id],
     );
     assert.ok(audit.rowCount && audit.rowCount >= 1, "ack must be audited");
 
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     assert.ok(posted.journalEntryId);
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
@@ -273,12 +271,14 @@ test("C1-2 case 4: FX bill no TRN — VAT in cost; asset deposit → 1420", asyn
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C4-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag, null);
+    const partyId = await uniqueSupplier(clientId, tag, null);
     const rate = Number(parseFxRateToScaled("3.67"));
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-13",
@@ -306,7 +306,7 @@ test("C1-2 case 4: FX bill no TRN — VAT in cost; asset deposit → 1420", asyn
         },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
 
@@ -325,12 +325,14 @@ test("C1-2 case 5: USD sales — Arnifi Fee revenue+2210, Government Fee Cr 1220
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C5-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueCustomer(tag);
+    const partyId = await uniqueCustomer(clientId, tag);
     const rate = Number(parseFxRateToScaled("3.67"));
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
       partyId,
       issueDate: "2026-05-14",
@@ -358,7 +360,7 @@ test("C1-2 case 5: USD sales — Arnifi Fee revenue+2210, Government Fee Cr 1220
         },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
 
@@ -378,17 +380,19 @@ test("C1-2 case 6: exempt residential lease — EX code, no 2210", async (t) => 
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C6-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueCustomer(tag);
+    const partyId = await uniqueCustomer(clientId, tag);
 
     const rental = await admin.query(
       `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '4300'`,
-      [DESERT],
+      [clientId],
     );
     const rentalId = String(rental.rows[0].id);
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
       partyId,
       issueDate: "2026-05-15",
@@ -405,7 +409,7 @@ test("C1-2 case 6: exempt residential lease — EX code, no 2210", async (t) => 
         },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
     const lines = await journalLines(admin, String(posted.journalEntryId));
     assertBalanced(lines);
     assertHas(lines, "4300", 0, 50000, "EX");
@@ -420,9 +424,11 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C7-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueCustomer(tag);
+    const partyId = await uniqueCustomer(clientId, tag);
 
     const fileId = randomUUID();
     const inboxId = randomUUID();
@@ -432,12 +438,12 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
     await admin.query(
       `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
        VALUES ($1,$2,$3,$4,$5,'application/pdf',100,$6)`,
-      [fileId, DESERT, sha, `books/${DESERT}/${fileId}/synth.pdf`, `${tag}.pdf`, OMAR],
+      [fileId, clientId, sha, `books/${clientId}/${fileId}/synth.pdf`, `${tag}.pdf`, OMAR],
     );
     await admin.query(
       `INSERT INTO books_inbox_items (id, client_id, file_id, detected_type, status, intended_type)
        VALUES ($1,$2,$3,'sales_invoice','needs_review','purchase_bill')`,
-      [inboxId, DESERT, fileId],
+      [inboxId, clientId, fileId],
     );
     await admin.query(
       `INSERT INTO books_extractions (
@@ -445,7 +451,7 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
        ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,'[]'::jsonb)`,
       [
         extractionId,
-        DESERT,
+        clientId,
         fileId,
         inboxId,
         JSON.stringify({
@@ -457,7 +463,7 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
       ],
     );
 
-    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+    const confirmed = await confirmInboxAsDocument(OMAR, clientId, inboxId, {
       partyId,
       periodId,
       docType: "purchase_bill",
@@ -486,7 +492,7 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
     const audit = await admin.query(
       `SELECT action, after_json FROM books_audit_events
        WHERE client_id = $1 AND entity_id = $2 AND action = 'reroute_doc_type'`,
-      [DESERT, confirmed.documentId],
+      [clientId, confirmed.documentId],
     );
     assert.ok(audit.rowCount && audit.rowCount >= 1, "reroute must be audited");
   } finally {
@@ -496,10 +502,11 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
 
 async function seedPurchaseConfirmFixture(
   admin: pg.Client,
+  clientId: string,
+  periodId: string,
   opts: { tag: string; detectedType: string | null; extractionDocType: string | null },
 ) {
-  const periodId = await mayPeriod(admin);
-  const partyId = await uniqueSupplier(opts.tag, `100${Date.now().toString().slice(-10)}007`);
+  const partyId = await uniqueSupplier(clientId, opts.tag, `100${Date.now().toString().slice(-10)}007`);
   const fileId = randomUUID();
   const inboxId = randomUUID();
   const extractionId = randomUUID();
@@ -508,12 +515,12 @@ async function seedPurchaseConfirmFixture(
   await admin.query(
     `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
      VALUES ($1,$2,$3,$4,$5,'application/pdf',100,$6)`,
-    [fileId, DESERT, sha, `books/${DESERT}/${fileId}/synth.pdf`, `${opts.tag}.pdf`, OMAR],
+    [fileId, clientId, sha, `books/${clientId}/${fileId}/synth.pdf`, `${opts.tag}.pdf`, OMAR],
   );
   await admin.query(
     `INSERT INTO books_inbox_items (id, client_id, file_id, detected_type, status, intended_type)
      VALUES ($1,$2,$3,$4,'needs_review','purchase_bill')`,
-    [inboxId, DESERT, fileId, opts.detectedType],
+    [inboxId, clientId, fileId, opts.detectedType],
   );
   await admin.query(
     `INSERT INTO books_extractions (
@@ -521,7 +528,7 @@ async function seedPurchaseConfirmFixture(
      ) VALUES ($1,$2,$3,$4,$5,'needs_review',$6::jsonb,'[]'::jsonb)`,
     [
       extractionId,
-      DESERT,
+      clientId,
       fileId,
       inboxId,
       opts.extractionDocType,
@@ -539,6 +546,7 @@ async function seedPurchaseConfirmFixture(
 
 async function assertStaysPurchaseBill(
   admin: pg.Client,
+  clientId: string,
   confirmed: Awaited<ReturnType<typeof confirmInboxAsDocument>>,
 ) {
   assert.equal(confirmed.docType, "purchase_bill");
@@ -553,7 +561,7 @@ async function assertStaysPurchaseBill(
   const audit = await admin.query(
     `SELECT COUNT(*)::int AS n FROM books_audit_events
      WHERE client_id = $1 AND entity_id = $2 AND action = 'reroute_doc_type'`,
-    [DESERT, confirmed.documentId],
+    [clientId, confirmed.documentId],
   );
   assert.equal(audit.rows[0].n, 0, "must not write reroute_doc_type audit");
 }
@@ -562,21 +570,23 @@ test("C1-2 case 7b: unknown classification under Purchases stays purchase_bill",
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
     const tag = `C7b-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, clientId, company.periods["May 2026"], {
       tag,
       detectedType: null,
       extractionDocType: null,
     });
 
-    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+    const confirmed = await confirmInboxAsDocument(OMAR, clientId, inboxId, {
       partyId,
       periodId,
       docType: "purchase_bill",
       issueDate: "2026-05-16",
     });
 
-    await assertStaysPurchaseBill(admin, confirmed);
+    await assertStaysPurchaseBill(admin, clientId, confirmed);
   } finally {
     await admin.end().catch(() => undefined);
   }
@@ -586,21 +596,23 @@ test("C1-2 case 7c: receipt classification under Purchases stays purchase_bill",
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
     const tag = `C7c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, clientId, company.periods["May 2026"], {
       tag,
       detectedType: "receipt",
       extractionDocType: "receipt",
     });
 
-    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+    const confirmed = await confirmInboxAsDocument(OMAR, clientId, inboxId, {
       partyId,
       periodId,
       docType: "purchase_bill",
       issueDate: "2026-05-16",
     });
 
-    await assertStaysPurchaseBill(admin, confirmed);
+    await assertStaysPurchaseBill(admin, clientId, confirmed);
   } finally {
     await admin.end().catch(() => undefined);
   }
@@ -610,21 +622,23 @@ test("C1-2 case 7d: purchase_bill classification under Purchases stays purchase_
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
     const tag = `C7d-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, clientId, company.periods["May 2026"], {
       tag,
       detectedType: "purchase_bill",
       extractionDocType: "purchase_bill",
     });
 
-    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+    const confirmed = await confirmInboxAsDocument(OMAR, clientId, inboxId, {
       partyId,
       periodId,
       docType: "purchase_bill",
       issueDate: "2026-05-16",
     });
 
-    await assertStaysPurchaseBill(admin, confirmed);
+    await assertStaysPurchaseBill(admin, clientId, confirmed);
   } finally {
     await admin.end().catch(() => undefined);
   }
@@ -634,11 +648,13 @@ test("C1-2 case 8: multi-line VAT > 5% → vat_exceeds_rate, nothing posted", as
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-2");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `C8-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag, `100${Date.now().toString().slice(-10)}008`);
+    const partyId = await uniqueSupplier(clientId, tag, `100${Date.now().toString().slice(-10)}008`);
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-17",
@@ -663,7 +679,7 @@ test("C1-2 case 8: multi-line VAT > 5% → vat_exceeds_rate, nothing posted", as
     });
 
     await assert.rejects(
-      () => approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id)),
+      () => approveAndPostBooksDocument(LAYLA, clientId, String(doc.id)),
       (e: unknown) =>
         e instanceof BooksError && e.code === "conflict" && e.message === "vat_exceeds_rate",
     );

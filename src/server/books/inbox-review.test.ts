@@ -8,9 +8,9 @@ import pg from "pg";
 import { getBooksInboxReview, uploadBooksInboxFiles } from "@/server/books/inbox";
 import { BooksError } from "@/server/books/errors";
 import { parseInvoiceFieldsFromText, pdfTextFromStreams } from "@/server/books/extract-sync";
+import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
-const DESERT = "e1000001-0000-4000-8000-000000000001";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -58,9 +58,12 @@ test("review API returns books_extractions for uploaded inbox id; 404 for unknow
   const admin = await withAdmin(t);
   if (!admin) return;
 
+  const company = await createTestCompany(admin, "inbox-review");
+  const clientId = company.clientId;
+
   const unknown = randomUUID();
   await assert.rejects(
-    () => getBooksInboxReview(OMAR, DESERT, unknown),
+    () => getBooksInboxReview(OMAR, clientId, unknown),
     (err: unknown) => err instanceof BooksError && err.code === "not_found",
   );
 
@@ -76,7 +79,7 @@ test("review API returns books_extractions for uploaded inbox id; 404 for unknow
 
   let uploaded: Awaited<ReturnType<typeof uploadBooksInboxFiles>>;
   try {
-    uploaded = await uploadBooksInboxFiles(OMAR, DESERT, [
+    uploaded = await uploadBooksInboxFiles(OMAR, clientId, [
       { filename: "invoice_02.pdf", contentType: "application/pdf", bytes },
     ]);
   } catch (e) {
@@ -88,7 +91,7 @@ test("review API returns books_extractions for uploaded inbox id; 404 for unknow
   const inboxId = uploaded.results[0]?.inboxItemId;
   assert.ok(inboxId);
 
-  const review = await getBooksInboxReview(OMAR, DESERT, inboxId);
+  const review = await getBooksInboxReview(OMAR, clientId, inboxId);
   assert.equal(review.id, inboxId);
   assert.ok(review.extractionId, "extraction row required");
   assert.equal(String((review.fieldsJson as { invoice_no?: { value?: string } }).invoice_no?.value), "INV-SYN-002");

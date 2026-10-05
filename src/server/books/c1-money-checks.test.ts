@@ -10,12 +10,10 @@ import {
 import { BooksError } from "@/server/books/errors";
 import { getBooksOpenItemKpis, listBooksOpenItems } from "@/server/books/open-items";
 import { createBooksParty } from "@/server/books/parties";
+import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
-const DESERT = "e1000001-0000-4000-8000-000000000001";
-const CUSTOMER = "e9000001-0000-4000-8000-000000000001";
-const SUPPLIER = "e9000001-0000-4000-8000-000000000002";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -47,32 +45,25 @@ async function withAdmin(t: test.TestContext) {
   return admin;
 }
 
-async function mayPeriod(admin: pg.Client) {
-  const row = await admin.query(
-    `SELECT id FROM books_periods WHERE client_id = $1 AND label = 'May 2026'`,
-    [DESERT],
-  );
-  return String(row.rows[0].id);
-}
-
 function isoDateOffset(days: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
 
-async function uniqueSupplier(tag: string): Promise<string> {
-  const created = await createBooksParty(OMAR, DESERT, {
+async function uniqueSupplier(clientId: string, tag: string, trn?: string | null): Promise<string> {
+  const created = await createBooksParty(OMAR, clientId, {
     partyType: "supplier",
     name: `C1-1 KPI Supplier ${tag}`,
+    trn: trn === undefined ? `100${Date.now().toString().slice(-10)}004` : trn,
     force: true,
   });
   assert.ok(created.id, "supplier party created");
   return String(created.id);
 }
 
-async function uniqueCustomer(tag: string): Promise<string> {
-  const created = await createBooksParty(OMAR, DESERT, {
+async function uniqueCustomer(clientId: string, tag: string): Promise<string> {
+  const created = await createBooksParty(OMAR, clientId, {
     partyType: "customer",
     name: `C1-1 KPI Customer ${tag}`,
     force: true,
@@ -85,11 +76,13 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-1");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `KPI-AP-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueSupplier(tag);
+    const partyId = await uniqueSupplier(clientId, tag);
 
-    const overdue = await createBooksDocument(OMAR, DESERT, {
+    const overdue = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-01",
@@ -100,7 +93,7 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
         { description: "Overdue bill", lineKind: "expense", vatCode: "SR", netMinor: 10000, vatMinor: 500 },
       ],
     });
-    const due3 = await createBooksDocument(OMAR, DESERT, {
+    const due3 = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-02",
@@ -111,7 +104,7 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
         { description: "Due 3d", lineKind: "expense", vatCode: "SR", netMinor: 20000, vatMinor: 1000 },
       ],
     });
-    const due30 = await createBooksDocument(OMAR, DESERT, {
+    const due30 = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-03",
@@ -122,7 +115,7 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
         { description: "Due 30d", lineKind: "expense", vatCode: "SR", netMinor: 30000, vatMinor: 1500 },
       ],
     });
-    await createBooksDocument(OMAR, DESERT, {
+    await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId,
       issueDate: "2026-05-04",
@@ -135,8 +128,8 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
     });
 
     // Different party: its posted bill must not appear in our party's KPIs.
-    const otherPartyId = await uniqueSupplier(`${tag}-other`);
-    const other = await createBooksDocument(OMAR, DESERT, {
+    const otherPartyId = await uniqueSupplier(clientId, `${tag}-other`);
+    const other = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
       partyId: otherPartyId,
       issueDate: "2026-05-01",
@@ -148,12 +141,12 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
       ],
     });
 
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(overdue.id));
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(due3.id));
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(due30.id));
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(other.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(overdue.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(due3.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(due30.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(other.id));
 
-    const items = await listBooksOpenItems(OMAR, DESERT, { side: "AP", partyId });
+    const items = await listBooksOpenItems(OMAR, clientId, { side: "AP", partyId });
     const ours = items.filter((i: { documentNumber?: string }) =>
       String(i.documentNumber || "").startsWith(tag),
     );
@@ -163,13 +156,13 @@ test("C1-1 KPI: AP outstanding / overdue / due-7; draft excluded", async (t) => 
       "other party's document excluded from party open-items list",
     );
 
-    const kpis = await getBooksOpenItemKpis(OMAR, DESERT, "AP", { partyId });
+    const kpis = await getBooksOpenItemKpis(OMAR, clientId, "AP", { partyId });
     assert.equal(kpis.unmatchedToBankAedMinor, null);
     assert.equal(kpis.totalOutstandingAedMinor, 63000);
     assert.equal(kpis.overdueAedMinor, 10500);
     assert.equal(kpis.dueIn7DaysAedMinor, 21000);
 
-    const otherKpis = await getBooksOpenItemKpis(OMAR, DESERT, "AP", { partyId: otherPartyId });
+    const otherKpis = await getBooksOpenItemKpis(OMAR, clientId, "AP", { partyId: otherPartyId });
     assert.equal(otherKpis.totalOutstandingAedMinor, 10500, "other party KPI is only its own bill");
     assert.equal(otherKpis.overdueAedMinor, 10500);
   } finally {
@@ -181,11 +174,13 @@ test("C1-1 KPI: AR sales invoice overdue / due-7", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-1");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const tag = `KPI-AR-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueCustomer(tag);
+    const partyId = await uniqueCustomer(clientId, tag);
 
-    const overdue = await createBooksDocument(OMAR, DESERT, {
+    const overdue = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
       partyId,
       issueDate: "2026-05-05",
@@ -196,7 +191,7 @@ test("C1-1 KPI: AR sales invoice overdue / due-7", async (t) => {
         { description: "AR overdue", lineKind: "revenue", vatCode: "SR", netMinor: 40000, vatMinor: 2000 },
       ],
     });
-    const due3 = await createBooksDocument(OMAR, DESERT, {
+    const due3 = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
       partyId,
       issueDate: "2026-05-06",
@@ -207,10 +202,10 @@ test("C1-1 KPI: AR sales invoice overdue / due-7", async (t) => {
         { description: "AR due 3", lineKind: "revenue", vatCode: "SR", netMinor: 50000, vatMinor: 2500 },
       ],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(overdue.id));
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(due3.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(overdue.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, String(due3.id));
 
-    const kpis = await getBooksOpenItemKpis(OMAR, DESERT, "AR", { partyId });
+    const kpis = await getBooksOpenItemKpis(OMAR, clientId, "AR", { partyId });
     assert.equal(kpis.side, "AR");
     assert.equal(kpis.totalOutstandingAedMinor, 94500);
     assert.equal(kpis.overdueAedMinor, 42000);
@@ -225,12 +220,15 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-1");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const stamp = Date.now();
+    const supplierId = await uniqueSupplier(clientId, `PT-${stamp}`);
 
-    const match = await createBooksDocument(OMAR, DESERT, {
+    const match = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-10",
       periodId,
       documentNumber: `PT-OK-${stamp}`,
@@ -241,12 +239,12 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
         { description: "Match", lineKind: "expense", vatCode: "SR", netMinor: 10000, vatMinor: 500 },
       ],
     });
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, String(match.id));
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(match.id));
     assert.ok(posted.journalEntryId);
 
-    const mismatch = await createBooksDocument(OMAR, DESERT, {
+    const mismatch = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-10",
       periodId,
       documentNumber: `PT-MIS-${stamp}`,
@@ -258,7 +256,7 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
       ],
     });
     await assert.rejects(
-      () => approveAndPostBooksDocument(LAYLA, DESERT, String(mismatch.id)),
+      () => approveAndPostBooksDocument(LAYLA, clientId, String(mismatch.id)),
       (e: unknown) =>
         e instanceof BooksError &&
         e.code === "conflict" &&
@@ -270,9 +268,9 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
     );
     assert.equal(journals.rows[0].journal_entry_id, null);
 
-    const vatBad = await createBooksDocument(OMAR, DESERT, {
+    const vatBad = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-10",
       periodId,
       documentNumber: `PT-VAT-${stamp}`,
@@ -281,14 +279,14 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
       ],
     });
     await assert.rejects(
-      () => approveAndPostBooksDocument(LAYLA, DESERT, String(vatBad.id)),
+      () => approveAndPostBooksDocument(LAYLA, clientId, String(vatBad.id)),
       (e: unknown) =>
         e instanceof BooksError && e.code === "conflict" && e.message === "vat_exceeds_rate",
     );
 
-    const nullPrinted = await createBooksDocument(OMAR, DESERT, {
+    const nullPrinted = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-11",
       periodId,
       documentNumber: `PT-NULL-${stamp}`,
@@ -296,7 +294,7 @@ test("C1-1 printed totals: match posts; mismatch / VAT block; NULL ok", async (t
         { description: "No printed", lineKind: "expense", vatCode: "SR", netMinor: 8000, vatMinor: 400 },
       ],
     });
-    const postedNull = await approveAndPostBooksDocument(LAYLA, DESERT, String(nullPrinted.id));
+    const postedNull = await approveAndPostBooksDocument(LAYLA, clientId, String(nullPrinted.id));
     assert.ok(postedNull.journalEntryId);
   } finally {
     await admin.end().catch(() => undefined);
@@ -307,24 +305,26 @@ test("C1-1 payments made: info only — open item full gross, no settlement rows
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-1");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const partyId = await uniqueCustomer(`PAY-${stamp}`);
+    const partyId = await uniqueCustomer(clientId, `PAY-${stamp}`);
 
     const beforeAlloc = await admin.query(
       `SELECT COUNT(*)::int AS n
        FROM books_allocations a
        JOIN books_open_items oi ON oi.id = a.open_item_id
        WHERE a.client_id = $1 AND oi.party_id = $2`,
-      [DESERT, partyId],
+      [clientId, partyId],
     );
     const beforeDocs = await admin.query(
       `SELECT COUNT(*)::int AS n FROM books_documents
        WHERE client_id = $1 AND party_id = $2 AND doc_type IN ('receipt','payment')`,
-      [DESERT, partyId],
+      [clientId, partyId],
     );
 
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",
       partyId,
       issueDate: "2026-05-12",
@@ -339,8 +339,8 @@ test("C1-1 payments made: info only — open item full gross, no settlement rows
         { description: "Paid on doc", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 },
       ],
     });
-    await approveAndPostBooksDocument(LAYLA, DESERT, String(doc.id));
-    const oi = await listBooksOpenItems(OMAR, DESERT, { partyId, status: "open" });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
+    const oi = await listBooksOpenItems(OMAR, clientId, { partyId, status: "open" });
     const item = oi.find((r: { documentNumber?: string }) => r.documentNumber === `PAY-INFO-${stamp}`);
     assert.ok(item);
     assert.equal(Number(item!.openAedMinor), 10500);
@@ -351,12 +351,12 @@ test("C1-1 payments made: info only — open item full gross, no settlement rows
        FROM books_allocations a
        JOIN books_open_items oi ON oi.id = a.open_item_id
        WHERE a.client_id = $1 AND oi.party_id = $2`,
-      [DESERT, partyId],
+      [clientId, partyId],
     );
     const afterDocs = await admin.query(
       `SELECT COUNT(*)::int AS n FROM books_documents
        WHERE client_id = $1 AND party_id = $2 AND doc_type IN ('receipt','payment')`,
-      [DESERT, partyId],
+      [clientId, partyId],
     );
     // Also: no allocations against this document's open item.
     const docAlloc = await admin.query(
@@ -364,7 +364,7 @@ test("C1-1 payments made: info only — open item full gross, no settlement rows
        FROM books_allocations a
        JOIN books_open_items oi ON oi.id = a.open_item_id
        WHERE a.client_id = $1 AND oi.document_id = $2`,
-      [DESERT, doc.id],
+      [clientId, doc.id],
     );
     assert.equal(afterAlloc.rows[0].n, beforeAlloc.rows[0].n);
     assert.equal(afterDocs.rows[0].n, beforeDocs.rows[0].n);
@@ -378,11 +378,14 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const periodId = await mayPeriod(admin);
+    const company = await createTestCompany(admin, "c1-1");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const doc = await createBooksDocument(OMAR, DESERT, {
+    const supplierId = await uniqueSupplier(clientId, `PREV-${stamp}`);
+    const doc = await createBooksDocument(OMAR, clientId, {
       docType: "purchase_bill",
-      partyId: SUPPLIER,
+      partyId: supplierId,
       issueDate: "2026-05-13",
       periodId,
       documentNumber: `PREV-${stamp}`,
@@ -404,7 +407,7 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
                WHERE id = $2::uuid AND journal_entry_id IS NOT NULL
              )
            )`,
-        [DESERT, docId],
+        [clientId, docId],
       );
       return a.rows[0].n as number;
     };
@@ -412,12 +415,12 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     const journalLink = async () => {
       const d = await admin.query(
         `SELECT journal_entry_id FROM books_documents WHERE id = $1 AND client_id = $2`,
-        [docId, DESERT],
+        [docId, clientId],
       );
       const linkedViaDoc = await admin.query(
         `SELECT COUNT(*)::int AS n FROM books_documents
          WHERE id = $1 AND client_id = $2 AND journal_entry_id IS NOT NULL`,
-        [docId, DESERT],
+        [docId, clientId],
       );
       return {
         journalEntryId: d.rows[0].journal_entry_id as string | null,
@@ -431,7 +434,7 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
          FROM books_voucher_sequences
          WHERE client_id = $1
          ORDER BY voucher_type, year`,
-        [DESERT],
+        [clientId],
       );
       return v.rows;
     };
@@ -440,7 +443,7 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     const beforeJournal = await journalLink();
     const beforeVouchers = await voucherSnapshot();
 
-    const preview = await previewBooksDocumentJournal(OMAR, DESERT, docId);
+    const preview = await previewBooksDocumentJournal(OMAR, clientId, docId);
 
     const afterAudit = await scopedAuditCount();
     const afterJournal = await journalLink();
@@ -455,7 +458,7 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     assert.equal(preview.debitMinor, preview.creditMinor);
     assert.ok(preview.lines.length >= 2);
 
-    const posted = await approveAndPostBooksDocument(LAYLA, DESERT, docId);
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, docId);
     const jl = await admin.query(
       `SELECT a.code AS "accountCode",
               COALESCE(l.vat_treatment, l.vat_code) AS "vatCode",
