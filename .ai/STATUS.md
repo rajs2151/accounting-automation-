@@ -2,7 +2,10 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E2 (worker bank statements -> statement + lines, Python only)
+- Current task: E2-fix1 (owner decisions on E2 + 3 review defects)
+- 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
+  attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
+  generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
 - Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67)
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
@@ -51,3 +54,4 @@
 - 2026-10-05 15:46 | PYTEST-0 | i1 | PASS | .ai/runs/20261005-153350-PYTEST-0-i1
 - 2026-10-05 16:04 | E1 | i1 | FAIL | .ai/runs/20261005-154808-E1-i1
 - 2026-10-05 16:17 | E1 | i2 | PASS | .ai/runs/20261005-160417-E1-i2
+- 2026-10-05 16:45 | E2 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-161902-E2-i1
