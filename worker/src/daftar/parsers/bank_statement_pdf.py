@@ -36,6 +36,8 @@ PERIOD_RE = re.compile(
     re.I,
 )
 CURRENCY_RE = re.compile(r"\b(AED|USD|EUR|GBP|SAR)\b", re.I)
+# Dated line start — used to flag rows that look like transactions but match no pattern.
+DATE_LINE_RE = re.compile(r"^(\d{1,2}/\d{1,2}/\d{4})\b")
 
 
 def _pdf_pages(content: bytes) -> tuple[str, list[dict[str, Any]], list[tuple[int, str]]]:
@@ -93,6 +95,13 @@ def _match_txn_line(raw: str) -> dict[str, Any] | None:
         # Require a real movement so header-like rows are not swallowed.
         if debit == 0 and credit == 0:
             return None
+        # Both columns non-zero is ambiguous (often amount + printed balance).
+        if debit != 0 and credit != 0:
+            return {
+                "ambiguous_columns": True,
+                "date_raw": m.group(1),
+                "description": m.group(2).strip(),
+            }
         printed_bal = _minor(m.group(5)) if m.group(5) else None
         amount = credit if credit else debit
         return {
@@ -133,12 +142,22 @@ def _line_source(
 def _parse_lines(
     text: str,
     word_boxes: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Extract transaction lines. Printed balance column is read, never computed."""
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Extract transaction lines + parse warnings. Printed balance is read, never computed."""
     lines: list[dict[str, Any]] = []
-    for raw in (text or "").splitlines():
-        matched = _match_txn_line(raw)
+    parse_flags: list[str] = []
+    for line_no, raw in enumerate((text or "").splitlines(), start=1):
+        s = (raw or "").strip()
+        if not s:
+            continue
+        matched = _match_txn_line(s)
+        if matched and matched.get("ambiguous_columns"):
+            parse_flags.append(f"ambiguous_line_columns:{line_no}")
+            continue
         if not matched:
+            # Dated but unmatched → never silently drop.
+            if DATE_LINE_RE.match(s):
+                parse_flags.append(f"unparsed_line:{line_no}")
             continue
         date_raw = matched["date_raw"]
         description = matched["description"]
@@ -162,7 +181,7 @@ def _parse_lines(
                 "source_bbox": source.get("bbox") if source else None,
             }
         )
-    return lines
+    return lines, parse_flags
 
 
 def _slice_has_activity(slice_text: str) -> bool:
@@ -195,6 +214,7 @@ def _account(
     lines: list[dict[str, Any]],
     balances_found: bool,
     account_attribution_ambiguous: bool = False,
+    parse_flags: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "iban": iban,
@@ -209,6 +229,7 @@ def _account(
         # Back-compat alias used by extraction writer / older tests
         "has_own_activity_block": balances_found,
         "account_attribution_ambiguous": account_attribution_ambiguous,
+        "parse_flags": list(parse_flags or []),
     }
 
 
@@ -239,7 +260,7 @@ def parse_bank_statement_text(
     closing_m = CLOSING_RE.search(text)
     opening = _minor(opening_m.group(1)) if opening_m else None
     closing = _minor(closing_m.group(1)) if closing_m else None
-    shared_lines = _parse_lines(text, word_boxes)
+    shared_lines, shared_flags = _parse_lines(text, word_boxes)
     shared_balances_found = opening is not None and closing is not None
 
     if not unique:
@@ -254,6 +275,7 @@ def parse_bank_statement_text(
                 closing_minor=closing,
                 lines=shared_lines,
                 balances_found=shared_balances_found,
+                parse_flags=shared_flags,
             )
         ]
 
@@ -290,6 +312,7 @@ def parse_bank_statement_text(
             o = _minor(o_m.group(1)) if o_m else None
             c = _minor(c_m.group(1)) if c_m else None
             balances_found = o is not None and c is not None
+            sec_lines, sec_flags = _parse_lines(section, word_boxes)
             out.append(
                 _account(
                     iban,
@@ -299,8 +322,9 @@ def parse_bank_statement_text(
                     currency=currency,
                     opening_minor=o,
                     closing_minor=c,
-                    lines=_parse_lines(section, word_boxes),
+                    lines=sec_lines,
                     balances_found=balances_found,
+                    parse_flags=sec_flags,
                 )
             )
         elif iban == shared_owner:
@@ -309,8 +333,14 @@ def parse_bank_statement_text(
             c_m = CLOSING_RE.search(section) or closing_m
             o = _minor(o_m.group(1)) if o_m else None
             c = _minor(c_m.group(1)) if c_m else None
-            sec_lines = _parse_lines(section, word_boxes)
-            lines = sec_lines if sec_lines else shared_lines
+            sec_lines, sec_flags = _parse_lines(section, word_boxes)
+            # Single-IBAN: whole-doc lines so parse_flags use document line numbers.
+            if len(unique) == 1:
+                lines, acct_flags = shared_lines, shared_flags
+            elif sec_lines:
+                lines, acct_flags = sec_lines, sec_flags
+            else:
+                lines, acct_flags = shared_lines, shared_flags
             balances_found = o is not None and c is not None
             out.append(
                 _account(
@@ -324,6 +354,7 @@ def parse_bank_statement_text(
                     lines=lines,
                     balances_found=balances_found,
                     account_attribution_ambiguous=ambiguous,
+                    parse_flags=acct_flags,
                 )
             )
         else:

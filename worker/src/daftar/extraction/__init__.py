@@ -73,6 +73,7 @@ def _running_balance_continuity(
             return {
                 "line_index": idx,
                 "description": str(ln.get("description") or ""),
+                "txn_date": ln.get("txn_date"),
                 "expected": expected,
                 "got": got,
                 "diff": got - expected,
@@ -454,6 +455,9 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 raw_lines = list(acct.get("lines") or [])
                 acct_lines = [_stmt_line_dict(ln) for ln in raw_lines]
                 stmt_flags = list(flags)
+                parse_flags = [str(f) for f in (acct.get("parse_flags") or [])]
+                if parse_flags:
+                    stmt_flags.extend(parse_flags)
                 opening_val: int | None = None
                 closing_val: int | None = None
                 stmt_status = "needs_review"
@@ -473,9 +477,16 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     continuity = _running_balance_continuity(opening_val, acct_lines)
                     if continuity is not None:
                         stmt_flags.append("running_balance_break")
+                        # sort_index (0-based) identifies the exact row; keep description too.
+                        stmt_flags.append(
+                            f"running_balance_break_line:{continuity['line_index']}"
+                        )
                         stmt_flags.append(
                             f"running_balance_break_line:{continuity['description']}"
                         )
+                        txn_date = continuity.get("txn_date")
+                        if txn_date:
+                            stmt_flags.append(f"running_balance_break_date:{txn_date}")
                         stmt_flags.append(f"running_balance_diff:{continuity['diff']}")
                         stmt_status = "needs_review"
                     elif attribution_ambiguous:
@@ -491,6 +502,12 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                         stmt_flags.append("closing_mismatch")
                         stmt_flags.append(f"balance_diff:{diff}")
                         stmt_status = "needs_review"
+
+                # Parse warnings (unparsed / ambiguous columns) force review, never ready.
+                if parse_flags:
+                    stmt_status = "needs_review"
+                    if "balance_ok" in stmt_flags:
+                        stmt_flags.remove("balance_ok")
 
                 conn.execute(
                     """

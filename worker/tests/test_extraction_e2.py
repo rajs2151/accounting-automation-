@@ -266,9 +266,149 @@ def test_tampered_printed_balance_needs_review_names_line(ctx):
     if isinstance(flags_val, str):
         flags_val = json.loads(flags_val)
     assert "running_balance_break" in flags_val
+    assert "running_balance_break_line:2" in flags_val
     assert "running_balance_break_line:BANK FEE" in flags_val
+    assert "running_balance_break_date:2026-05-10" in flags_val
     assert f"running_balance_diff:{brk['diff']}" in flags_val
+    assert "running_balance_diff:-5000" in flags_val
     assert "balance_ok" not in flags_val
+
+
+def test_unparsed_dated_line_needs_review(ctx):
+    """Dated line matching no txn pattern → unparsed_line flag + needs_review."""
+    conn, storage = ctx
+    text = """ACCOUNT STATEMENT
+Bank: Synthetic UAE Bank A
+IBAN: AE070331234567890123456
+Period: 01/05/2026 to 31/05/2026
+Opening balance: 1,000.00
+05/05/2026 CLIENT RECEIPT 500.00 CR
+12/05/2026 ODD ROW 25
+Closing balance: 1,500.00
+"""
+    # Line 7 is the ODD ROW (1-based in full document text).
+    accounts = parse_bank_statement_text(text)
+    assert len(accounts) == 1
+    assert len(accounts[0]["lines"]) == 1
+    assert accounts[0]["lines"][0]["description"] == "CLIENT RECEIPT"
+    assert "unparsed_line:7" in accounts[0]["parse_flags"]
+
+    content = text.encode("utf-8")
+    digest = sha256_hex(content)
+    file_id = str(uuid4())
+    inbox_id = str(uuid4())
+    storage_key = f"test/e2-unparsed/{file_id}.txt"
+    storage.put(storage_key, content, "text/plain")
+    conn.execute(
+        """
+        INSERT INTO books_files (
+          id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (file_id, DESERT_CLIENT_ID, digest, storage_key, "odd.txt", "text/plain", len(content), OMAR),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_inbox_items (id, client_id, file_id, status)
+        VALUES (%s, %s, %s, 'queued')
+        """,
+        (inbox_id, DESERT_CLIENT_ID, file_id),
+    )
+    conn.commit()
+    process_extract_document(conn, storage, {"inboxItemId": inbox_id, "fileId": file_id})
+    conn.commit()
+
+    stmt = conn.execute(
+        "SELECT id, status, validation_flags FROM books_statement_extractions WHERE inbox_item_id = %s",
+        (inbox_id,),
+    ).fetchone()
+    assert stmt is not None
+    assert stmt["status"] == "needs_review"
+    flags_val = stmt["validation_flags"]
+    if isinstance(flags_val, str):
+        flags_val = json.loads(flags_val)
+    assert "unparsed_line:7" in flags_val
+    assert "balance_ok" not in flags_val
+    n = conn.execute(
+        "SELECT count(*) AS c FROM books_statement_lines WHERE statement_id = %s",
+        (stmt["id"],),
+    ).fetchone()["c"]
+    assert n == 1
+
+
+def test_ambiguous_dc_columns_not_stored_as_debit_and_credit(ctx):
+    """LINE_DC with both amounts non-zero → ambiguous_line_columns, not debit+credit row."""
+    conn, storage = ctx
+    text = """ACCOUNT STATEMENT
+Bank: Synthetic UAE Bank A
+IBAN: AE070331234567890123456
+Period: 01/05/2026 to 31/05/2026
+Opening balance: 1,000.00
+05/05/2026 CLIENT RECEIPT 500.00 1,500.00
+Closing balance: 1,000.00
+"""
+    accounts = parse_bank_statement_text(text)
+    assert len(accounts) == 1
+    assert accounts[0]["lines"] == []
+    assert "ambiguous_line_columns:6" in accounts[0]["parse_flags"]
+
+    content = text.encode("utf-8")
+    digest = sha256_hex(content)
+    file_id = str(uuid4())
+    inbox_id = str(uuid4())
+    storage_key = f"test/e2-ambiguous/{file_id}.txt"
+    storage.put(storage_key, content, "text/plain")
+    conn.execute(
+        """
+        INSERT INTO books_files (
+          id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            file_id,
+            DESERT_CLIENT_ID,
+            digest,
+            storage_key,
+            "ambig.txt",
+            "text/plain",
+            len(content),
+            OMAR,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_inbox_items (id, client_id, file_id, status)
+        VALUES (%s, %s, %s, 'queued')
+        """,
+        (inbox_id, DESERT_CLIENT_ID, file_id),
+    )
+    conn.commit()
+    process_extract_document(conn, storage, {"inboxItemId": inbox_id, "fileId": file_id})
+    conn.commit()
+
+    stmt = conn.execute(
+        "SELECT id, status, validation_flags FROM books_statement_extractions WHERE inbox_item_id = %s",
+        (inbox_id,),
+    ).fetchone()
+    assert stmt is not None
+    assert stmt["status"] == "needs_review"
+    flags_val = stmt["validation_flags"]
+    if isinstance(flags_val, str):
+        flags_val = json.loads(flags_val)
+    assert "ambiguous_line_columns:6" in flags_val
+    assert "balance_ok" not in flags_val
+    rows = conn.execute(
+        """
+        SELECT debit_minor, credit_minor FROM books_statement_lines
+        WHERE statement_id = %s ORDER BY sort_index
+        """,
+        (stmt["id"],),
+    ).fetchall()
+    assert rows == []
+    # Must not have been stored as debit 50000 / credit 150000.
+    assert not any(
+        int(r["debit_minor"] or 0) == 50000 and int(r["credit_minor"] or 0) == 150000 for r in rows
+    )
 
 
 def test_tampered_line_needs_review_with_difference(ctx):
