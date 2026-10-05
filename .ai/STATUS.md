@@ -1,21 +1,21 @@
-# arnibooks - Project status (maintained by the AI loop + reviewer)
+﻿# arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: PYTEST-0 (fix 3 pre-existing worker pytest failures)
+- Current task: E1 (worker invoice fields + page/bbox, Python only)
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
 - Loop changes: scripts/ai/gates.ps1 (Cursor runs the same gates), pytest gate uses cached venv
   (scripts/ai/pytest-inner.sh), timeout no longer crashes the loop, .gitattributes forces LF for *.sh.
-- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) · C1-1 PASS (5755744, 02c7976) | C1-2 PASS (39b7bfc + fix1 484e04f)
+- Done: POC-001 PASS (6d007c1) Â· VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) Â· C1-1 PASS (5755744, 02c7976) | C1-2 PASS (39b7bfc + fix1 484e04f)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
   2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
 - CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 (ace66e8, 5b8a9b4, 4763c34 - also
+1. (done) POC-001 Â· VERIFY-S1 Â· VERIFY-S1-fix1 Â· C1-1 Â· C1-2 Â· TEST-ISO-1 (ace66e8, 5b8a9b4, 4763c34 - also
    covered TEST-ISO-2's scope: only the 2 read-only goldens use DESERT, enforced by test-isolation.test.ts)
 3. PYTEST-0 - fix 3 pre-existing worker pytest failures (statements_extraction_method_check x2, forced RLS test)
    (pytest gate first ran for real 2026-10-05: 32 pass / 3 fail at HEAD)
@@ -47,3 +47,4 @@
 - 2026-10-05 15:14 | TEST-ISO-1 | i1 | FAIL | .ai/runs/20261005-145854-TEST-ISO-1-i1
 - 2026-10-05 15:25 | TEST-ISO-1 | i2 | FAIL | .ai/runs/20261005-151433-TEST-ISO-1-i2
 - 2026-10-05 15:32 | TEST-ISO-1 | i3 | PASS | .ai/runs/20261005-152522-TEST-ISO-1-i3
+- 2026-10-05 15:46 | PYTEST-0 | i1 | PASS | .ai/runs/20261005-153350-PYTEST-0-i1
