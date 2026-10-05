@@ -1,74 +1,65 @@
-TASK ID: DEMO-1
-PHASE: Phase 1 - upload extraction must work end-to-end for the CEO demo (2026-10-05)
+TASK ID: TEST-ISO-1
+PHASE: Test infrastructure - stop parallel tests polluting the shared DESERT company (part 1 of 2)
 
 OBJECTIVE:
-Uploading a synthetic bill/invoice PDF or a bank statement PDF through the UI must produce usable extracted fields
-(invoice) or a statement with lines in Statement staging (bank). Today only invoice_02.pdf is proven by e2e.
+Give tests that WRITE (documents, journals, approvals, inbox items) their own synthetic company, so they cannot change
+DESERT's balances, voucher counters or audit counts while other test files run in parallel. Part 1: the helper, a
+guard test, and the first 3 test files. (Part 2 moves the rest.)
 
-CONTEXT (observed 2026-10-05 ~00:30 on the running app, Docker web at tag demo-ceo-2026-10-05, user Omar, company
-DESERT e1000001-0000-4000-8000-000000000001, via POST /api/books/inbox/upload):
-- fixtures/extraction/pdfs/invoice_03.pdf (ground truth: sales_invoice INV-SYN-003, 2026-05-15, total 10500,
-  TRN 100000000000001) -> inbox status needs_review, detectedType null, classificationConfidence 0.3, clientId null,
-  fields: party null, document_date null, one line "invoice_03.pdf" amount 0.
-  validationFlags: no_rule_match, methods:1:pdf_text, company_match:no_identifiers, company_mismatch, unassigned,
-  low_confidence_classification.
-- fixtures/extraction/pdfs/bank_c_multi_iban.pdf -> same result (detectedType null, conf 0.3, clientId null);
-  NO row appeared in GET /api/books/statements (only the seeded "Synthetic UAE Bank" demo statement exists).
-- The PDF has text (methods pdf_text), so this is parsing/classification, not OCR.
-- Two extraction paths exist: web sync path src/server/books/extract-sync.ts (used on upload) and worker
-  worker/src/daftar/extraction/__init__.py process_extract_document (creates books_statement_extractions for
-  bank/card/gateway statements at ~line 222). Find which path ran and why no parser/rule matched.
-- Statements page src/app/books/statements/page.tsx has NO upload control (only a Stripe CSV textarea).
+CONTEXT:
+- npm test runs `tsx --test` over many files in parallel (package.json "test") against ONE fresh database.
+- 9 test files use DESERT (e1000001-0000-4000-8000-000000000001):
+  read-only goldens (must stay on DESERT): src/server/books/trial-balance.test.ts, company-a-golden.test.ts
+  writers: c1-validation.test.ts, c1-money-checks.test.ts, inbox-review.test.ts, phase1.test.ts, journals.test.ts,
+           schedule-post.test.ts, phase0-gaps.test.ts (all under src/server/books/)
+- Real failures caused by this: C1-1 iteration 1 (KPI totals and audit counts changed by other files), and a later
+  attempt where uploads posted into DESERT June and broke "Desert Falcon Jun TB matches hand-computed golden".
+  A rejected workaround disabled journal immutability triggers and deleted other journals - never do that.
+- Posting requires a synthetic tenant (assertSyntheticTenant in src/server/books/documents.ts), COA accounts
+  (1210, 2110, 2210, 1430, 1220, 2310, 4100, 6600 ...), VAT codes, monthly periods, and Omar (preparer) /
+  Layla (approver) access. Seeds: db/02-seed.sql, db/17-books-seed.sql, db/20-books-coa-v2.sql, db/22*,
+  db/24-books-phase1-seed.sql, db/25-books-slice1.sql.
 
 FILES TO INSPECT:
-- src/server/books/inbox.ts, src/server/books/extract-sync.ts, src/app/api/books/[...path]/route.ts (upload route)
-- worker/src/daftar/extraction/__init__.py, worker/src/daftar/extraction/classify.py, worker/src/daftar/parsers/*
-- fixtures/extraction/{pdfs,ground_truth,text}/ and fixtures/extraction/README.md
-- src/app/books/statements/page.tsx, src/app/books/statements/[id]/page.tsx, src/server/books/statement-extractions.ts
+- package.json "test" script; src/server/books/*.test.ts (existing helpers, how they connect as admin vs app user)
+- the seed files above (how DESERT, its COA, VAT codes, periods and user access are created)
+- src/server/books/documents.ts (assertSyntheticTenant), src/server/books/c1-validation.test.ts (own-party pattern)
 
 IMPLEMENTATION REQUIREMENTS:
-1. Root cause first: explain in the report why invoice_03 and bank_c get no_rule_match while invoice_02 works.
-2. Invoices/bills: every fixtures/extraction/pdfs/invoice_01..10.pdf uploaded via the upload API must get the
-   correct doc type, invoice number, date, party name/TRN and total per its ground_truth JSON (no hardcoding per
-   filename or per fixture - fix the general parser/classifier). Company match: if the document carries the company's
-   own TRN/name, it must be assigned to that company, not "unassigned".
-3. Bank statements: bank_a.pdf, bank_b_bilingual.pdf, bank_c_multi_iban.pdf uploaded via the inbox must be classified
-   as bank_statement and create books_statement_extractions + books_statement_lines (opening, closing, lines,
-   balance check) matching ground_truth; multi-IBAN splits per account (C2 spec, addendum-C.md lines 143-153).
-4. Add an "Upload statement" button on /books/statements (PDF/CSV) that uses the same inbox upload with
-   userDocType=bank_statement and shows the new statement in the list when extraction finishes.
-5. Do not post bank lines to the journal and do not build bank matching (that is Phase 2).
+1. Test helper (e.g. src/server/books/test-company.ts, test-only code) createTestCompany(label): creates a NEW
+   synthetic client (unique name/id per call), copies DESERT's chart of accounts, VAT code setup and monthly periods
+   (all OPEN), grants Omar (preparer/accountant) and Layla (approver) the same access they have on DESERT, and
+   returns { clientId, periods, accountIdByCode }. Uses only test/admin connections; no production code changes
+   unless a tiny export is needed.
+2. Guard test (e.g. src/server/books/test-isolation.test.ts): scans src/**/*.test.ts and fails if a file other
+   than an explicit allow-list references DESERT's id. Allow-list for now = the 2 goldens + the 4 writer files
+   NOT migrated in this task (phase1, journals, schedule-post, phase0-gaps) with a comment "TEST-ISO-2".
+3. Migrate c1-validation.test.ts, c1-money-checks.test.ts and inbox-review.test.ts to createTestCompany. Keep every
+   assertion and expected value identical; only the company/period/account setup changes.
 
 CONSTRAINTS:
-- Work on feat/books-phase1. Local commits only, message prefix "DEMO-1:".
-- Synthetic fixtures only; no real client data. Integer minor units. Follow .cursor/rules/arnibooks.mdc.
-- Do not change dual control, RLS, periods, voucher numbering, or C1-1/C1-2 approve checks.
-- Any DB change = new migration numbered after the highest existing one, additive/idempotent.
+- Work on feat/books-phase1. Local commits only, message prefix "TEST-ISO-1:".
+- Do not change production behaviour, RLS, dual control, triggers, migrations or goldens.
+- Do not disable triggers, delete journals, or skip/narrow any test.
 
 TESTS REQUIRED:
-- Unit/integration test that uploads each invoice_01..10 fixture through the same code path as the upload API and
-  asserts doc type, number, date, total against ground_truth (allow a documented per-field tolerance only for OCR'd
-  scans, none for text PDFs).
-- Test that bank_a/b/c uploads create statement extractions with lines and a passing balance check (multi-IBAN -> one
-  statement per IBAN).
-- If the worker (Python) changes: pytest for the parser/classifier changes (scripts/ci-local-pytest.sh).
-- e2e: extend e2e/books-phase1.spec.ts: upload bank_a.pdf from /books/statements -> statement appears with lines.
-- Full npm test 0 failures; pytest passes; e2e passes; typecheck passes.
+- Full npm test 0 failures, run twice in a row via the orchestrator gate (scripts/ai/gates.ps1 unit) to show it is
+  stable; typecheck passes.
+- The guard test fails if you temporarily add DESERT's id to a non-allow-listed test file (describe how you checked
+  in the report; do not commit that temporary change).
 
 ACCEPTANCE CRITERIA:
-1. Root cause stated with file + line.
-2. All 10 invoice fixtures extract correctly via the upload path (test proves it).
-3. All 3 bank fixtures create statements with lines and balance check via the upload path (test proves it).
-4. /books/statements has a working Upload statement button (e2e proves it).
-5. No fixture-specific hardcoding; no test skipped/narrowed; no goldens edited.
+1. createTestCompany exists and the 3 migrated files use it; their assertions are unchanged.
+2. Guard test exists with the allow-list described above.
+3. Unit gate green twice in a row; typecheck green.
+4. No production code, migration, golden, or trigger changes.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- post statement lines to the journal or implement bank matching / reconciliation (Phase 2)
-- edit golden expected values or ground_truth files, disable/skip/narrow any test, weaken any RLS rule
-- commit docs/phase1/*.png, anything under docs/reference/outputs/, or real client data
+- migrate phase1/journals/schedule-post/phase0-gaps (that is TEST-ISO-2)
+- edit golden expected values, disable/skip/narrow any test, disable triggers, delete journal rows
 - run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If a ground_truth file looks wrong versus its PDF, STOP and list it in the report (owner decides) - do not edit it.
+- If a synthetic company cannot be created without a production/migration change, STOP and explain what is needed.
 - When done, write the report to the path given in the prompt and stop.

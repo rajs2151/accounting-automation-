@@ -2,7 +2,12 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: DEMO-1 (upload extraction for invoices + bank statements, Upload statement button)
+- Current task: TEST-ISO-1 (per-test synthetic companies so parallel tests stop polluting DESERT)
+- 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
+  unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
+  the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
+- Loop changes: scripts/ai/gates.ps1 (Cursor runs the same gates), pytest gate uses cached venv
+  (scripts/ai/pytest-inner.sh), timeout no longer crashes the loop, .gitattributes forces LF for *.sh.
 - Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) · C1-1 PASS (5755744, 02c7976) | C1-2 PASS (39b7bfc + fix1 484e04f)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
   2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
@@ -11,9 +16,11 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2
-2. DEMO-1 - upload extraction (10 invoice + 3 bank fixtures via the upload path) + Upload statement button
-3. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
-4. C1b sales record-only parity | 5. C2 Banking + statements
+2. TEST-ISO-1 -> TEST-ISO-2 - per-test synthetic companies + guard test
+3. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
+   E4 Upload statement UI -> E5 multi-page viewer
+4. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
+5. C1b sales record-only parity | 6. C2 remaining (bank accounts page, coverage/gaps)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-fix1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -34,3 +41,4 @@
   i2 fix left in src/server/books/inbox.ts + c1-validation.test.ts; scripts/_diag-tb-tmp.sh is a Cursor scratch file.
   Next: owner restarts loop (C1-2 i2 fix for case 7 re-routing), then swap in .ai/NEXT_TASK_DEMO-1.md.
 - 2026-10-05 10:57 | C1-2-fix1 | i1 | PASS | .ai/runs/20261005-104227-C1-2-fix1-i1
+- 2026-10-05 12:05 | DEMO-1 | i1 | FAIL | .ai/runs/20261005-105927-DEMO-1-i1

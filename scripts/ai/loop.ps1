@@ -69,7 +69,13 @@ function Run-WithTimeout([string]$cmd, [string]$logPath, [int]$minutes) {
   $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$tmp`"") `
         -WorkingDirectory $Repo -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" -PassThru -WindowStyle Hidden
   $null = $p.Handle   # PS 5.1: needed so ExitCode is populated
-  if (-not $p.WaitForExit($minutes * 60 * 1000)) { try { & taskkill /PID $p.Id /T /F | Out-Null } catch {}; Add-Content $logPath "`nTIMEOUT after $minutes min"; return 124 }
+  if (-not $p.WaitForExit($minutes * 60 * 1000)) {
+    try { & taskkill /PID $p.Id /T /F | Out-Null } catch {}
+    $null = $p.WaitForExit(30000)   # let the killed tree release the redirected log file
+    # The log can still be locked for a moment; never let the timeout note crash the loop.
+    try { Add-Content $logPath "`nTIMEOUT after $minutes min" -ErrorAction Stop } catch { Set-Content "$logPath.timeout" "TIMEOUT after $minutes min" }
+    return 124
+  }
   if (Test-Path "$logPath.err") { Get-Content "$logPath.err" | Add-Content $logPath; Remove-Item "$logPath.err" }
   return $p.ExitCode
 }
@@ -93,7 +99,11 @@ while ($true) {
     $St.cursor = "running"; Save "waiting for Cursor"
     $report = (Join-Path $RunDir "cursor-report.md").Replace('\','/')
     $prompt = "Read .ai/CURSOR_TASK.md and implement exactly that task in this repository, following .cursor/rules/arnibooks.mdc. " +
-              "Run the relevant tests yourself. Make local commits only on the current branch (never push). " +
+              "Before you finish, verify with the orchestrator's own gates (same Docker commands the reviewer trusts): " +
+              "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai/gates.ps1 unit typecheck (add pytest if you changed worker/, e2e if you changed src/app, src/components, e2e or db). " +
+              "Report the exact pass/fail counts they print; do not claim a pass you did not see. " +
+              "Keep the change small; if the task cannot be finished in about 35 minutes, commit what is green, write the report with what is left, and stop. " +
+              "Make local commits only on the current branch (never push). " +
               "When finished, write your report to $report and stop."
     $model = if ($Cfg.cursorModel) { "--model $($Cfg.cursorModel) " } else { "" }
     $cmd = "agent -p --force $model--output-format text `"$prompt`""

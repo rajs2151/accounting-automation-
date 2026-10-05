@@ -13,7 +13,7 @@
     { "name": "typecheck", "required": false, "when": "*",
       "command": "docker run --rm -v \"${REPO}:/src:ro\" -v arnibooks_ai_node_modules:/work/node_modules -w /work node:22 bash /src/scripts/ai/unit-inner.sh typecheck" },
     { "name": "pytest", "required": true, "when": "worker/",
-      "command": "docker compose up -d postgres; docker run --rm --network accountingautomation_default -v \"${REPO}:/src:ro\" -w /work python:3.12 bash /src/scripts/ci-local-pytest.sh" },
+      "command": "docker compose up -d postgres; docker run --rm --network accountingautomation_default -v \"${REPO}:/src:ro\" -v arnibooks_ai_venv:/venv -v arnibooks_ai_pycache:/root/.cache -w /work python:3.12 bash /src/scripts/ai/pytest-inner.sh" },
     { "name": "e2e", "required": true, "when": "src/app/,src/components/,e2e/,db/",
       "command": "docker compose --profile e2e run --rm e2e" }
   ]
