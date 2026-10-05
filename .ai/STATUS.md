@@ -18,7 +18,7 @@
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
 - Loop changes: scripts/ai/gates.ps1 (Cursor runs the same gates), pytest gate uses cached venv
   (scripts/ai/pytest-inner.sh), timeout no longer crashes the loop, .gitattributes forces LF for *.sh.
-- Done: POC-001 PASS · VERIFY-S1 + VERIFY-S1-fix1 PASS · C1-1 PASS | C1-2 PASS
+- Done: POC-001 PASS · VERIFY-S1 + VERIFY-S1-FIX1 PASS · C1-1 PASS | C1-2 PASS
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
 - CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
@@ -26,35 +26,35 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4
-2. E1c - worker real-layout invoice fields (TRN, roles, dates, lines, no VAT guess) (.ai/NEXT_TASK_E1c.md)
-3. UI-3-fix1 - fixed review panels, splitter, readable flag badges (NEXT_TASK_UI-3.md reqs 8-9)
-4. E1d - no invent SR on confirm/UI (written after E1c reports server fallback)
-5. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1
+2. E1d - no invent SR on confirm/UI (.ai/NEXT_TASK_E1d.md)
+3. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
    plus: filter menu with counts, bulk bar (Change type, Assign, Revert to draft audited), "New supplier" badge
-6. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
+4. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
 
 ## Known issues / open decisions
-- Test (VERIFY-S1-fix1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
+- Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
 - Company A month-1 golden is PROVISIONAL - owner to supply hand-computed values (Claude offered to prepare).
 - VAT on customer advances: policy TBD (not implemented).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
 - Pending inputs: brand hex + font; B/C opening balances.
 - UI polish backlog (not in UI-1..4): Review later status, paid/unpaid types, non-UAE VAT->cost, knowledge cards,
   stale extraction, snippet split, settings CSV, firm overview, email-in, E1b worker confidence.
+- E1c report: SR default is in src/server/books/inbox.ts confirmInboxAsDocument and review UI normalizeLines
+  (not the worker) — tracked as E1d.
 
 ## Log
 (the loop appends one line per run: date | task | iteration | decision | run folder)
 - 2026-10-04 15:53 | POC-001 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261004-153155-POC-001-i1
 - 2026-10-04 20:13 | POC-001 | i1 | PASS | .ai/runs/20261004-200719-POC-001-i1
-- 2026-10-04 21:54 | VERIFY-S1-fix1 | i1 | PASS | .ai/runs/20261004-214314-VERIFY-S1-fix1-i1
+- 2026-10-04 21:54 | VERIFY-S1-FIX1 | i1 | PASS | .ai/runs/20261004-214314-VERIFY-S1-FIX1-i1
 - 2026-10-04 23:37 | C1-1 | i1 | FAIL | .ai/runs/20261004-232143-C1-1-i1
 - 2026-10-04 23:52 | C1-1 | i2 | PASS | .ai/runs/20261004-233756-C1-1-i2
 - 2026-10-05 00:17 | C1-2 | i1 | FAIL | .ai/runs/20261004-235830-C1-2-i1
 - 2026-10-05 ~00:40 | C1-2 | i2 | KILLED (Claude Code stopped the loop: Windows RAM ~0.3 GB free). Cursor's uncommitted
   i2 fix left in src/server/books/inbox.ts + c1-validation.test.ts; scripts/_diag-tb-tmp.sh is a Cursor scratch file.
   Next: owner restarts loop (C1-2 i2 fix for case 7 re-routing), then swap in .ai/NEXT_TASK_DEMO-1.md.
-- 2026-10-05 10:57 | C1-2-fix1 | i1 | PASS | .ai/runs/20261005-104227-C1-2-fix1-i1
+- 2026-10-05 10:57 | C1-2-FIX1 | i1 | PASS | .ai/runs/20261005-104227-C1-2-FIX1-i1
 - 2026-10-05 12:05 | DEMO-1 | i1 | FAIL | .ai/runs/20261005-105927-DEMO-1-i1
 - 2026-10-05 15:14 | TEST-ISO-1 | i1 | FAIL | .ai/runs/20261005-145854-TEST-ISO-1-i1
 - 2026-10-05 15:25 | TEST-ISO-1 | i2 | FAIL | .ai/runs/20261005-151433-TEST-ISO-1-i2
@@ -63,9 +63,10 @@
 - 2026-10-05 16:04 | E1 | i1 | FAIL | .ai/runs/20261005-154808-E1-i1
 - 2026-10-05 16:17 | E1 | i2 | PASS | .ai/runs/20261005-160417-E1-i2
 - 2026-10-05 16:45 | E2 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-161902-E2-i1
-- 2026-10-05 17:16 | E2-fix1 | i1 | FAIL | .ai/runs/20261005-164758-E2-fix1-i1
-- 2026-10-05 17:39 | E2-fix1 | i2 | PASS | .ai/runs/20261005-171632-E2-fix1-i2
+- 2026-10-05 17:16 | E2-FIX1 | i1 | FAIL | .ai/runs/20261005-164758-E2-FIX1-i1
+- 2026-10-05 17:39 | E2-FIX1 | i2 | PASS | .ai/runs/20261005-171632-E2-FIX1-i2
 - 2026-10-05 18:16 | E3 | i1 | FAIL | .ai/runs/20261005-175649-E3-i1
 - 2026-10-05 18:35 | E3 | i2 | PASS | .ai/runs/20261005-181636-E3-i2
 - 2026-10-05 22:19 | E4 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-215737-E4-i1
 - 2026-10-05 | E4 | PASS (c7b68ea, 3cd37f3) | E5 PASS (103d7b4) | pushed feat/books-phase1
+- 2026-10-06 | E1c | PASS (24a77ca) | UI-3-fix1 | PASS (8e9b4f9) | local only (not pushed)
