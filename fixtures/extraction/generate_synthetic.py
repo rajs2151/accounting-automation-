@@ -62,6 +62,167 @@ Opening balance: 500.00
 Closing balance: 750.00
 """
 
+# Balance-column variant: printed running balance on each line (read, not computed).
+BANK_D_BALANCE_COL = """ACCOUNT STATEMENT
+Bank: Synthetic UAE Bank BalCol
+IBAN: AE070331234567890123456
+Period: 01/05/2026 to 31/05/2026
+Opening balance: 1,000.00
+05/05/2026 CLIENT RECEIPT 500.00 CR 1,500.00
+10/05/2026 BANK FEE 25.00 DR 1,475.00
+10/05/2026 BANK FEE 25.00 DR 1,450.00
+Closing balance: 1,450.00
+"""
+
+
+def _fils(aed: str) -> int:
+    """'1,000.00' → 100000 (integer minor units)."""
+    cleaned = aed.replace(",", "").strip()
+    whole, _, frac = cleaned.partition(".")
+    return int(whole or "0") * 100 + int((frac + "00")[:2])
+
+
+def _bank_gt_a() -> dict:
+    # Mapped from BANK_A constants above.
+    return {
+        "doc_type": "bank_statement",
+        "route": "text",
+        "bank_name": "Synthetic UAE Bank A",
+        "iban": "AE070331234567890123456",
+        "currency": "AED",
+        "period_from": "2026-05-01",
+        "period_to": "2026-05-31",
+        "opening_minor": _fils("1,000.00"),
+        "closing_minor": _fils("1,300.00"),
+        "lines": [
+            {
+                "txn_date": "2026-05-05",
+                "description": "CLIENT RECEIPT",
+                "debit_minor": 0,
+                "credit_minor": _fils("500.00"),
+                "amount_minor": _fils("500.00"),
+                "running_balance_minor": None,
+            },
+            {
+                "txn_date": "2026-05-10",
+                "description": "OFFICE RENT",
+                "debit_minor": _fils("200.00"),
+                "credit_minor": 0,
+                "amount_minor": _fils("200.00"),
+                "running_balance_minor": None,
+            },
+        ],
+    }
+
+
+def _bank_gt_b() -> dict:
+    # Mapped from BANK_B constants above.
+    return {
+        "doc_type": "bank_statement",
+        "route": "text",
+        "bank_name": "Synthetic UAE Bank B",
+        "iban": "AE070331234567890123456",
+        "currency": "AED",
+        "period_from": "2026-05-01",
+        "period_to": "2026-05-31",
+        "opening_minor": _fils("2,000.00"),
+        "closing_minor": _fils("2,100.00"),
+        "lines": [
+            {
+                "txn_date": "2026-05-05",
+                "description": "RECEIPT",
+                "debit_minor": 0,
+                "credit_minor": _fils("100.00"),
+                "amount_minor": _fils("100.00"),
+                "running_balance_minor": None,
+            },
+        ],
+    }
+
+
+def _bank_gt_c() -> dict:
+    # Mapped from BANK_C: activity sits after both IBANs → position-owned by IBAN 2.
+    return {
+        "doc_type": "bank_statement",
+        "route": "text",
+        "bank_name": "Multi-IBAN Synthetic Bank",
+        "currency": "AED",
+        "period_from": "2026-05-01",
+        "period_to": "2026-05-31",
+        "accounts": [
+            {
+                "iban": "AE070331234567890123456",
+                "bank_name": "Multi-IBAN Synthetic Bank",
+                "opening_minor": None,
+                "closing_minor": None,
+                "balances_found": False,
+                "account_attribution_ambiguous": False,
+                "flags": ["balances_not_found"],
+                "lines": [],
+            },
+            {
+                "iban": "AE460090000000123456789",
+                "bank_name": "Multi-IBAN Synthetic Bank",
+                "opening_minor": _fils("500.00"),
+                "closing_minor": _fils("750.00"),
+                "balances_found": True,
+                "account_attribution_ambiguous": True,
+                "flags": ["account_attribution_ambiguous"],
+                "lines": [
+                    {
+                        "txn_date": "2026-05-08",
+                        "description": "TRANSFER IN",
+                        "debit_minor": 0,
+                        "credit_minor": _fils("250.00"),
+                        "amount_minor": _fils("250.00"),
+                        "running_balance_minor": None,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def _bank_gt_d() -> dict:
+    # Mapped from BANK_D_BALANCE_COL (printed balance column).
+    return {
+        "doc_type": "bank_statement",
+        "route": "text",
+        "bank_name": "Synthetic UAE Bank BalCol",
+        "iban": "AE070331234567890123456",
+        "currency": "AED",
+        "period_from": "2026-05-01",
+        "period_to": "2026-05-31",
+        "opening_minor": _fils("1,000.00"),
+        "closing_minor": _fils("1,450.00"),
+        "lines": [
+            {
+                "txn_date": "2026-05-05",
+                "description": "CLIENT RECEIPT",
+                "debit_minor": 0,
+                "credit_minor": _fils("500.00"),
+                "amount_minor": _fils("500.00"),
+                "running_balance_minor": _fils("1,500.00"),
+            },
+            {
+                "txn_date": "2026-05-10",
+                "description": "BANK FEE",
+                "debit_minor": _fils("25.00"),
+                "credit_minor": 0,
+                "amount_minor": _fils("25.00"),
+                "running_balance_minor": _fils("1,475.00"),
+            },
+            {
+                "txn_date": "2026-05-10",
+                "description": "BANK FEE",
+                "debit_minor": _fils("25.00"),
+                "credit_minor": 0,
+                "amount_minor": _fils("25.00"),
+                "running_balance_minor": _fils("1,450.00"),
+            },
+        ],
+    }
+
 CARD = """CREDIT STATEMENT
 Card ending 4242
 Previous balance 0.00
@@ -359,15 +520,16 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    for name, body in (
-        ("bank_a", BANK_A),
-        ("bank_b_bilingual", BANK_B),
-        ("bank_c_multi_iban", BANK_C),
+    for name, body, gt in (
+        ("bank_a", BANK_A, _bank_gt_a()),
+        ("bank_b_bilingual", BANK_B, _bank_gt_b()),
+        ("bank_c_multi_iban", BANK_C, _bank_gt_c()),
+        ("bank_d_balance_col", BANK_D_BALANCE_COL, _bank_gt_d()),
     ):
         (ROOT / "text" / f"{name}.txt").write_text(body, encoding="utf-8")
         _write_pdf(ROOT / "pdfs" / f"{name}.pdf", body)
         (ROOT / "ground_truth" / f"{name}.json").write_text(
-            json.dumps({"doc_type": "bank_statement", "route": "text"}, indent=2) + "\n",
+            json.dumps(gt, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -387,7 +549,7 @@ def main() -> None:
     print("Wrote synthetic extraction fixtures")
     print(f"  text PDFs: {len(list((ROOT / 'pdfs').glob('invoice_*.pdf')))}")
     print(f"  scans: {len(list((ROOT / 'scans').glob('scan_*.png')))}")
-    print(f"  bank layouts: 3")
+    print(f"  bank layouts: 4")
     print(f"  card: 1")
     print(f"  stripe csv: 1")
     print(f"  mixed pdf: 1")

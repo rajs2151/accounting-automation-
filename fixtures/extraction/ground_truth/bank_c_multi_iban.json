@@ -1,4 +1,43 @@
 {
   "doc_type": "bank_statement",
-  "route": "text"
+  "route": "text",
+  "bank_name": "Multi-IBAN Synthetic Bank",
+  "currency": "AED",
+  "period_from": "2026-05-01",
+  "period_to": "2026-05-31",
+  "accounts": [
+    {
+      "iban": "AE070331234567890123456",
+      "bank_name": "Multi-IBAN Synthetic Bank",
+      "opening_minor": null,
+      "closing_minor": null,
+      "balances_found": false,
+      "account_attribution_ambiguous": false,
+      "flags": [
+        "balances_not_found"
+      ],
+      "lines": []
+    },
+    {
+      "iban": "AE460090000000123456789",
+      "bank_name": "Multi-IBAN Synthetic Bank",
+      "opening_minor": 50000,
+      "closing_minor": 75000,
+      "balances_found": true,
+      "account_attribution_ambiguous": true,
+      "flags": [
+        "account_attribution_ambiguous"
+      ],
+      "lines": [
+        {
+          "txn_date": "2026-05-08",
+          "description": "TRANSFER IN",
+          "debit_minor": 0,
+          "credit_minor": 25000,
+          "amount_minor": 25000,
+          "running_balance_minor": null
+        }
+      ]
+    }
+  ]
 }

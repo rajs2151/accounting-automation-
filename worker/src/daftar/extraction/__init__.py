@@ -43,6 +43,44 @@ def _balance_diff(opening: int, closing: int, lines: list[dict[str, Any]]) -> in
     return running - closing
 
 
+def _running_balance_continuity(
+    opening: int, lines: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """C2 continuity: each printed balance must equal previous +/- amount.
+
+    Returns a break dict (line index, description, expected, got, diff) or None.
+    Skipped entirely when no line carries a printed running balance.
+    """
+    if not any(ln.get("running_balance_minor") is not None for ln in lines):
+        return None
+    prev = opening
+    for idx, ln in enumerate(lines):
+        debit = int(ln.get("debit_minor") or 0)
+        credit = int(ln.get("credit_minor") or 0)
+        if debit == 0 and credit == 0:
+            amount = int(ln.get("amount_minor") or 0)
+            if ln.get("debit"):
+                debit = amount
+            else:
+                credit = amount
+        expected = prev + credit - debit
+        printed = ln.get("running_balance_minor")
+        if printed is None:
+            prev = expected
+            continue
+        got = int(printed)
+        if got != expected:
+            return {
+                "line_index": idx,
+                "description": str(ln.get("description") or ""),
+                "expected": expected,
+                "got": got,
+                "diff": got - expected,
+            }
+        prev = got
+    return None
+
+
 def _line_debit_credit(ln: dict[str, Any] | Any) -> tuple[int, int]:
     if isinstance(ln, dict):
         if "debit_minor" in ln or "credit_minor" in ln:
@@ -419,6 +457,9 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 opening_val: int | None = None
                 closing_val: int | None = None
                 stmt_status = "needs_review"
+                attribution_ambiguous = bool(acct.get("account_attribution_ambiguous"))
+                if attribution_ambiguous:
+                    stmt_flags.append("account_attribution_ambiguous")
 
                 if not balances_found or opening is None or closing is None:
                     stmt_flags.append("balances_not_found")
@@ -429,7 +470,21 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     opening_val = int(opening)
                     closing_val = int(closing)
                     diff = _balance_diff(opening_val, closing_val, acct_lines)
-                    if diff == 0:
+                    continuity = _running_balance_continuity(opening_val, acct_lines)
+                    if continuity is not None:
+                        stmt_flags.append("running_balance_break")
+                        stmt_flags.append(
+                            f"running_balance_break_line:{continuity['description']}"
+                        )
+                        stmt_flags.append(f"running_balance_diff:{continuity['diff']}")
+                        stmt_status = "needs_review"
+                    elif attribution_ambiguous:
+                        # Owner decision: never ready / balance_ok while ambiguous.
+                        if diff != 0:
+                            stmt_flags.append("closing_mismatch")
+                            stmt_flags.append(f"balance_diff:{diff}")
+                        stmt_status = "needs_review"
+                    elif diff == 0:
                         stmt_flags.append("balance_ok")
                         stmt_status = "ready"
                     else:
@@ -463,30 +518,13 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     ),
                 )
 
-                # Dedupe identical lines within this statement (date+desc+debit+credit+running).
-                seen_keys: set[str] = set()
-                sort_i = 0
-                running = int(opening_val or 0)
-                for ln in acct_lines:
+                # Keep every extracted line (identical same-day fees are both real).
+                # Re-upload dedupe is delete-and-reinsert above — not within-statement.
+                for sort_i, ln in enumerate(acct_lines):
                     debit = int(ln.get("debit_minor") or 0)
                     credit = int(ln.get("credit_minor") or 0)
+                    # Printed balance only — never invent a running balance here.
                     rb = ln.get("running_balance_minor")
-                    if rb is None and opening_val is not None:
-                        running = running + credit - debit
-                        rb = running
-                    key = "|".join(
-                        [
-                            str(ln.get("txn_date") or ""),
-                            str(ln.get("description") or ""),
-                            str(debit),
-                            str(credit),
-                            str(rb if rb is not None else ""),
-                        ]
-                    )
-                    if key in seen_keys:
-                        stmt_flags.append("duplicate_line_skipped")
-                        continue
-                    seen_keys.add(key)
 
                     source_bbox = ln.get("source_bbox")
                     source = ln.get("source")
@@ -530,17 +568,6 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                             conf,
                             sort_i,
                         ),
-                    )
-                    sort_i += 1
-
-                if "duplicate_line_skipped" in stmt_flags:
-                    conn.execute(
-                        """
-                        UPDATE books_statement_extractions
-                        SET validation_flags = %s::jsonb, updated_at = now()
-                        WHERE id = %s
-                        """,
-                        (json.dumps(stmt_flags), stmt_id),
                     )
 
     conn.execute(

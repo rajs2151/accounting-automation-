@@ -1,0 +1,37 @@
+{
+  "doc_type": "bank_statement",
+  "route": "text",
+  "bank_name": "Synthetic UAE Bank BalCol",
+  "iban": "AE070331234567890123456",
+  "currency": "AED",
+  "period_from": "2026-05-01",
+  "period_to": "2026-05-31",
+  "opening_minor": 100000,
+  "closing_minor": 145000,
+  "lines": [
+    {
+      "txn_date": "2026-05-05",
+      "description": "CLIENT RECEIPT",
+      "debit_minor": 0,
+      "credit_minor": 50000,
+      "amount_minor": 50000,
+      "running_balance_minor": 150000
+    },
+    {
+      "txn_date": "2026-05-10",
+      "description": "BANK FEE",
+      "debit_minor": 2500,
+      "credit_minor": 0,
+      "amount_minor": 2500,
+      "running_balance_minor": 147500
+    },
+    {
+      "txn_date": "2026-05-10",
+      "description": "BANK FEE",
+      "debit_minor": 2500,
+      "credit_minor": 0,
+      "amount_minor": 2500,
+      "running_balance_minor": 145000
+    }
+  ]
+}

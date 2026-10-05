@@ -1,4 +1,21 @@
 {
   "doc_type": "bank_statement",
-  "route": "text"
+  "route": "text",
+  "bank_name": "Synthetic UAE Bank B",
+  "iban": "AE070331234567890123456",
+  "currency": "AED",
+  "period_from": "2026-05-01",
+  "period_to": "2026-05-31",
+  "opening_minor": 200000,
+  "closing_minor": 210000,
+  "lines": [
+    {
+      "txn_date": "2026-05-05",
+      "description": "RECEIPT",
+      "debit_minor": 0,
+      "credit_minor": 10000,
+      "amount_minor": 10000,
+      "running_balance_minor": null
+    }
+  ]
 }
