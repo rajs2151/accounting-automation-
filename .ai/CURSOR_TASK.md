@@ -1,54 +1,74 @@
-﻿TASK ID: C1-2-fix1
-PHASE: Addendum C - C1 validation matrix (case 7 re-route correctness)
+TASK ID: DEMO-1
+PHASE: Phase 1 - upload extraction must work end-to-end for the CEO demo (2026-10-05)
 
 OBJECTIVE:
-Re-route a Purchases upload to Sales ONLY when the document is actually classified as a sales invoice. Unknown, empty, receipt or any other non-sales classification must keep the user's intended or explicit purchase_bill type.
+Uploading a synthetic bill/invoice PDF or a bank statement PDF through the UI must produce usable extracted fields
+(invoice) or a statement with lines in Statement staging (bank). Today only invoice_02.pdf is proven by e2e.
 
-CONTEXT:
-C1-2 (39b7bfc) added classifyInboxDocType() and re-route logic in src/server/books/inbox.ts confirmInboxAsDocument. classifyInboxDocType returns 'sales_invoice' for everything not containing 'purchase'/'bill'/'debit_note', including '' or null (worker classify.py returns doc_type None on no_rule_match), 'receipt', 'bank_statement', etc. The reroute condition `(intended === 'purchase_bill' || body.docType === 'purchase_bill') && classified === 'sales_invoice'` therefore moves unclassified supplier bills to Sales. The spec (addendum-C C1, case 7) only covers 'classified as a sales invoice'.
+CONTEXT (observed 2026-10-05 ~00:30 on the running app, Docker web at tag demo-ceo-2026-10-05, user Omar, company
+DESERT e1000001-0000-4000-8000-000000000001, via POST /api/books/inbox/upload):
+- fixtures/extraction/pdfs/invoice_03.pdf (ground truth: sales_invoice INV-SYN-003, 2026-05-15, total 10500,
+  TRN 100000000000001) -> inbox status needs_review, detectedType null, classificationConfidence 0.3, clientId null,
+  fields: party null, document_date null, one line "invoice_03.pdf" amount 0.
+  validationFlags: no_rule_match, methods:1:pdf_text, company_match:no_identifiers, company_mismatch, unassigned,
+  low_confidence_classification.
+- fixtures/extraction/pdfs/bank_c_multi_iban.pdf -> same result (detectedType null, conf 0.3, clientId null);
+  NO row appeared in GET /api/books/statements (only the seeded "Synthetic UAE Bank" demo statement exists).
+- The PDF has text (methods pdf_text), so this is parsing/classification, not OCR.
+- Two extraction paths exist: web sync path src/server/books/extract-sync.ts (used on upload) and worker
+  worker/src/daftar/extraction/__init__.py process_extract_document (creates books_statement_extractions for
+  bank/card/gateway statements at ~line 222). Find which path ran and why no parser/rule matched.
+- Statements page src/app/books/statements/page.tsx has NO upload control (only a Stripe CSV textarea).
 
 FILES TO INSPECT:
-- src/server/books/inbox.ts (classifyInboxDocType, confirmInboxAsDocument)
-- src/server/books/c1-validation.test.ts (case 7 setup pattern: own customer/supplier, admin inserts into books_files / books_inbox_items / books_extractions)
-- worker/src/daftar/extraction/classify.py (DOC_TYPES; read-only, do not change)
-
-EXPECTED BEHAVIOR:
-- Re-route to sales_invoice (with reroutedFrom='purchase_bill', notice, and 'reroute_doc_type' audit) ONLY when the normalised detected type (review.detectedType || review.extractionDocType) is exactly 'sales_invoice' AND the intended/explicit type is purchase_bill.
-- If intended/explicit type is purchase_bill and detected is '', null, 'receipt', 'purchase_bill', 'debit_note' or any other value → docType stays 'purchase_bill', reroutedFrom null, no reroute audit row.
-- If intended/explicit type is sales_invoice → stays sales_invoice (unchanged from current behaviour).
-- With no intended and no explicit type, keep today's fallback (classification-based) unchanged.
+- src/server/books/inbox.ts, src/server/books/extract-sync.ts, src/app/api/books/[...path]/route.ts (upload route)
+- worker/src/daftar/extraction/__init__.py, worker/src/daftar/extraction/classify.py, worker/src/daftar/parsers/*
+- fixtures/extraction/{pdfs,ground_truth,text}/ and fixtures/extraction/README.md
+- src/app/books/statements/page.tsx, src/app/books/statements/[id]/page.tsx, src/server/books/statement-extractions.ts
 
 IMPLEMENTATION REQUIREMENTS:
-- Minimal change in src/server/books/inbox.ts only. Separate 'is the document positively classified as sales' (exact match) from the existing fallback mapping; do not change the fallback for the no-intent case.
-- Remove the dead `else if (!intended) docType = classified;` branch if it becomes redundant; behaviour must stay as above.
+1. Root cause first: explain in the report why invoice_03 and bank_c get no_rule_match while invoice_02 works.
+2. Invoices/bills: every fixtures/extraction/pdfs/invoice_01..10.pdf uploaded via the upload API must get the
+   correct doc type, invoice number, date, party name/TRN and total per its ground_truth JSON (no hardcoding per
+   filename or per fixture - fix the general parser/classifier). Company match: if the document carries the company's
+   own TRN/name, it must be assigned to that company, not "unassigned".
+3. Bank statements: bank_a.pdf, bank_b_bilingual.pdf, bank_c_multi_iban.pdf uploaded via the inbox must be classified
+   as bank_statement and create books_statement_extractions + books_statement_lines (opening, closing, lines,
+   balance check) matching ground_truth; multi-IBAN splits per account (C2 spec, addendum-C.md lines 143-153).
+4. Add an "Upload statement" button on /books/statements (PDF/CSV) that uses the same inbox upload with
+   userDocType=bank_statement and shows the new statement in the list when extraction finishes.
+5. Do not post bank lines to the journal and do not build bank matching (that is Phase 2).
 
 CONSTRAINTS:
-- Work on feat/books-phase1; local commit with prefix 'C1-2-fix1:'. Stage only the files you change.
-- Tests use their own synthetic parties and only count rows they create (pattern from 02c7976 / case 7).
-- Do not change dual control, RLS, period locking, voucher numbering, C1-1 printed totals, check_vat, or buildPostingLines.
+- Work on feat/books-phase1. Local commits only, message prefix "DEMO-1:".
+- Synthetic fixtures only; no real client data. Integer minor units. Follow .cursor/rules/arnibooks.mdc.
+- Do not change dual control, RLS, periods, voucher numbering, or C1-1/C1-2 approve checks.
+- Any DB change = new migration numbered after the highest existing one, additive/idempotent.
 
-TESTS REQUIRED (add to src/server/books/c1-validation.test.ts; existing 8 cases unchanged):
-- 'C1-2 case 7b: unknown classification under Purchases stays purchase_bill': inbox intended_type='purchase_bill', detected_type NULL and extraction doc_type NULL (or 'unknown' if the column is NOT NULL), confirm with docType 'purchase_bill' → confirmed.docType === 'purchase_bill', reroutedFrom === null, books_documents.doc_type === 'purchase_bill', zero 'reroute_doc_type' audit rows for that document.
-- 'C1-2 case 7c: receipt classification under Purchases stays purchase_bill': same with detected_type/doc_type 'receipt'.
-- 'C1-2 case 7d: purchase_bill classification under Purchases stays purchase_bill': detected 'purchase_bill'.
-- Full npm test: 0 failures; e2e gate passes; typecheck passes.
+TESTS REQUIRED:
+- Unit/integration test that uploads each invoice_01..10 fixture through the same code path as the upload API and
+  asserts doc type, number, date, total against ground_truth (allow a documented per-field tolerance only for OCR'd
+  scans, none for text PDFs).
+- Test that bank_a/b/c uploads create statement extractions with lines and a passing balance check (multi-IBAN -> one
+  statement per IBAN).
+- If the worker (Python) changes: pytest for the parser/classifier changes (scripts/ci-local-pytest.sh).
+- e2e: extend e2e/books-phase1.spec.ts: upload bank_a.pdf from /books/statements -> statement appears with lines.
+- Full npm test 0 failures; pytest passes; e2e passes; typecheck passes.
 
 ACCEPTANCE CRITERIA:
-1. Tests 7b, 7c, 7d exist with those names and pass in the orchestrator unit gate (not skipped).
-2. Existing 'C1-2 case 7' still passes unchanged: sales_invoice classification under Purchases → sales_invoice draft + reroute_doc_type audit.
-3. Re-route happens only on exact 'sales_invoice' classification; verified by code inspection of inbox.ts.
-4. No other files changed except inbox.ts and c1-validation.test.ts (plus the report).
-5. No test skipped, narrowed or loosened; no golden values edited.
-6. Report lists files changed and maps 7b/7c/7d to tests.
+1. Root cause stated with file + line.
+2. All 10 invoice fixtures extract correctly via the upload path (test proves it).
+3. All 3 bank fixtures create statements with lines and balance check via the upload path (test proves it).
+4. /books/statements has a working Upload statement button (e2e proves it).
+5. No fixture-specific hardcoding; no test skipped/narrowed; no goldens edited.
 
 DO NOT:
 - push, force-push, reset, rebase, delete branches
-- edit golden expected values, disable/skip/narrow any test, weaken RLS
-- change worker/src/daftar/extraction/classify.py or buildPostingLines
+- post statement lines to the journal or implement bank matching / reconciliation (Phase 2)
+- edit golden expected values or ground_truth files, disable/skip/narrow any test, weaken any RLS rule
 - commit docs/phase1/*.png, anything under docs/reference/outputs/, or real client data
-- run `git add -A` blindly
+- run `git add -A` blindly - stage only the files for this task
 
 STOP CONDITIONS:
-- If books_inbox_items.detected_type or books_extractions.doc_type cannot hold NULL/'receipt' under current constraints, use the closest allowed non-sales value and explain in the report.
-- If fixing this breaks an existing test, STOP and report; do not modify that test.
+- If a ground_truth file looks wrong versus its PDF, STOP and list it in the report (owner decides) - do not edit it.
 - When done, write the report to the path given in the prompt and stop.

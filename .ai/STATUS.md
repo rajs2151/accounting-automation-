@@ -2,8 +2,8 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: C1-2 (C1 validation matrix - 8 posting/VAT cases, server-side)
-- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) · C1-1 PASS (5755744, 02c7976)
+- Current task: DEMO-1 (upload extraction for invoices + bank statements, Upload statement button)
+- Done: POC-001 PASS (6d007c1) · VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) · C1-1 PASS (5755744, 02c7976) | C1-2 PASS (39b7bfc + fix1 484e04f)
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
   2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
 - CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
@@ -33,3 +33,4 @@
 - 2026-10-05 ~00:40 | C1-2 | i2 | KILLED (Claude Code stopped the loop: Windows RAM ~0.3 GB free). Cursor's uncommitted
   i2 fix left in src/server/books/inbox.ts + c1-validation.test.ts; scripts/_diag-tb-tmp.sh is a Cursor scratch file.
   Next: owner restarts loop (C1-2 i2 fix for case 7 re-routing), then swap in .ai/NEXT_TASK_DEMO-1.md.
+- 2026-10-05 10:57 | C1-2-fix1 | i1 | PASS | .ai/runs/20261005-104227-C1-2-fix1-i1
