@@ -184,45 +184,68 @@ export async function uploadBooksInboxFiles(
       duplicate: boolean;
       sha256: string;
       status?: string;
+      filename?: string;
+      existingDocumentId?: string | null;
     }> = [];
 
     for (const file of files) {
       const sha256 = createHash("sha256").update(file.bytes).digest("hex");
-      const existing = await db.query(`SELECT id FROM books_files WHERE sha256 = $1`, [sha256]);
-      if (existing.rowCount) {
-        const inbox = await db.query(
-          `INSERT INTO books_inbox_items (client_id, file_id, status, error, intended_type)
-           VALUES ($1,$2,'failed','duplicate_file',$3)
-           RETURNING id`,
-          [clientId, existing.rows[0].id, intendedType],
-        );
+      // Same bytes already uploaded to this company: point at the existing item, store nothing new
+      // (C1 Uploads: "Duplicate: link to the existing document"). Hashes are unique per company (db/32).
+      const existing = await db.query(
+        `SELECT f.id AS file_id, f.storage_key, i.id AS inbox_id, i.status, d.id AS document_id
+         FROM books_files f
+         LEFT JOIN LATERAL (
+           SELECT id, status FROM books_inbox_items
+           WHERE file_id = f.id AND error IS DISTINCT FROM 'duplicate_file'
+           ORDER BY created_at LIMIT 1
+         ) i ON true
+         LEFT JOIN LATERAL (
+           SELECT doc.id FROM books_extractions e
+           JOIN books_documents doc ON doc.extraction_id = e.id AND doc.deleted_at IS NULL
+           WHERE e.inbox_item_id = i.id
+           ORDER BY doc.created_at DESC LIMIT 1
+         ) d ON true
+         WHERE f.sha256 = $1 AND f.client_id IS NOT DISTINCT FROM $2`,
+        [sha256, clientId],
+      );
+      if (existing.rowCount && existing.rows[0].inbox_id) {
+        const row = existing.rows[0];
         results.push({
-          inboxItemId: String(inbox.rows[0].id),
-          fileId: String(existing.rows[0].id),
+          inboxItemId: String(row.inbox_id),
+          fileId: String(row.file_id),
           duplicate: true,
           sha256,
-          status: "failed",
+          status: String(row.status),
+          filename: file.filename,
+          existingDocumentId: row.document_id ? String(row.document_id) : null,
         });
         continue;
       }
 
-      const fileId = randomUUID();
-      const storageKey = `books/${clientId || "unassigned"}/${fileId}/${file.filename}`;
-      await putObject(storageKey, file.bytes, file.contentType || "application/octet-stream");
-      await db.query(
-        `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [
-          fileId,
-          clientId,
-          sha256,
-          storageKey,
-          file.filename,
-          file.contentType || "application/octet-stream",
-          file.bytes.length,
-          userId,
-        ],
-      );
+      // A stored file whose only inbox rows are legacy duplicate markers: reuse it and queue it again.
+      const reuse = existing.rowCount ? existing.rows[0] : null;
+      const fileId = reuse ? String(reuse.file_id) : randomUUID();
+      const storageKey = reuse
+        ? String(reuse.storage_key)
+        : `books/${clientId || "unassigned"}/${fileId}/${file.filename}`;
+      if (!reuse) {
+        await putObject(storageKey, file.bytes, file.contentType || "application/octet-stream");
+        await db.query(
+          `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            fileId,
+            clientId,
+            sha256,
+            storageKey,
+            file.filename,
+            file.contentType || "application/octet-stream",
+            file.bytes.length,
+            userId,
+          ],
+        );
+      }
 
       const inboxId = randomUUID();
       await db.query(

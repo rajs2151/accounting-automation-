@@ -8,9 +8,11 @@ import { useBooksShell } from "@/components/books/books-shell-context";
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 
 type Doc = {
@@ -97,7 +99,7 @@ export default function SalesPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "create_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success("Draft invoice created — switch to approver to post");
@@ -108,7 +110,7 @@ export default function SalesPage() {
     const res = await fetch(`/api/books/documents/${id}/approve`, { method: "POST", body: "{}" });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "approve_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success(`Posted ${data.entryNo}`);
@@ -140,9 +142,7 @@ export default function SalesPage() {
                 for (const f of Array.from(files)) body.append("files", f);
                 body.append("intendedType", "sales_invoice");
                 void fetch("/api/books/inbox/upload", { method: "POST", body }).then(async (res) => {
-                  const data = await res.json();
-                  if (!res.ok) toast.error(data.error || "upload_failed");
-                  else toast.success(`Uploaded ${data.results?.length || 0} — review in Inbox`);
+                  showUploadFeedback(res.ok, await res.json().catch(() => ({})));
                 });
               }}
             />

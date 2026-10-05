@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { MoneyTypeError } from "@/lib/money";
@@ -130,8 +132,10 @@ function fail(error: unknown) {
             : 400;
     return NextResponse.json({ error: error.message, code: error.code }, { status });
   }
-  console.error(error);
-  return NextResponse.json({ error: "request_failed" }, { status: 500 });
+  // Unexpected error: log it under a short ref the user can quote; never show a bare "request failed".
+  const ref = randomUUID().slice(0, 8);
+  console.error(`[books-api ref=${ref}]`, error);
+  return NextResponse.json({ error: "internal_error", ref }, { status: 500 });
 }
 
 async function context() {

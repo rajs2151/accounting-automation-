@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
+import { apiErrorMessage } from "@/lib/api-error";
 
 type InboxRow = {
   id: string;
@@ -36,12 +38,8 @@ export default function InboxPage() {
     if (unassigned) form.set("unassigned", "1");
     for (const f of Array.from(files)) form.append("files", f);
     const res = await fetch("/api/books/inbox/upload", { method: "POST", body: form });
-    const data = await res.json();
-    if (!res.ok) {
-      toast.error(data.error || "upload_failed");
-      return;
-    }
-    toast.success(`Uploaded ${data.results?.length || 0} file(s)`);
+    showUploadFeedback(res.ok, await res.json().catch(() => ({})));
+    if (!res.ok) return;
     void reload();
   }
 
@@ -52,7 +50,7 @@ export default function InboxPage() {
       body: "{}",
     });
     if (!res.ok) {
-      toast.error((await res.json()).error || "route_failed");
+      toast.error(apiErrorMessage(await res.json().catch(() => ({}))));
       return;
     }
     toast.success("Routed to company");
@@ -66,7 +64,7 @@ export default function InboxPage() {
       body: JSON.stringify({ docType }),
     });
     if (!res.ok) {
-      toast.error((await res.json()).error || "type_failed");
+      toast.error(apiErrorMessage(await res.json().catch(() => ({}))));
       return;
     }
     void reload();
@@ -117,7 +115,7 @@ export default function InboxPage() {
                     {r.filename}
                   </a>
                   {r.error === "duplicate_file" && (
-                    <span className="ml-2 text-xs text-amber-700">duplicate hash</span>
+                    <span className="ml-2 text-xs text-amber-700">already uploaded - see the original</span>
                   )}
                 </td>
                 <td className="px-3 py-2">{r.detectedType || "—"}</td>
@@ -126,7 +124,7 @@ export default function InboxPage() {
                     ? "—"
                     : `${Math.round(Number(r.classificationConfidence) * 100)}%`}
                 </td>
-                <td className="px-3 py-2">{r.status}</td>
+                <td className="px-3 py-2">{r.error === "duplicate_file" ? "Duplicate" : r.status}</td>
                 <td className="px-3 py-2 space-x-2">
                   {unassigned && (
                     <Button size="sm" variant="outline" onClick={() => void routeHere(r.id)}>

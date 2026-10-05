@@ -11,6 +11,7 @@ import { useBooksShell } from "@/components/books/books-shell-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor } from "@/lib/money";
 import type { PageBBox } from "@/lib/review-bbox";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
@@ -125,7 +126,7 @@ export default function InboxReviewPage() {
       return;
     }
     if (!res.ok) {
-      setError(data.error || "load_failed");
+      setError(apiErrorMessage(data, "Could not load this document."));
       setLoading(false);
       return;
     }
@@ -162,7 +163,7 @@ export default function InboxReviewPage() {
 
   async function confirmFields() {
     if (!partyId || !periodId) {
-      toast.error("party_and_period_required");
+      toast.error(apiErrorMessage({ error: "party_and_period_required" }));
       return;
     }
     const res = await fetch(`/api/books/inbox/${params.id}/confirm`, {
@@ -172,7 +173,7 @@ export default function InboxReviewPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "confirm_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success("Draft document created");
@@ -188,7 +189,7 @@ export default function InboxReviewPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "retry_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success("Extraction retried");

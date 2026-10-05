@@ -9,9 +9,11 @@ import { useBooksShell } from "@/components/books/books-shell-context";
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 
 type Doc = {
@@ -76,12 +78,9 @@ export default function PurchasesPage() {
     for (const f of Array.from(files)) body.append("files", f);
     body.append("intendedType", "purchase_bill");
     const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
-    const data = await res.json();
-    if (!res.ok) {
-      toast.error(data.error || "upload_failed");
-      return;
-    }
-    toast.success(`Uploaded ${data.results?.length || 0} file(s)`);
+    const data = await res.json().catch(() => ({}));
+    showUploadFeedback(res.ok, data);
+    if (!res.ok) return;
     setTab("uploads");
     void reload();
   }
@@ -93,7 +92,7 @@ export default function PurchasesPage() {
       body: "{}",
     });
     if (!res.ok) {
-      toast.error((await res.json()).error || "retry_failed");
+      toast.error(apiErrorMessage(await res.json().catch(() => ({}))));
       return;
     }
     toast.success("Retry queued");
@@ -132,7 +131,7 @@ export default function PurchasesPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "create_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success("Draft bill created — switch to approver to post");
@@ -144,7 +143,7 @@ export default function PurchasesPage() {
     const res = await fetch(`/api/books/documents/${id}/approve`, { method: "POST", body: "{}" });
     const data = await res.json();
     if (!res.ok) {
-      toast.error(data.error || "approve_failed");
+      toast.error(apiErrorMessage(data));
       return;
     }
     toast.success(`Posted ${data.entryNo}`);
@@ -208,10 +207,12 @@ export default function PurchasesPage() {
                     {u.filename}
                   </Link>
                 </td>
-                <td data-testid={`upload-status-${u.id}`}>{u.status}</td>
+                <td data-testid={`upload-status-${u.id}`}>
+                  {u.error === "duplicate_file" ? "Duplicate" : u.status}
+                </td>
                 <td>{u.detectedType || "—"}</td>
                 <td className="space-x-2 text-right">
-                  {u.status === "failed" || u.status === "needs_review" ? (
+                  {u.error !== "duplicate_file" && (u.status === "failed" || u.status === "needs_review") ? (
                     <Button size="sm" variant="outline" onClick={() => void retry(u.id)}>
                       Retry
                     </Button>

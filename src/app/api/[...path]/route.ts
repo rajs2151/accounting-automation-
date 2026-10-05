@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { MoneyTypeError } from "@/lib/money";
@@ -175,8 +177,9 @@ function fail(error: unknown) {
     return NextResponse.json({ error: error.code, message: error.message }, { status });
   }
   const code = error instanceof Error ? error.name : "error";
-  console.error("api", code);
-  return NextResponse.json({ error: "request_failed" }, { status: 500 });
+  const ref = randomUUID().slice(0, 8);
+  console.error("api", code, `ref=${ref}`);
+  return NextResponse.json({ error: "internal_error", ref }, { status: 500 });
 }
 
 function queryOf(url: URL): TxnQuery {

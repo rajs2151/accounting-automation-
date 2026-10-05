@@ -2,11 +2,14 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E3 (uploads use only the worker; remove TypeScript extractor)
+- Current task: E4 (Upload statement button on /books/statements)
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
   generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
-- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67) | E2 (20f6674, 069baf3, b32abe0)
+- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67) | E2 (20f6674, 069baf3, b32abe0) | E3 (c5b99af, e3eb7c9)
+- Claude did directly (owner request 2026-10-05): login picker + synthetic owner Raj (db/31), worker NUL-safe text +
+  garbled pages -> OCR (E3b), duplicate upload notice + per-company file hash (db/32), readable errors with ref,
+  faster Docker builds, parallel typecheck, scripts/ai/test-files.ps1, scripts/dev-local.ps1, ~/.wslconfig
 - 2026-10-05 13:xx owner decision: smaller one-layer tasks. DEMO-1 shelved on branch wip/demo-1-shelved (0f6cb7e,
   unverified; contains a rejected trigger-disabling hack in trial-balance.test.ts - never merge). Extraction redone
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
