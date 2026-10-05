@@ -1,17 +1,5 @@
-﻿# Review - E3 iteration 2
+﻿# Review - E4 iteration 1
 
-**Decision: PASS**
+**Decision: NEEDS_HUMAN_DECISION**
 
-E3-fix1 does what it was asked to do. The review page now reads the worker's real fields_json through a new pure helper, src/lib/review-fields.ts. net/vat/gross in integer fils, with grand_total as a fallback, are shown as AED with 2 decimals using formatMinor. ISO dates are shown as dd/mm/yyyy. A missing or null value becomes an empty string with status 'missing' and is never set to 0. The old subtotal/vat_total keys are kept only as legacy fallbacks. The parseFloat*100 conversions in page.tsx are replaced by displayToMinor, and validation only runs when all three amounts are present. The e2e seed now holds only keys the worker writes (net/vat/gross/grand_total as integer fils, ISO dates), and the subtotal/vat_total/'105.00' mirror is gone. The e2e now checks 100.00 / 5.00 / 105.00 / 15/05/2026 on a fresh upload, and an earlier assertion still checks the 'Amounts balanced' message. invoiceSynPdfBboxes is deleted with nothing left referencing it. A new retry unit test proves the item goes back to queued, error is cleared, there are 2 extract_document jobs (upload + retry) and still exactly 1 extraction row. The tests I re-ran: unit 117 pass / 0 fail / 1 skip (only the PROVISIONAL golden, which was already skipped, so the retry test really ran), typecheck exit 0, Docker e2e 3/3 passed with the Next build succeeding. Nothing under worker/, PdfPagePreview, confirm logic, migrations or C1 tests was touched.
-
-- [PASS] AC1: review page with worker-only fields_json shows 100.00 / 5.00 / 105.00 and 15/05/2026, proven by e2e - e2e/books-phase1.spec.ts:244-247 checks field-subtotal=100.00, field-vat_total=5.00, field-grand_total=105.00, field-invoice_date=15/05/2026 on a new upload; e2e.log test 2 '✓ phase1 screenshots: review from NEW upload' and '3 passed'. The mapping is in src/lib/review-fields.ts mapWorkerFieldsToDisplay, wired in through page.tsx normalizeFields
-- [PASS] AC2: e2e seed contains only worker-written keys (mirror removed) - The diff removes the subtotal/vat_total string entries and changes grand_total '105.00' to 10500 (fils int); the added document_date and supplier_trn are both keys the worker writes
-- [PASS] AC3: invoiceSynPdfBboxes no longer exists in src/lib - src/lib/review-bbox.ts diff deletes toPdfBox and invoiceSynPdfBboxes; grep for invoiceSynPdfBboxes over src/ finds nothing
-- [PASS] AC4: retry unit test asserts queued status, job count and a single extraction row - src/server/books/inbox-review.test.ts 'retry re-queues extract_document; does not write extraction fields' asserts status queued, error null, 2 extract_document jobs and 1 books_extractions row; unit.log:267 'ok 43' with no SKIP marker
-- [PASS] Mapping helper unit tests (a)-(e) - src/lib/review-fields.test.ts has 5 tests; unit.log:122-147 ok 19-23
-- [PASS] Validation uses displayToMinor, not parseFloat*100; no raw fils or '(fils)' in the UI - page.tsx diff: moneyMinorFromDisplay uses displayToMinor, and both parseFloat paths are removed from onFieldChange and flags
-- [PASS] AC5: existing tests still pass with the same assertions; C1-1/C1-2 unchanged - unit.log: 118 tests, 117 pass, 0 fail, 1 skip (PROVISIONAL golden, already skipped before); the diff does not touch c1-*.test.ts or any existing assertion; package.json only adds review-fields.test.ts to the test list
-
-Needs human validation: On localhost, open /books/inbox/<id> for an uploaded invoice that the worker extracted. Check that Subtotal, VAT and Grand total show as AED with 2 decimals (not values like 10500), that Invoice date shows dd/mm/yyyy, and that a missing field shows empty and amber/missing rather than 0.
-
-Question: 
+Reviewer output unreadable - see review-raw.json
