@@ -366,6 +366,8 @@ export async function confirmInboxAsDocument(
   const fields = (review.fieldsJson || {}) as Record<string, unknown>;
   const detected = String(review.detectedType || review.extractionDocType || "");
   const classified = classifyInboxDocType(detected);
+  // Positive sales classification only — empty/unknown/receipt must not re-route.
+  const isSalesInvoice = detected.toLowerCase() === "sales_invoice";
 
   // Upload context (Purchases vs Sales) may request a type; classification can re-route.
   let intended: "sales_invoice" | "purchase_bill" | null = body.docType || null;
@@ -388,12 +390,10 @@ export async function confirmInboxAsDocument(
   // Sales invoice uploaded under Purchases → move to Sales (never a purchase_bill).
   if (
     (intended === "purchase_bill" || body.docType === "purchase_bill") &&
-    classified === "sales_invoice"
+    isSalesInvoice
   ) {
     docType = "sales_invoice";
     reroutedFrom = "purchase_bill";
-  } else if (!intended) {
-    docType = classified;
   }
 
   const lineItems = (review.lineItems || []) as Array<{

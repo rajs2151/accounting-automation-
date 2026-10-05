@@ -494,6 +494,142 @@ test("C1-2 case 7: sales classified but uploaded under Purchases → sales_invoi
   }
 });
 
+async function seedPurchaseConfirmFixture(
+  admin: pg.Client,
+  opts: { tag: string; detectedType: string | null; extractionDocType: string | null },
+) {
+  const periodId = await mayPeriod(admin);
+  const partyId = await uniqueSupplier(opts.tag, `100${Date.now().toString().slice(-10)}007`);
+  const fileId = randomUUID();
+  const inboxId = randomUUID();
+  const extractionId = randomUUID();
+  const sha = `c1-2-${opts.tag}`;
+
+  await admin.query(
+    `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+     VALUES ($1,$2,$3,$4,$5,'application/pdf',100,$6)`,
+    [fileId, DESERT, sha, `books/${DESERT}/${fileId}/synth.pdf`, `${opts.tag}.pdf`, OMAR],
+  );
+  await admin.query(
+    `INSERT INTO books_inbox_items (id, client_id, file_id, detected_type, status, intended_type)
+     VALUES ($1,$2,$3,$4,'needs_review','purchase_bill')`,
+    [inboxId, DESERT, fileId, opts.detectedType],
+  );
+  await admin.query(
+    `INSERT INTO books_extractions (
+       id, client_id, file_id, inbox_item_id, doc_type, status, fields_json, validation_flags
+     ) VALUES ($1,$2,$3,$4,$5,'needs_review',$6::jsonb,'[]'::jsonb)`,
+    [
+      extractionId,
+      DESERT,
+      fileId,
+      inboxId,
+      opts.extractionDocType,
+      JSON.stringify({
+        invoice_no: { value: `${opts.tag}-INV` },
+        subtotal: { value: "100.00" },
+        vat_total: { value: "5.00" },
+        grand_total: { value: "105.00" },
+      }),
+    ],
+  );
+
+  return { periodId, partyId, inboxId };
+}
+
+async function assertStaysPurchaseBill(
+  admin: pg.Client,
+  confirmed: Awaited<ReturnType<typeof confirmInboxAsDocument>>,
+) {
+  assert.equal(confirmed.docType, "purchase_bill");
+  assert.equal(confirmed.reroutedFrom, null);
+
+  const docRow = await admin.query(
+    `SELECT doc_type FROM books_documents WHERE id = $1`,
+    [confirmed.documentId],
+  );
+  assert.equal(docRow.rows[0].doc_type, "purchase_bill");
+
+  const audit = await admin.query(
+    `SELECT COUNT(*)::int AS n FROM books_audit_events
+     WHERE client_id = $1 AND entity_id = $2 AND action = 'reroute_doc_type'`,
+    [DESERT, confirmed.documentId],
+  );
+  assert.equal(audit.rows[0].n, 0, "must not write reroute_doc_type audit");
+}
+
+test("C1-2 case 7b: unknown classification under Purchases stays purchase_bill", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const tag = `C7b-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+      tag,
+      detectedType: null,
+      extractionDocType: null,
+    });
+
+    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+      partyId,
+      periodId,
+      docType: "purchase_bill",
+      issueDate: "2026-05-16",
+    });
+
+    await assertStaysPurchaseBill(admin, confirmed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C1-2 case 7c: receipt classification under Purchases stays purchase_bill", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const tag = `C7c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+      tag,
+      detectedType: "receipt",
+      extractionDocType: "receipt",
+    });
+
+    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+      partyId,
+      periodId,
+      docType: "purchase_bill",
+      issueDate: "2026-05-16",
+    });
+
+    await assertStaysPurchaseBill(admin, confirmed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C1-2 case 7d: purchase_bill classification under Purchases stays purchase_bill", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const tag = `C7d-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { periodId, partyId, inboxId } = await seedPurchaseConfirmFixture(admin, {
+      tag,
+      detectedType: "purchase_bill",
+      extractionDocType: "purchase_bill",
+    });
+
+    const confirmed = await confirmInboxAsDocument(OMAR, DESERT, inboxId, {
+      partyId,
+      periodId,
+      docType: "purchase_bill",
+      issueDate: "2026-05-16",
+    });
+
+    await assertStaysPurchaseBill(admin, confirmed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
 test("C1-2 case 8: multi-line VAT > 5% → vat_exceeds_rate, nothing posted", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
