@@ -445,6 +445,28 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
     await expect(page.getByTestId("source-highlight")).toContainText(/105\.00/);
     await expect(page.getByTestId("location-missing-currency")).toBeVisible();
 
+    // UI-3-fix1: no page scroll; preview scrolls; Confirm visible immediately.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.getByTestId("confirm-fields")).toBeVisible();
+    const scrollMetrics = await page.evaluate(() => {
+      const docEl = document.documentElement;
+      const preview = document.querySelector(
+        '[data-testid="review-preview-scroll"]',
+      ) as HTMLElement | null;
+      return {
+        pageScrollHeight: docEl.scrollHeight,
+        pageClientHeight: docEl.clientHeight,
+        previewScrollHeight: preview?.scrollHeight ?? 0,
+        previewClientHeight: preview?.clientHeight ?? 0,
+      };
+    });
+    expect(scrollMetrics.pageScrollHeight).toBeLessThanOrEqual(
+      scrollMetrics.pageClientHeight + 2,
+    );
+    expect(scrollMetrics.previewScrollHeight).toBeGreaterThan(
+      scrollMetrics.previewClientHeight,
+    );
+
     // Queue next: newest 2-page doc → older needs-review in the same company list.
     await expect(page.getByTestId("review-queue-next")).toBeEnabled();
     const beforeUrl = page.url();

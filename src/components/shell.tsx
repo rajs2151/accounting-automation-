@@ -256,8 +256,8 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="flex min-h-screen">
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1">
         <aside
           className={cn(
             "hidden shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex",
@@ -316,8 +316,8 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
             <Button variant="outline" size="icon-sm" onClick={() => setMobileOpen(true)} aria-label="Open navigation">
               <PanelLeft />
             </Button>
@@ -325,7 +325,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           </header>
 
           <header
-            className="hidden items-center gap-3 border-b border-border bg-card px-4 py-2.5 md:flex"
+            className="hidden shrink-0 items-center gap-3 border-b border-border bg-card px-4 py-2.5 md:flex"
             data-testid="app-top-bar"
           >
             <p className="shrink-0 text-sm font-medium text-foreground">
@@ -402,7 +402,12 @@ function ShellInner({ children }: { children: React.ReactNode }) {
 
           <main
             key={`${directory?.me?.id || ""}:${directory?.clientId || ""}`}
-            className="min-w-0 flex-1 px-4 py-5 md:px-6 lg:px-8"
+            className={cn(
+              "min-h-0 min-w-0 flex-1",
+              pathname.match(/^\/books\/inbox\/[^/]+$/)
+                ? "flex flex-col overflow-hidden p-0"
+                : "overflow-y-auto px-4 py-5 md:px-6 lg:px-8",
+            )}
           >
             {children}
           </main>

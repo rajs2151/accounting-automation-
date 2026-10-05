@@ -8,6 +8,7 @@ import {
   filterBoxesForPage,
   type PageBBox,
 } from "@/lib/review-bbox";
+import { cn } from "@/lib/utils";
 
 type Props = {
   /** Absolute or site-relative URL to PDF / image */
@@ -28,6 +29,7 @@ type Props = {
     pageCount: number;
     pageSizes: Record<number, { width: number; height: number }>;
   }) => void;
+  className?: string;
 };
 
 type PdfDoc = {
@@ -64,6 +66,7 @@ export function PdfPagePreview({
   focusPage,
   focusBBox = false,
   onPageMeta,
+  className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -250,12 +253,18 @@ export function PdfPagePreview({
 
   return (
     <div
-      className="space-y-2 rounded-lg border border-border bg-[#f7f4ef] p-3"
+      className={cn(
+        "flex h-full min-h-0 flex-col rounded-lg border border-border bg-[#f7f4ef] p-3",
+        className,
+      )}
       data-testid="review-preview"
       ref={containerRef}
     >
       {!isImage ? (
-        <div className="flex flex-wrap items-center gap-2" data-testid="review-viewer-toolbar">
+        <div
+          className="mb-2 flex shrink-0 flex-wrap items-center gap-2"
+          data-testid="review-viewer-toolbar"
+        >
           <Button
             type="button"
             size="sm"
@@ -321,10 +330,10 @@ export function PdfPagePreview({
         </div>
       ) : null}
 
-      <div className="flex gap-3">
+      <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
         {!isImage && pageCount > 1 ? (
           <div
-            className="flex max-h-[480px] w-20 shrink-0 flex-col gap-2 overflow-y-auto"
+            className="flex max-h-full w-20 shrink-0 flex-col gap-2 overflow-y-auto"
             data-testid="review-page-thumbnails"
           >
             {Array.from({ length: pageCount }, (_, i) => i + 1).map((n) => (
@@ -349,7 +358,11 @@ export function PdfPagePreview({
           </div>
         ) : null}
 
-        <div className="min-w-0 flex-1 overflow-auto" ref={scrollRef}>
+        <div
+          className="min-h-0 min-w-0 flex-1 overflow-auto"
+          ref={scrollRef}
+          data-testid="review-preview-scroll"
+        >
           <div
             className="relative mx-auto bg-white shadow-sm"
             style={
