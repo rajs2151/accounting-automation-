@@ -5,6 +5,7 @@
  */
 
 import { formatMinor } from "@/lib/money";
+import type { FieldSource } from "@/lib/review-bbox";
 
 export type ReviewFieldState = {
   value: string;
@@ -12,6 +13,8 @@ export type ReviewFieldState = {
   status?: string;
   /** Optional overlay box; callers may attach PageBBox later. */
   bbox?: unknown;
+  /** Worker fields_json[*].source — page + PDF-point bbox, or null. */
+  source?: FieldSource;
 };
 
 type RawField = {
@@ -19,12 +22,27 @@ type RawField = {
   confidence?: number;
   status?: string;
   bbox?: unknown;
+  source?: FieldSource;
 };
 
 function asRawField(raw: unknown): RawField | null {
   if (raw == null) return null;
   if (typeof raw !== "object") return { value: raw };
   return raw as RawField;
+}
+
+function readSource(raw: RawField | null | undefined): FieldSource | undefined {
+  if (!raw || !("source" in raw)) return undefined;
+  const s = raw.source;
+  if (s == null) return null;
+  if (
+    typeof s === "object" &&
+    typeof (s as { page?: unknown }).page === "number" &&
+    Array.isArray((s as { bbox?: unknown }).bbox)
+  ) {
+    return s as Exclude<FieldSource, null>;
+  }
+  return null;
 }
 
 /** ISO yyyy-mm-dd → dd/mm/yyyy; empty/invalid → "". Never returns "—". */
@@ -44,6 +62,7 @@ function missingField(raw: RawField | null): ReviewFieldState {
     confidence: Number(raw?.confidence ?? 0),
     status: "missing",
     bbox: raw?.bbox,
+    source: readSource(raw),
   };
 }
 
@@ -61,6 +80,7 @@ function moneyToDisplay(worker: RawField | null, legacy: RawField | null): Revie
         confidence: Number(worker.confidence ?? 0.5),
         status: worker.status ?? "ok",
         bbox: worker.bbox,
+        source: readSource(worker),
       };
     }
   }
@@ -73,6 +93,7 @@ function moneyToDisplay(worker: RawField | null, legacy: RawField | null): Revie
         confidence: Number(legacy.confidence ?? 0.5),
         status: legacy.status ?? "ok",
         bbox: legacy.bbox,
+        source: readSource(legacy),
       };
     }
     if (typeof v === "number" && Number.isInteger(v)) {
@@ -81,6 +102,7 @@ function moneyToDisplay(worker: RawField | null, legacy: RawField | null): Revie
         confidence: Number(legacy.confidence ?? 0.5),
         status: legacy.status ?? "ok",
         bbox: legacy.bbox,
+        source: readSource(legacy),
       };
     }
   }
@@ -98,6 +120,7 @@ function dateToDisplay(raw: RawField | null): ReviewFieldState | null {
     confidence: Number(raw.confidence ?? 0.5),
     status: raw.status ?? "ok",
     bbox: raw.bbox,
+    source: readSource(raw),
   };
 }
 
@@ -114,6 +137,7 @@ function passThrough(key: string, raw: RawField): ReviewFieldState {
       confidence: Number(raw.confidence ?? 0.5),
       status: raw.status ?? "ok",
       bbox: raw.bbox,
+      source: readSource(raw),
     };
   }
   return {
@@ -121,6 +145,7 @@ function passThrough(key: string, raw: RawField): ReviewFieldState {
     confidence: Number(raw.confidence ?? 0.5),
     status: raw.status,
     bbox: raw.bbox,
+    source: readSource(raw),
   };
 }
 
@@ -174,6 +199,7 @@ export function mapWorkerFieldsToDisplay(
           confidence: Number(grand?.confidence ?? 0.5),
           status: grand?.status ?? "ok",
           bbox: grand?.bbox,
+          source: readSource(grand),
         };
       } else if (typeof gVal === "string") {
         // Legacy string grand_total (e.g. "105.00")
@@ -182,6 +208,7 @@ export function mapWorkerFieldsToDisplay(
           confidence: Number(grand?.confidence ?? 0.5),
           status: grand?.status ?? "ok",
           bbox: grand?.bbox,
+          source: readSource(grand),
         };
       } else {
         out.grand_total = missingField(grand);

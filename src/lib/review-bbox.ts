@@ -10,6 +10,12 @@ export type PageBBox = {
   label: string;
 };
 
+/** Worker fields_json[*].source shape (E1+). */
+export type FieldSource = {
+  page: number;
+  bbox: [number, number, number, number];
+} | null;
+
 export function bboxCentre(b: Pick<PageBBox, "x0" | "y0" | "x1" | "y1">) {
   return { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
 }
@@ -38,6 +44,68 @@ export function bboxOverlayStyle(b: PageBBox): {
     width: `${((b.x1 - b.x0) / w) * 100}%`,
     height: `${((b.y1 - b.y0) / h) * 100}%`,
   };
+}
+
+/** Boxes that belong on a given 1-based page. */
+export function filterBoxesForPage(boxes: PageBBox[], page: number): PageBBox[] {
+  return boxes.filter((b) => b.page === page);
+}
+
+/**
+ * Map PDF-point bbox → CSS pixel rect on the rendered canvas.
+ * zoom is the pdf.js viewport scale (e.g. 1.5).
+ */
+export function scaleBBoxToRender(
+  box: Pick<PageBBox, "x0" | "y0" | "x1" | "y1">,
+  zoom: number,
+): { left: number; top: number; width: number; height: number } {
+  const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return {
+    left: box.x0 * z,
+    top: box.y0 * z,
+    width: (box.x1 - box.x0) * z,
+    height: (box.y1 - box.y0) * z,
+  };
+}
+
+/** Build a PageBBox from worker source + page dimensions (PDF points). */
+export function pageBBoxFromSource(
+  label: string,
+  source: FieldSource,
+  pageWidth: number,
+  pageHeight: number,
+): PageBBox | null {
+  if (!source || !Array.isArray(source.bbox) || source.bbox.length < 4) return null;
+  const page = Math.max(1, Math.floor(Number(source.page) || 1));
+  const [x0, y0, x1, y1] = source.bbox.map(Number);
+  if (![x0, y0, x1, y1].every((n) => Number.isFinite(n))) return null;
+  return {
+    label,
+    page,
+    x0,
+    y0,
+    x1,
+    y1,
+    pageWidth: pageWidth > 0 ? pageWidth : 595,
+    pageHeight: pageHeight > 0 ? pageHeight : 842,
+  };
+}
+
+/** Collect overlay boxes from review fields that carry a worker source. */
+export function boxesFromFieldSources(
+  fields: Record<string, { source?: FieldSource }>,
+  pageSizeByPage: Record<number, { width: number; height: number }> = {},
+  fallback = { width: 595, height: 842 },
+): PageBBox[] {
+  const out: PageBBox[] = [];
+  for (const [label, field] of Object.entries(fields)) {
+    const source = field?.source ?? null;
+    if (!source) continue;
+    const dims = pageSizeByPage[source.page] || fallback;
+    const box = pageBBoxFromSource(label, source, dims.width, dims.height);
+    if (box) out.push(box);
+  }
+  return out;
 }
 
 /** PDF point space (A4). PNG demo is rendered at 2× → multiply when overlaying PNG. */

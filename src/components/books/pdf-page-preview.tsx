@@ -2,7 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { bboxOverlayStyle, type PageBBox } from "@/lib/review-bbox";
+import { Button } from "@/components/ui/button";
+import {
+  bboxOverlayStyle,
+  filterBoxesForPage,
+  type PageBBox,
+} from "@/lib/review-bbox";
 
 type Props = {
   /** Absolute or site-relative URL to PDF / image */
@@ -11,11 +16,28 @@ type Props = {
   activeLabel: string | null;
   fieldStatus?: Record<string, { status?: string; confidence?: number }>;
   onSelectField?: (label: string) => void;
+  /** Jump to this page when the focused field changes (1-based). */
+  focusPage?: number | null;
+  onPageMeta?: (meta: {
+    pageCount: number;
+    pageSizes: Record<number, { width: number; height: number }>;
+  }) => void;
 };
 
+type PdfDoc = {
+  numPages: number;
+  getPage: (n: number) => Promise<{
+    getViewport: (opts: { scale: number }) => { width: number; height: number };
+    render: (params: unknown) => { promise: Promise<void> };
+  }>;
+};
+
+const FIT_WIDTH = 720;
+const THUMB_SCALE = 0.18;
+
 /**
- * Renders the actual uploaded PDF (pdf.js) or image, with bbox overlays in the
- * same page coordinate space (origin top-left, pageWidth × pageHeight).
+ * Multi-page PDF / image preview with thumbnails, zoom, fit, and field highlights
+ * from worker source page+bbox (PDF points, origin top-left).
  */
 export function PdfPagePreview({
   fileUrl,
@@ -23,16 +45,33 @@ export function PdfPagePreview({
   activeLabel,
   fieldStatus = {},
   onSelectField,
+  focusPage,
+  onPageMeta,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [doc, setDoc] = useState<PdfDoc | null>(null);
+  const [pageCount, setPageCount] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState({ width: 595, height: 842 });
   const [renderSize, setRenderSize] = useState({ width: 595, height: 842 });
+  const [zoom, setZoom] = useState(1);
+  const [fitMode, setFitMode] = useState(true);
   const [error, setError] = useState("");
-  const isImage = /\.(png|jpe?g|webp)$/i.test(fileUrl);
+  const [thumbUrls, setThumbUrls] = useState<Record<number, string>>({});
+  const isImage = /\.(png|jpe?g|webp)(\?|$)/i.test(fileUrl);
 
+  // Load PDF bytes once; do not render every page at full resolution.
   useEffect(() => {
-    if (isImage) return;
+    if (isImage) {
+      setDoc(null);
+      setPageCount(1);
+      setCurrentPage(1);
+      onPageMeta?.({ pageCount: 1, pageSizes: { 1: { width: 595, height: 842 } } });
+      return;
+    }
     let cancelled = false;
+    const thumbs: Record<number, string> = {};
     void (async () => {
       try {
         const pdfjs = await import("pdfjs-dist");
@@ -41,10 +80,61 @@ export function PdfPagePreview({
           if (!r.ok) throw new Error(`fetch_${r.status}`);
           return r.arrayBuffer();
         });
-        const doc = await pdfjs.getDocument({ data: bytes }).promise;
-        const page = await doc.getPage(1);
+        const loaded = (await pdfjs.getDocument({ data: bytes }).promise) as unknown as PdfDoc;
+        if (cancelled) return;
+        setDoc(loaded);
+        setPageCount(loaded.numPages);
+        setCurrentPage(1);
+        setError("");
+
+        const pageSizes: Record<number, { width: number; height: number }> = {};
+        for (let n = 1; n <= loaded.numPages; n++) {
+          const page = await loaded.getPage(n);
+          const base = page.getViewport({ scale: 1 });
+          pageSizes[n] = { width: base.width, height: base.height };
+          // Lazy-ish thumbnails: small scale only.
+          const tv = page.getViewport({ scale: THUMB_SCALE });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.floor(tv.width);
+          canvas.height = Math.floor(tv.height);
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            await page.render({ canvasContext: ctx, viewport: tv, canvas } as Parameters<
+              typeof page.render
+            >[0]).promise;
+            thumbs[n] = canvas.toDataURL("image/png");
+          }
+        }
+        if (cancelled) return;
+        setThumbUrls(thumbs);
+        onPageMeta?.({ pageCount: loaded.numPages, pageSizes });
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "pdf_render_failed");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileUrl, isImage]);
+
+  // Jump to the focused field's page.
+  useEffect(() => {
+    if (focusPage != null && focusPage >= 1 && focusPage <= pageCount) {
+      setCurrentPage(focusPage);
+    }
+  }, [focusPage, pageCount]);
+
+  // Render only the current page at the active zoom / fit scale.
+  useEffect(() => {
+    if (isImage || !doc) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await doc.getPage(currentPage);
         const base = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.4, 720 / base.width);
+        const fitScale = Math.min(1.4, FIT_WIDTH / base.width);
+        const scale = fitMode ? fitScale * zoom : Math.max(0.4, Math.min(3, zoom));
         const viewport = page.getViewport({ scale });
         if (cancelled) return;
         setPageSize({ width: base.width, height: base.height });
@@ -55,7 +145,6 @@ export function PdfPagePreview({
         if (!ctx) return;
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
-        // pdfjs ≥4 prefers canvas on the render params
         await page.render({ canvasContext: ctx, viewport, canvas } as Parameters<
           typeof page.render
         >[0]).promise;
@@ -66,74 +155,180 @@ export function PdfPagePreview({
     return () => {
       cancelled = true;
     };
-  }, [fileUrl, isImage]);
+  }, [doc, currentPage, zoom, fitMode, isImage]);
 
-  const pageBoxes = boxes.filter((b) => b.page === 1);
+  const pageBoxes = filterBoxesForPage(boxes, currentPage);
 
   return (
     <div
-      className="relative overflow-auto rounded-lg border border-border bg-[#f7f4ef] p-3"
+      className="space-y-2 rounded-lg border border-border bg-[#f7f4ef] p-3"
       data-testid="review-preview"
+      ref={containerRef}
     >
-      <div
-        className="relative mx-auto bg-white shadow-sm"
-        style={
-          isImage
-            ? { width: "100%" }
-            : { width: renderSize.width, height: renderSize.height, maxWidth: "100%" }
-        }
-      >
-        {isImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={fileUrl}
-            alt="Document"
-            className="block w-full"
-            data-testid="review-file-image"
-            onLoad={(e) => {
-              const img = e.currentTarget;
-              setPageSize({ width: img.naturalWidth, height: img.naturalHeight });
-              setRenderSize({ width: img.clientWidth, height: img.clientHeight });
+      {!isImage ? (
+        <div className="flex flex-wrap items-center gap-2" data-testid="review-viewer-toolbar">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="review-page-prev"
+            disabled={currentPage <= 1}
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+          >
+            Prev
+          </Button>
+          <span className="text-sm tabular-nums" data-testid="review-page-indicator">
+            {currentPage} / {pageCount}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="review-page-next"
+            disabled={currentPage >= pageCount}
+            onClick={() => setCurrentPage((p) => Math.min(pageCount, p + 1))}
+          >
+            Next
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="review-zoom-out"
+            onClick={() => {
+              setFitMode(false);
+              setZoom((z) => Math.max(0.4, Math.round((z - 0.25) * 100) / 100));
             }}
-          />
-        ) : (
-          <canvas
-            ref={canvasRef}
-            className="block h-full w-full"
-            data-testid="review-file-pdf"
-          />
-        )}
-        <div className="pointer-events-none absolute inset-0">
-          {pageBoxes.map((b) => {
-            const meta = fieldStatus[b.label] || {};
-            const bad = meta.status === "fail";
-            const low = (meta.confidence ?? 1) < 0.8;
-            const active = activeLabel === b.label;
-            const style = bboxOverlayStyle({
-              ...b,
-              pageWidth: b.pageWidth || pageSize.width,
-              pageHeight: b.pageHeight || pageSize.height,
-            });
-            return (
+          >
+            −
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="review-zoom-in"
+            onClick={() => {
+              setFitMode(false);
+              setZoom((z) => Math.min(3, Math.round((z + 0.25) * 100) / 100));
+            }}
+          >
+            +
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="review-zoom-fit"
+            onClick={() => {
+              setFitMode(true);
+              setZoom(1);
+            }}
+          >
+            Fit width
+          </Button>
+          <span className="text-xs text-muted-foreground" data-testid="review-zoom-level">
+            {fitMode ? "fit" : `${Math.round(zoom * 100)}%`}
+          </span>
+        </div>
+      ) : null}
+
+      <div className="flex gap-3">
+        {!isImage && pageCount > 1 ? (
+          <div
+            className="flex max-h-[480px] w-20 shrink-0 flex-col gap-2 overflow-y-auto"
+            data-testid="review-page-thumbnails"
+          >
+            {Array.from({ length: pageCount }, (_, i) => i + 1).map((n) => (
               <button
-                key={b.label}
+                key={n}
                 type="button"
-                data-testid={`bbox-${b.label}`}
+                data-testid={`review-thumb-${n}`}
                 className={[
-                  "pointer-events-auto absolute border-2",
-                  bad
-                    ? "border-red-500 bg-red-400/25"
-                    : low
-                      ? "border-amber-500 bg-amber-400/25"
-                      : "border-sky-500 bg-sky-400/20",
-                  active ? "ring-2 ring-offset-1 ring-stone-800" : "",
+                  "overflow-hidden rounded border bg-white p-0.5",
+                  n === currentPage ? "border-primary ring-1 ring-primary" : "border-border",
                 ].join(" ")}
-                style={style}
-                onClick={() => onSelectField?.(b.label)}
-                title={b.label}
+                onClick={() => setCurrentPage(n)}
+              >
+                {thumbUrls[n] ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={thumbUrls[n]} alt={`Page ${n}`} className="block w-full" />
+                ) : (
+                  <span className="block py-6 text-center text-[10px] text-muted-foreground">{n}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="min-w-0 flex-1 overflow-auto">
+          <div
+            className="relative mx-auto bg-white shadow-sm"
+            style={
+              isImage
+                ? { width: "100%" }
+                : { width: renderSize.width, height: renderSize.height, maxWidth: "100%" }
+            }
+            data-testid="review-page-surface"
+          >
+            {isImage ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={fileUrl}
+                alt="Document"
+                className="block w-full"
+                data-testid="review-file-image"
+                onLoad={(e) => {
+                  const img = e.currentTarget;
+                  setPageSize({ width: img.naturalWidth, height: img.naturalHeight });
+                  setRenderSize({ width: img.clientWidth, height: img.clientHeight });
+                  onPageMeta?.({
+                    pageCount: 1,
+                    pageSizes: {
+                      1: { width: img.naturalWidth, height: img.naturalHeight },
+                    },
+                  });
+                }}
               />
-            );
-          })}
+            ) : (
+              <canvas
+                ref={canvasRef}
+                className="block h-full w-full"
+                data-testid="review-file-pdf"
+              />
+            )}
+            <div className="pointer-events-none absolute inset-0">
+              {pageBoxes.map((b) => {
+                const meta = fieldStatus[b.label] || {};
+                const bad = meta.status === "fail";
+                const low = (meta.confidence ?? 1) < 0.8;
+                const active = activeLabel === b.label;
+                const style = bboxOverlayStyle({
+                  ...b,
+                  pageWidth: b.pageWidth || pageSize.width,
+                  pageHeight: b.pageHeight || pageSize.height,
+                });
+                return (
+                  <button
+                    key={b.label}
+                    type="button"
+                    data-testid={`bbox-${b.label}`}
+                    className={[
+                      "pointer-events-auto absolute border-2",
+                      bad
+                        ? "border-red-500 bg-red-400/25"
+                        : low
+                          ? "border-amber-500 bg-amber-400/25"
+                          : "border-sky-500 bg-sky-400/20",
+                      active ? "ring-2 ring-offset-1 ring-stone-800" : "",
+                    ].join(" ")}
+                    style={style}
+                    onClick={() => onSelectField?.(b.label)}
+                    title={b.label}
+                  />
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
       {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}

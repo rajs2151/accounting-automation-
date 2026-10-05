@@ -13,6 +13,13 @@ const STMT_DROPPED = "e7000001-0000-4000-8000-000000000088";
 const PHASE1_DIR = path.join(process.cwd(), "docs", "phase1");
 const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "invoice_02.pdf");
 const BANK_A_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "bank_a.pdf");
+const INVOICE_2PAGE_PDF = path.join(
+  process.cwd(),
+  "fixtures",
+  "extraction",
+  "pdfs",
+  "invoice_2page.pdf",
+);
 
 /**
  * e2e profile does not run the Python worker. After upload (status=queued), insert a
@@ -252,6 +259,148 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await expect(page.getByTestId("validation-flags")).toContainText(/balanced/i);
   await savePhase1("review-split-view.png", await page.screenshot({ fullPage: true }));
   await savePhase1("review-uploaded-invoice-02.png", await page.screenshot({ fullPage: true }));
+
+  // Multi-page viewer (E5): 2-page fixture, total on page 2.
+  {
+    const base2 = fs.readFileSync(INVOICE_2PAGE_PDF);
+    const bytes2 = Buffer.concat([
+      base2,
+      Buffer.from(`\n% e2e-2pg-${Date.now()}-${Math.random()}\n`),
+    ]);
+    const upload2 = await page.request.post("/api/books/inbox/upload", {
+      multipart: {
+        files: {
+          name: "invoice_2page.pdf",
+          mimeType: "application/pdf",
+          buffer: bytes2,
+        },
+      },
+    });
+    const uploaded2 = await upload2.json();
+    expect(upload2.ok(), `2page upload: ${JSON.stringify(uploaded2)}`).toBeTruthy();
+    const inbox2 = uploaded2.results?.[0]?.inboxItemId as string;
+    const file2 = uploaded2.results?.[0]?.fileId as string;
+    expect(inbox2).toBeTruthy();
+
+    const admin = new pg.Client({
+      connectionString:
+        process.env.DATABASE_URL_SUPER ||
+        "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+    });
+    await admin.connect();
+    try {
+      const extractionId = randomUUID();
+      const fields = {
+        invoice_no: {
+          value: "INV-SYN-2PG",
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 1, bbox: [72, 120, 200, 134] },
+        },
+        invoice_date: {
+          value: "2026-05-15",
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 1, bbox: [72, 140, 160, 154] },
+        },
+        currency: { value: "AED", confidence: 0.99, status: "ok", source: null },
+        net: {
+          value: 10000,
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 1, bbox: [400, 200, 460, 214] },
+        },
+        vat: {
+          value: 500,
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 2, bbox: [120, 80, 180, 94] },
+        },
+        gross: {
+          value: 10500,
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 2, bbox: [120, 110, 190, 128] },
+        },
+        grand_total: {
+          value: 10500,
+          confidence: 0.95,
+          status: "ok",
+          source: { page: 2, bbox: [120, 110, 190, 128] },
+        },
+      };
+      await admin.query(`DELETE FROM books_extractions WHERE inbox_item_id = $1`, [inbox2]);
+      await admin.query(
+        `INSERT INTO books_extractions (
+           id, client_id, file_id, inbox_item_id, doc_type, status,
+           fields_json, raw_text, word_boxes, validation_flags, extractor_version
+         ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,$6,
+           $7::jsonb,'[]'::jsonb,'phase1-v1')`,
+        [
+          extractionId,
+          DESERT,
+          file2,
+          inbox2,
+          JSON.stringify(fields),
+          "TAX INVOICE INV-SYN-2PG\nTotal 105.00\n",
+          JSON.stringify([
+            { page: 1, width: 595, height: 842 },
+            { page: 2, width: 595, height: 842 },
+            {
+              page: 2,
+              x0: 120,
+              y0: 110,
+              x1: 190,
+              y1: 128,
+              text: "105.00",
+              conf: 1,
+            },
+          ]),
+        ],
+      );
+      await admin.query(
+        `UPDATE books_inbox_items
+         SET status = 'needs_review', detected_type = 'sales_invoice',
+             classification_confidence = 0.9, error = NULL, updated_at = now()
+         WHERE id = $1`,
+        [inbox2],
+      );
+    } finally {
+      await admin.end();
+    }
+
+    await page.goto(`/books/inbox/${inbox2}`);
+    await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("review-page-indicator")).toHaveText("1 / 2", {
+      timeout: 20000,
+    });
+    await expect(page.getByTestId("review-page-thumbnails")).toBeVisible();
+    await expect(page.getByTestId("review-thumb-1")).toBeVisible();
+    await expect(page.getByTestId("review-thumb-2")).toBeVisible();
+
+    const canvas = page.getByTestId("review-file-pdf");
+    await expect(canvas).toBeVisible({ timeout: 20000 });
+    const widthBefore = await canvas.evaluate((el) => (el as HTMLCanvasElement).width);
+    await page.getByTestId("review-zoom-in").click();
+    await expect
+      .poll(async () => canvas.evaluate((el) => (el as HTMLCanvasElement).width), {
+        timeout: 10000,
+      })
+      .toBeGreaterThan(widthBefore);
+    await page.getByTestId("review-zoom-fit").click();
+    await expect
+      .poll(async () => canvas.evaluate((el) => (el as HTMLCanvasElement).width), {
+        timeout: 10000,
+      })
+      .toBe(widthBefore);
+
+    await page.getByTestId("field-grand_total").click();
+    await expect(page.getByTestId("review-page-indicator")).toHaveText("2 / 2", {
+      timeout: 10000,
+    });
+    await expect(page.getByTestId("bbox-grand_total")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("location-missing-currency")).toBeVisible();
+  }
 
   const list = await page.request.get("/api/books/statements");
   const rows = (await list.json()) as Array<{ id: string }>;

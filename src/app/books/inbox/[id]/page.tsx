@@ -13,14 +13,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor } from "@/lib/money";
-import type { PageBBox } from "@/lib/review-bbox";
+import type { FieldSource, PageBBox } from "@/lib/review-bbox";
+import { boxesFromFieldSources } from "@/lib/review-bbox";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
 import {
   mapWorkerFieldsToDisplay,
   type ReviewFieldState,
 } from "@/lib/review-fields";
 
-type FieldState = ReviewFieldState & { bbox?: PageBBox };
+type FieldState = ReviewFieldState & { bbox?: PageBBox; source?: FieldSource };
 
 type ReviewPayload = {
   id: string;
@@ -111,6 +112,9 @@ export default function InboxReviewPage() {
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [parties, setParties] = useState<Array<{ id: string; name: string }>>([]);
   const [partyId, setPartyId] = useState("");
+  const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>(
+    {},
+  );
 
   async function load(opts?: { quiet?: boolean }) {
     if (!opts?.quiet) {
@@ -228,9 +232,12 @@ export default function InboxReviewPage() {
     }).flags;
   })();
 
-  const boxes = Object.values(fields)
-    .map((f) => f.bbox)
-    .filter(Boolean) as PageBBox[];
+  const boxes = boxesFromFieldSources(fields, pageSizes);
+
+  const focusPage =
+    activeField && fields[activeField]?.source?.page
+      ? Number(fields[activeField].source!.page)
+      : null;
 
   const fieldStatus = Object.fromEntries(
     Object.entries(fields).map(([k, f]) => [k, { status: f.status, confidence: f.confidence }]),
@@ -321,6 +328,8 @@ export default function InboxReviewPage() {
             activeLabel={activeField}
             fieldStatus={fieldStatus}
             onSelectField={setActiveField}
+            focusPage={focusPage}
+            onPageMeta={(meta) => setPageSizes(meta.pageSizes)}
           />
           <p className="mt-1 text-xs text-muted-foreground" data-testid="review-file-meta">
             File: {review.filename} · sha256 {String(review.sha256).slice(0, 12)}… · Inbox{" "}
@@ -333,6 +342,7 @@ export default function InboxReviewPage() {
             if (!field) return null;
             const low = (field.confidence ?? 1) < 0.8;
             const bad = field.status === "fail";
+            const noLocation = field.source === null;
             return (
               <div key={key}>
                 <Label className="text-xs font-medium text-muted-foreground">
@@ -350,6 +360,14 @@ export default function InboxReviewPage() {
                   onFocus={() => setActiveField(key)}
                   onChange={(e) => onFieldChange(key, e.target.value)}
                 />
+                {noLocation && field.value ? (
+                  <p
+                    className="mt-0.5 text-[11px] text-muted-foreground"
+                    data-testid={`location-missing-${key}`}
+                  >
+                    location not found
+                  </p>
+                ) : null}
               </div>
             );
           })}
