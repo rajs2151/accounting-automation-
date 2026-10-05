@@ -10,8 +10,8 @@
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1
-2. C1-2 - C1 validation matrix (8 cases from addendum-C.md lines 64-73) + check_vat acknowledgement
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2
+2. DEMO-1 - upload extraction (10 invoice + 3 bank fixtures via the upload path) + Upload statement button
 3. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
 4. C1b sales record-only parity | 5. C2 Banking + statements
 
