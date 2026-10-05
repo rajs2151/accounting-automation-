@@ -14,7 +14,10 @@ if [ ! -x /venv/bin/python ] || [ ! -f /venv/.ai-deps-hash ] || [ "$(cat /venv/.
   echo "+ pip install (worker/pyproject.toml changed or no venv yet)"
   rm -rf /venv/* /venv/.ai-deps-hash 2>/dev/null || true
   python -m venv /venv
-  /venv/bin/pip install -q -e "./worker[dev]" "moto[server]"
+  PIP="/venv/bin/pip install -q --timeout 120 --retries 8"
+  # Same as worker/Dockerfile: CPU-only torch/torchvision first (PyPI's default Linux torch pulls GBs of CUDA libs).
+  $PIP torch torchvision --index-url https://download.pytorch.org/whl/cpu
+  $PIP -e "./worker[dev]" "moto[server]"
   echo "$DEPS_HASH" > /venv/.ai-deps-hash
 else
   echo "+ reuse cached venv"
