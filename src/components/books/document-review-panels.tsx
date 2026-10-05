@@ -174,7 +174,7 @@ export function DocumentReviewPanels({
     <div className="space-y-4" data-testid="document-review-panels">
       <section
         className="space-y-2 rounded-lg border border-border p-3"
-        data-testid="totals-panel"
+        data-testid="document-totals-panel"
       >
         <h3 className="text-sm font-semibold">Totals</h3>
         <table className="w-full text-sm">

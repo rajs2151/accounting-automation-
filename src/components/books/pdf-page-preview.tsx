@@ -14,10 +14,16 @@ type Props = {
   fileUrl: string;
   boxes: PageBBox[];
   activeLabel: string | null;
+  /** Display label for the active field chip, e.g. "Grand total". */
+  activeChipLabel?: string | null;
+  /** Display value for the active field chip, e.g. "105.00". */
+  activeChipValue?: string | null;
   fieldStatus?: Record<string, { status?: string; confidence?: number }>;
   onSelectField?: (label: string) => void;
   /** Jump to this page when the focused field changes (1-based). */
   focusPage?: number | null;
+  /** When true, zoom/scroll to the active bbox; when false/cleared, restore prior view. */
+  focusBBox?: boolean;
   onPageMeta?: (meta: {
     pageCount: number;
     pageSizes: Record<number, { width: number; height: number }>;
@@ -35,6 +41,14 @@ type PdfDoc = {
 const FIT_WIDTH = 720;
 const THUMB_SCALE = 0.18;
 
+type ViewSnapshot = {
+  page: number;
+  zoom: number;
+  fitMode: boolean;
+  scrollLeft: number;
+  scrollTop: number;
+};
+
 /**
  * Multi-page PDF / image preview with thumbnails, zoom, fit, and field highlights
  * from worker source page+bbox (PDF points, origin top-left).
@@ -43,13 +57,17 @@ export function PdfPagePreview({
   fileUrl,
   boxes,
   activeLabel,
+  activeChipLabel,
+  activeChipValue,
   fieldStatus = {},
   onSelectField,
   focusPage,
+  focusBBox = false,
   onPageMeta,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [pageCount, setPageCount] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -59,6 +77,8 @@ export function PdfPagePreview({
   const [fitMode, setFitMode] = useState(true);
   const [error, setError] = useState("");
   const [thumbUrls, setThumbUrls] = useState<Record<number, string>>({});
+  const savedViewRef = useRef<ViewSnapshot | null>(null);
+  const focusingRef = useRef(false);
   const isImage = /\.(png|jpe?g|webp)(\?|$)/i.test(fileUrl);
 
   // Load PDF bytes once; do not render every page at full resolution.
@@ -125,6 +145,68 @@ export function PdfPagePreview({
     }
   }, [focusPage, pageCount]);
 
+  // Zoom/scroll to active bbox on focus; restore previous view on leave.
+  useEffect(() => {
+    if (!focusBBox || !activeLabel) {
+      if (focusingRef.current && savedViewRef.current) {
+        const snap = savedViewRef.current;
+        setCurrentPage(snap.page);
+        setZoom(snap.zoom);
+        setFitMode(snap.fitMode);
+        requestAnimationFrame(() => {
+          const el = scrollRef.current;
+          if (el) {
+            el.scrollLeft = snap.scrollLeft;
+            el.scrollTop = snap.scrollTop;
+          }
+        });
+        savedViewRef.current = null;
+        focusingRef.current = false;
+      }
+      return;
+    }
+
+    const box = boxes.find((b) => b.label === activeLabel);
+    if (!box) return;
+
+    if (!focusingRef.current) {
+      savedViewRef.current = {
+        page: currentPage,
+        zoom,
+        fitMode,
+        scrollLeft: scrollRef.current?.scrollLeft ?? 0,
+        scrollTop: scrollRef.current?.scrollTop ?? 0,
+      };
+      focusingRef.current = true;
+    }
+
+    setCurrentPage(box.page);
+    // Zoom so the box is comfortably visible (~40% of viewport width target).
+    const boxW = Math.max(1, box.x1 - box.x0);
+    const targetZoom = Math.min(2.5, Math.max(1.1, (FIT_WIDTH * 0.45) / boxW));
+    setFitMode(false);
+    setZoom(Math.round(targetZoom * 100) / 100);
+  }, [focusBBox, activeLabel, boxes]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After zoom/render, scroll the active box into view.
+  useEffect(() => {
+    if (!focusBBox || !activeLabel || !focusingRef.current) return;
+    const box = boxes.find((b) => b.label === activeLabel);
+    if (!box || box.page !== currentPage) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const scale = fitMode
+      ? Math.min(1.4, FIT_WIDTH / pageSize.width) * zoom
+      : Math.max(0.4, Math.min(3, zoom));
+    const left = box.x0 * scale;
+    const top = box.y0 * scale;
+    const width = (box.x1 - box.x0) * scale;
+    const height = (box.y1 - box.y0) * scale;
+    const targetLeft = Math.max(0, left + width / 2 - el.clientWidth / 2);
+    const targetTop = Math.max(0, top + height / 2 - el.clientHeight / 2);
+    el.scrollTo({ left: targetLeft, top: targetTop, behavior: "smooth" });
+  }, [focusBBox, activeLabel, boxes, currentPage, zoom, fitMode, pageSize.width, renderSize]);
+
   // Render only the current page at the active zoom / fit scale.
   useEffect(() => {
     if (isImage || !doc) return;
@@ -158,6 +240,13 @@ export function PdfPagePreview({
   }, [doc, currentPage, zoom, fitMode, isImage]);
 
   const pageBoxes = filterBoxesForPage(boxes, currentPage);
+  const activeBox = activeLabel
+    ? pageBoxes.find((b) => b.label === activeLabel)
+    : undefined;
+  const chipText =
+    activeBox && (activeChipLabel || activeChipValue)
+      ? `${activeChipLabel || activeLabel}: ${activeChipValue ?? ""}`.trim()
+      : null;
 
   return (
     <div
@@ -260,7 +349,7 @@ export function PdfPagePreview({
           </div>
         ) : null}
 
-        <div className="min-w-0 flex-1 overflow-auto">
+        <div className="min-w-0 flex-1 overflow-auto" ref={scrollRef}>
           <div
             className="relative mx-auto bg-white shadow-sm"
             style={
@@ -327,6 +416,28 @@ export function PdfPagePreview({
                   />
                 );
               })}
+              {activeBox && chipText ? (
+                <div
+                  data-testid="source-highlight"
+                  className="pointer-events-none absolute z-10 max-w-[220px] truncate rounded bg-emerald-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow-sm"
+                  style={{
+                    left: bboxOverlayStyle({
+                      ...activeBox,
+                      pageWidth: activeBox.pageWidth || pageSize.width,
+                      pageHeight: activeBox.pageHeight || pageSize.height,
+                    }).left,
+                    top: `calc(${
+                      bboxOverlayStyle({
+                        ...activeBox,
+                        pageWidth: activeBox.pageWidth || pageSize.width,
+                        pageHeight: activeBox.pageHeight || pageSize.height,
+                      }).top
+                    } - 1.4rem)`,
+                  }}
+                >
+                  {chipText}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
