@@ -2,11 +2,13 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: E4 (Upload statement button on /books/statements)
+- Current task: UI polish in progress (UI-1..UI-4 after E5)
+- 2026-10-05: E4 + E5 PASS on feat/books-phase1 (pushed). Queue after E5:
+  **UI-1 → UI-2 → UI-3 → UI-4 → C1-3**
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
   generate_synthetic.py constants BANK_A/B/C (owner-approved ground_truth edit, those 3 files only).
-- Done today: PYTEST-0 (a94497f) | E1 (b649886, c7fbb67) | E2 (20f6674, 069baf3, b32abe0) | E3 (c5b99af, e3eb7c9)
+- Done today: PYTEST-0 | E1 | E2 | E3 | E4 | E5
 - Claude did directly (owner request 2026-10-05): login picker + synthetic owner Raj (db/31), worker NUL-safe text +
   garbled pages -> OCR (E3b), duplicate upload notice + per-company file hash (db/32), readable errors with ref,
   faster Docker builds, parallel typecheck, scripts/ai/test-files.ps1, scripts/dev-local.ps1, ~/.wslconfig
@@ -15,25 +17,22 @@
   the Addendum A way (worker = single extractor) as E1-E5. Task files wait in .ai/NEXT_TASK_*.md.
 - Loop changes: scripts/ai/gates.ps1 (Cursor runs the same gates), pytest gate uses cached venv
   (scripts/ai/pytest-inner.sh), timeout no longer crashes the loop, .gitattributes forces LF for *.sh.
-- Done: POC-001 PASS (6d007c1) Â· VERIFY-S1 (6b1af5a) + VERIFY-S1-fix1 PASS (83c8752) Â· C1-1 PASS (5755744, 02c7976) | C1-2 PASS (39b7bfc + fix1 484e04f)
+- Done: POC-001 PASS · VERIFY-S1 + VERIFY-S1-fix1 PASS · C1-1 PASS | C1-2 PASS
 - Owner gate: every slice boundary needs Raj's approval; loop never starts a new slice by itself.
-  2026-10-05 ~00:15: Raj delegated approvals to Claude for ~2-3 h overnight (no push, no security/dual-control weakening).
 - CEO demo build: tag demo-ceo-2026-10-05 (957529f) is what runs in the web container on :43123; db/26-28 applied to
   the dev DB (backup: C:\Users\Raj\arnibooks-backups\pre-demo-20261005.dump). Do NOT rebuild web before the demo.
 - 2026-10-05 ~17:45: localhost updated to tag local-e2-2026-10-05 (E1+E2, worker+web rebuilt; db/29-30 applied;
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 Â· VERIFY-S1 Â· VERIFY-S1-fix1 Â· C1-1 Â· C1-2 Â· TEST-ISO-1 (ace66e8, 5b8a9b4, 4763c34 - also
-   covered TEST-ISO-2's scope: only the 2 read-only goldens use DESERT, enforced by test-isolation.test.ts)
-3. PYTEST-0 - fix 3 pre-existing worker pytest failures (statements_extraction_method_check x2, forced RLS test)
-   (pytest gate first ran for real 2026-10-05: 32 pass / 3 fail at HEAD)
-4. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
-   E3b NUL-byte/garbled PDF text must not fail uploads (owner hit it on a real PDF 2026-10-05) ->
-   UX-1 duplicate notice instead of 'failed', readable errors instead of 'request failed', login as Raj ->
-   E4 Upload statement UI -> E5 multi-page viewer
-4. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
-5. C1b sales record-only parity | 6. C2 remaining (bank accounts page, coverage/gaps)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5
+2. UI-1 Shell & navigation (.ai/NEXT_TASK_UI-1.md)
+3. UI-2 Queues: status badges, empty states, pill tabs (.ai/NEXT_TASK_UI-2.md)
+4. UI-3 Review screen polish on E5 (.ai/NEXT_TASK_UI-3.md)
+5. UI-4 Statement review layout (.ai/NEXT_TASK_UI-4.md)
+6. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
+   plus: filter menu with counts, bulk bar (Change type, Assign, Revert to draft audited), "New supplier" badge
+7. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-fix1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -41,6 +40,8 @@
 - VAT on customer advances: policy TBD (not implemented).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
 - Pending inputs: brand hex + font; B/C opening balances.
+- UI polish backlog (not in UI-1..4): Review later status, paid/unpaid types, non-UAE VAT->cost, knowledge cards,
+  stale extraction, snippet split, settings CSV, firm overview, email-in, E1b worker confidence.
 
 ## Log
 (the loop appends one line per run: date | task | iteration | decision | run folder)
@@ -67,3 +68,4 @@
 - 2026-10-05 18:16 | E3 | i1 | FAIL | .ai/runs/20261005-175649-E3-i1
 - 2026-10-05 18:35 | E3 | i2 | PASS | .ai/runs/20261005-181636-E3-i2
 - 2026-10-05 22:19 | E4 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-215737-E4-i1
+- 2026-10-05 | E4 | PASS (c7b68ea, 3cd37f3) | E5 PASS (103d7b4) | pushed feat/books-phase1
