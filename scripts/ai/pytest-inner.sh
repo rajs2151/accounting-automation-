@@ -4,8 +4,14 @@
 # only reinstalled when worker/pyproject.toml changes (same idea as unit-inner.sh for node_modules).
 set -euo pipefail
 
+# System deps the worker tests need (psql for conftest migrations; same OCR/GL libs as worker/Dockerfile).
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq --no-install-recommends postgresql-client libgl1 libglib2.0-0 libgomp1 \
+  tesseract-ocr tesseract-ocr-eng tesseract-ocr-ara >/dev/null 2>&1
+
 mkdir -p /work
-cp -a /src/. /work/
+tar -C /src --exclude=./node_modules --exclude=./.next --exclude=./.git --exclude=./.ai \
+  --exclude=./test-results --exclude=./playwright-report -cf - . | tar -C /work -xf -
 cd /work
 sed -i 's/127.0.0.1/postgres/g' worker/tests/conftest.py
 
