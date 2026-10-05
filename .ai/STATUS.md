@@ -17,7 +17,9 @@
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-fix1 · C1-1 · C1-2
 2. TEST-ISO-1 -> TEST-ISO-2 - per-test synthetic companies + guard test
-3. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
+3. PYTEST-0 - fix 3 pre-existing worker pytest failures (statements_extraction_method_check x2, forced RLS test)
+   (pytest gate first ran for real 2026-10-05: 32 pass / 3 fail at HEAD)
+4. E1 worker invoice fields + page/bbox -> E2 worker bank statements -> E3 API worker-only upload ->
    E4 Upload statement UI -> E5 multi-page viewer
 4. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
 5. C1b sales record-only parity | 6. C2 remaining (bank accounts page, coverage/gaps)
