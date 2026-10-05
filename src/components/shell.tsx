@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowLeftRight,
@@ -10,17 +10,34 @@ import {
   Home,
   Inbox,
   Landmark,
+  Languages,
   PanelLeft,
   Receipt,
   Search,
   Settings,
+  Upload,
   Users,
 } from "lucide-react";
 
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
+import { CompanySwitcher } from "@/components/books/company-switcher";
 import { SecurityBannerChip } from "@/components/security-banner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { BOOKS_CLIENT_ID_SET, PRODUCT_NAME } from "@/config/product";
 import { cn } from "@/lib/utils";
@@ -32,7 +49,14 @@ type Directory = {
   clientId: string;
 };
 
-const NAV = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof Home;
+  soon?: boolean;
+};
+
+const NAV: NavItem[] = [
   { href: "/books", label: "Home", icon: Home },
   { href: "/books/inbox", label: "Inbox", icon: Inbox },
   { href: "/books/sales", label: "Sales", icon: FileSpreadsheet },
@@ -40,21 +64,28 @@ const NAV = [
   { href: "/books/receipts", label: "Receipts", icon: Landmark },
   { href: "/books/parties", label: "Parties", icon: Users },
   { href: "/books/transactions", label: "Transactions", icon: ArrowLeftRight },
-  { href: "/books/expenses", label: "Expenses (Phase 3)", icon: Receipt },
+  { href: "/books/expenses", label: "Expenses", icon: Receipt, soon: true },
   { href: "/books/journals", label: "Ledger", icon: Landmark },
   { href: "/books/reports/trial-balance", label: "Reports", icon: FileSpreadsheet },
   { href: "/books/health", label: "Company Health", icon: Activity },
   { href: "/books/settings", label: "Settings", icon: Settings },
 ];
 
+function periodDotClass(status: string) {
+  const open = status === "OPEN" || status === "REOPENED";
+  return open ? "bg-emerald-500" : "bg-muted-foreground/45";
+}
+
 function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { periods, periodId, setPeriodId, globalSearch, setGlobalSearch } = useBooksShell();
+  const searchRef = useRef<HTMLInputElement>(null);
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [language, setLanguage] = useState<"EN" | "AR">("EN");
 
   const isLogin = pathname === "/login";
   const isBooks = pathname.startsWith("/books");
@@ -88,7 +119,6 @@ function ShellInner({ children }: { children: React.ReactNode }) {
       .finally(() => setSessionReady(true));
   }, [pathname, router, isLogin]);
 
-  // Books routes: never stay on a legacy client (e.g. Al Noor).
   useEffect(() => {
     if (isLogin || !isBooks || !directory?.me || booksClients.length === 0) return;
     if (BOOKS_CLIENT_ID_SET.has(directory.clientId)) return;
@@ -96,6 +126,17 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     void switchWorking(directory.me.id, fallback);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBooks, directory?.clientId, directory?.me?.id, booksClients, isLogin]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function switchWorking(userId: string, clientId: string) {
     const response = await fetch("/api/session", {
@@ -108,6 +149,10 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     const next = await fetch("/api/session").then((item) => item.json());
     setDirectory(next);
   }
+
+  const clientValue = switcherClients.some((c) => c.id === directory?.clientId)
+    ? directory!.clientId
+    : switcherClients[0]?.id || directory?.clientId || "";
 
   const nav = (
     <nav className="flex flex-col gap-0.5 px-2">
@@ -132,14 +177,63 @@ function ShellInner({ children }: { children: React.ReactNode }) {
             )}
           >
             <Icon className="size-[18px] shrink-0" />
-            {collapsed ? <span className="sr-only">{item.label}</span> : item.label}
+            {collapsed ? (
+              <span className="sr-only">{item.label}</span>
+            ) : (
+              <>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.soon ? (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">
+                    Soon
+                  </Badge>
+                ) : null}
+              </>
+            )}
           </Link>
         );
       })}
     </nav>
   );
 
+  const sidebarTop = (
+    <div className={cn("space-y-2 px-3 pb-3", collapsed && "px-2")}>
+      {directory?.me ? (
+        <CompanySwitcher
+          clients={switcherClients}
+          value={clientValue}
+          collapsed={collapsed}
+          onSwitch={(id) => void switchWorking(directory.me!.id, id)}
+        />
+      ) : null}
+      {!collapsed ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-start gap-2"
+          data-testid="shell-global-upload"
+          onClick={() => router.push("/books/inbox?upload=1")}
+        >
+          <Upload className="size-4" />
+          Upload
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className="mx-auto flex"
+          title="Upload"
+          data-testid="shell-global-upload"
+          onClick={() => router.push("/books/inbox?upload=1")}
+        >
+          <Upload className="size-4" />
+        </Button>
+      )}
+    </div>
+  );
+
   const firstName = directory?.me?.name?.split(/\s+/)[0];
+  const currentPeriod = periods.find((p) => p.id === periodId);
 
   if (isLogin) {
     return <>{children}</>;
@@ -182,23 +276,29 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="ml-auto"
+                className="ms-auto"
                 onClick={() => setCollapsed(true)}
                 aria-label="Collapse navigation"
               >
                 <PanelLeft className="size-4" />
               </Button>
             ) : (
-              <Button variant="ghost" size="icon-sm" onClick={() => setCollapsed(false)} aria-label="Expand navigation">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setCollapsed(false)}
+                aria-label="Expand navigation"
+              >
                 <PanelLeft className="size-4" />
               </Button>
             )}
           </div>
+          {sidebarTop}
           <div className="flex-1 overflow-y-auto py-1">{nav}</div>
           <div className="mt-auto space-y-3 border-t border-sidebar-border p-3">
-            <WorkingAs
+            <WorkingAsUser
               directory={directory}
-              clients={switcherClients}
+              clientId={clientValue}
               collapsed={collapsed}
               onSwitch={switchWorking}
             />
@@ -232,37 +332,70 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               Hi <span className="font-semibold">{firstName}</span>
             </p>
             {isBooks && periods.length > 0 ? (
-              <select
-                className="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+              <Select
                 value={periodId}
-                onChange={(e) => setPeriodId(e.target.value)}
-                data-testid="topbar-period"
-                aria-label="Period"
+                onValueChange={(v) => {
+                  if (v) setPeriodId(v);
+                }}
               >
-                {periods.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label} ({p.status})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  size="sm"
+                  className="h-8 shrink-0 gap-2"
+                  data-testid="topbar-period"
+                  aria-label="Period"
+                >
+                  {currentPeriod ? (
+                    <span
+                      className={cn("size-2 shrink-0 rounded-full", periodDotClass(currentPeriod.status))}
+                      aria-hidden
+                    />
+                  ) : null}
+                  <SelectValue placeholder="Period" />
+                </SelectTrigger>
+                <SelectContent>
+                  {periods.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={cn("size-2 rounded-full", periodDotClass(p.status))}
+                          aria-hidden
+                        />
+                        {p.label} ({p.status})
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : null}
             <div className="relative w-full max-w-[480px] flex-1">
-              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
-                className="h-8 pl-8 text-sm"
+                ref={searchRef}
+                className="h-8 ps-8 pe-16 text-sm"
                 placeholder="Search…"
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
+                data-testid="topbar-search"
               />
+              <kbd className="pointer-events-none absolute end-2 top-1/2 hidden -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">
+                Ctrl K
+              </kbd>
             </div>
-            <select
-              className="h-8 shrink-0 rounded-md border-0 bg-muted/60 px-2 text-sm text-foreground"
-              aria-label="Language"
-            >
-              <option>EN</option>
-              <option>AR</option>
-            </select>
-            <div className="ml-auto shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="sm" className="h-8 gap-1 px-2" aria-label="Language">
+                    <Languages className="size-4" />
+                    <span className="text-xs">{language}</span>
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setLanguage("EN")}>English (EN)</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLanguage("AR")}>Arabic (AR)</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="ms-auto shrink-0">
               <SecurityBannerChip />
             </div>
           </header>
@@ -281,11 +414,14 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           <SheetHeader>
             <SheetTitle className="font-semibold text-primary">{PRODUCT_NAME}</SheetTitle>
           </SheetHeader>
-          <div className="mt-4">{nav}</div>
+          <div className="mt-4 space-y-3">
+            {sidebarTop}
+            {nav}
+          </div>
           <div className="mt-6">
-            <WorkingAs
+            <WorkingAsUser
               directory={directory}
-              clients={switcherClients}
+              clientId={clientValue}
               collapsed={false}
               onSwitch={switchWorking}
             />
@@ -304,73 +440,62 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function WorkingAs({
+function WorkingAsUser({
   directory,
-  clients,
+  clientId,
   collapsed,
   onSwitch,
 }: {
   directory: Directory | null;
-  clients: { id: string; name: string }[];
+  clientId: string;
   collapsed: boolean;
   onSwitch: (userId: string, clientId: string) => void;
 }) {
   if (!directory?.me) return null;
-  const value = clients.some((c) => c.id === directory.clientId)
-    ? directory.clientId
-    : clients[0]?.id || directory.clientId;
 
   if (collapsed) {
     return (
-      <select
-        className="w-full rounded-md border border-border bg-card p-1 text-[10px]"
-        value={value}
-        title="Switch client"
-        onChange={(event) => onSwitch(directory.me!.id, event.target.value)}
+      <Select
+        value={directory.me.id}
+        onValueChange={(uid) => {
+          if (uid) onSwitch(uid, clientId);
+        }}
       >
-        {clients.map((client) => (
-          <option key={client.id} value={client.id}>
-            {client.name.slice(0, 12)}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger size="sm" className="w-full" title="Working as" aria-label="Working as">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {directory.users.map((user) => (
+            <SelectItem key={user.id} value={user.id}>
+              {user.name.slice(0, 8)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     );
   }
+
   return (
-    <div className="space-y-2 text-sm">
-      <label className="block text-xs font-medium text-muted-foreground">
-        Company
-        <select
-          className="mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
-          value={value}
-          onChange={(event) => onSwitch(directory.me!.id, event.target.value)}
-          data-testid="books-company-switcher"
-        >
-          {clients.map((client) => (
-            <option key={client.id} value={client.id}>
-              {client.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-xs font-medium text-muted-foreground">
-        Working as
-        <select
-          className="mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
-          value={directory.me.id}
-          onChange={(event) => {
-            const user = directory.users.find((item) => item.id === event.target.value);
-            if (!user) return;
-            onSwitch(user.id, value);
-          }}
-        >
+    <div className="space-y-1 text-sm">
+      <span className="block text-xs font-medium text-muted-foreground">Working as</span>
+      <Select
+        value={directory.me.id}
+        onValueChange={(uid) => {
+          if (!uid) return;
+          onSwitch(uid, clientId);
+        }}
+      >
+        <SelectTrigger size="sm" className="w-full" data-testid="working-as-select">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
           {directory.users.map((user) => (
-            <option key={user.id} value={user.id}>
+            <SelectItem key={user.id} value={user.id}>
               {user.name} · {user.role}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-      </label>
+        </SelectContent>
+      </Select>
     </div>
   );
 }
