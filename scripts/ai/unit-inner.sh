@@ -47,5 +47,12 @@ export S3_BUCKET="statements" S3_REGION="us-east-1"
 export IBAN_ENCRYPTION_KEY="dev-only-iban-key-change-me" OCR_PROVIDER="local" PDF_PROBE_MIN_CHARS="30"
 export PORTAL_SECURITY_STATUS="FAIL"
 
-echo "+ npm test"
-npm test
+shift || true
+if [ "$#" -gt 0 ]; then
+  # Fast inner loop: only the given test files (scripts/ai/test-files.ps1). The loop's gate always runs npm test.
+  echo "+ tsx --test $*"
+  npx tsx --test "$@"
+else
+  echo "+ npm test"
+  npm test
+fi
