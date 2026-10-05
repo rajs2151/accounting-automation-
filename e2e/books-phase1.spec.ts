@@ -16,6 +16,7 @@ const FIXTURE_PDF = path.join(process.cwd(), "fixtures", "extraction", "pdfs", "
 /**
  * e2e profile does not run the Python worker. After upload (status=queued), insert a
  * worker-shaped books_extractions row so review UI can assert fields without waiting.
+ * Shape matches workerInvoiceFieldsJson / process_extract_document (fils ints; no UI mirrors).
  */
 async function insertWorkerShapedExtraction(args: {
   inboxItemId: string;
@@ -30,6 +31,7 @@ async function insertWorkerShapedExtraction(args: {
   await admin.connect();
   try {
     const extractionId = randomUUID();
+    // ONLY keys the worker writes — money as integer fils, dates as ISO.
     const fields = {
       invoice_no: {
         value: "INV-SYN-002",
@@ -49,9 +51,21 @@ async function insertWorkerShapedExtraction(args: {
         status: "ok",
         source: { page: 1, bbox: [72, 140, 160, 154] },
       },
+      document_date: {
+        value: "2026-05-15",
+        confidence: 0.95,
+        status: "ok",
+        source: { page: 1, bbox: [72, 140, 160, 154] },
+      },
       currency: {
         value: "AED",
         confidence: 0.99,
+        status: "ok",
+        source: null,
+      },
+      supplier_trn: {
+        value: "100000000000001",
+        confidence: 0.95,
         status: "ok",
         source: null,
       },
@@ -73,21 +87,8 @@ async function insertWorkerShapedExtraction(args: {
         status: "ok",
         source: { page: 1, bbox: [400, 240, 460, 254] },
       },
-      // UI FIELD_ORDER still keys on sync names until E5; mirror as display strings.
-      subtotal: {
-        value: "100.00",
-        confidence: 0.95,
-        status: "ok",
-        source: null,
-      },
-      vat_total: {
-        value: "5.00",
-        confidence: 0.95,
-        status: "ok",
-        source: null,
-      },
       grand_total: {
-        value: "105.00",
+        value: 10500,
         confidence: 0.95,
         status: "ok",
         source: { page: 1, bbox: [400, 240, 460, 254] },
@@ -240,6 +241,10 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await page.goto(`/books/inbox/${inboxId}`);
   await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId("field-invoice_no")).toHaveValue("INV-SYN-002");
+  await expect(page.getByTestId("field-subtotal")).toHaveValue("100.00");
+  await expect(page.getByTestId("field-vat_total")).toHaveValue("5.00");
+  await expect(page.getByTestId("field-grand_total")).toHaveValue("105.00");
+  await expect(page.getByTestId("field-invoice_date")).toHaveValue("15/05/2026");
   await expect(page.getByTestId("review-file-meta")).toContainText("invoice_02.pdf");
   const preview = page.getByTestId("review-file-pdf").or(page.getByTestId("review-file-image"));
   await expect(preview).toBeVisible({ timeout: 20000 });

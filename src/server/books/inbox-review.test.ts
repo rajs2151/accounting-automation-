@@ -6,7 +6,11 @@ import test from "node:test";
 import pg from "pg";
 
 import { BooksError } from "@/server/books/errors";
-import { getBooksInboxReview, uploadBooksInboxFiles } from "@/server/books/inbox";
+import {
+  getBooksInboxReview,
+  retryBooksInboxExtract,
+  uploadBooksInboxFiles,
+} from "@/server/books/inbox";
 import { createTestCompany } from "@/server/books/test-company";
 import { workerInvoiceFieldsJson } from "@/server/books/test-fixtures/worker-extraction";
 
@@ -174,6 +178,97 @@ test("review API returns worker-shaped books_extractions for inbox id; 404 for u
     [inboxId],
   );
   assert.equal(oneRow.rows[0].n, 1, "exactly one extraction row per inbox item");
+
+  await admin.end();
+});
+
+test("retry re-queues extract_document; does not write extraction fields", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+
+  const company = await createTestCompany(admin, "inbox-retry");
+  const clientId = company.clientId;
+
+  const pdfPath = path.join(process.cwd(), "fixtures/extraction/pdfs/invoice_02.pdf");
+  if (!fs.existsSync(pdfPath)) {
+    t.skip("invoice_02.pdf missing");
+    await admin.end();
+    return;
+  }
+  const base = fs.readFileSync(pdfPath);
+  const bytes = Buffer.concat([base, Buffer.from(`\n%retry-${Date.now()}`)]);
+
+  let uploaded: Awaited<ReturnType<typeof uploadBooksInboxFiles>>;
+  try {
+    uploaded = await uploadBooksInboxFiles(OMAR, clientId, [
+      { filename: "invoice_02.pdf", contentType: "application/pdf", bytes },
+    ]);
+  } catch (e) {
+    t.skip(`upload unavailable (MinIO?): ${e instanceof Error ? e.message : e}`);
+    await admin.end();
+    return;
+  }
+
+  const inboxId = uploaded.results[0]?.inboxItemId;
+  const fileId = uploaded.results[0]?.fileId;
+  assert.ok(inboxId);
+  assert.ok(fileId);
+
+  const extractionId = randomUUID();
+  const fields = workerInvoiceFieldsJson({ invoiceNo: "INV-RETRY-1" });
+  await admin.query(
+    `INSERT INTO books_extractions (
+       id, client_id, file_id, inbox_item_id, doc_type, status,
+       fields_json, raw_text, word_boxes, validation_flags, extractor_version
+     ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,$6,'[]'::jsonb,'[]'::jsonb,'phase1-v1')`,
+    [
+      extractionId,
+      clientId,
+      fileId,
+      inboxId,
+      JSON.stringify(fields),
+      "TAX INVOICE\n",
+    ],
+  );
+  await admin.query(
+    `UPDATE books_inbox_items
+     SET status = 'needs_review', detected_type = 'sales_invoice',
+         classification_confidence = 0.9, error = 'stale', updated_at = now()
+     WHERE id = $1`,
+    [inboxId],
+  );
+
+  let retried: Awaited<ReturnType<typeof retryBooksInboxExtract>>;
+  try {
+    retried = await retryBooksInboxExtract(OMAR, clientId, inboxId);
+  } catch (e) {
+    t.skip(`retry unavailable (MinIO?): ${e instanceof Error ? e.message : e}`);
+    await admin.end();
+    return;
+  }
+  assert.equal(retried.status, "queued");
+
+  const inbox = await admin.query(
+    `SELECT status, error FROM books_inbox_items WHERE id = $1`,
+    [inboxId],
+  );
+  assert.equal(inbox.rows[0].status, "queued");
+  assert.equal(inbox.rows[0].error, null);
+
+  const jobs = await admin.query(
+    `SELECT kind, status
+     FROM books_jobs
+     WHERE client_id = $1 AND kind = 'extract_document'
+       AND payload->>'inboxItemId' = $2`,
+    [clientId, inboxId],
+  );
+  assert.equal(jobs.rowCount, 2, "upload + retry = two extract_document jobs");
+
+  const extractions = await admin.query(
+    `SELECT COUNT(*)::int AS n FROM books_extractions WHERE inbox_item_id = $1`,
+    [inboxId],
+  );
+  assert.equal(extractions.rows[0].n, 1, "web app must not add an extraction row on retry");
 
   await admin.end();
 });

@@ -11,16 +11,15 @@ import { useBooksShell } from "@/components/books/books-shell-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatMinor } from "@/lib/money";
+import { displayToMinor, formatMinor } from "@/lib/money";
 import type { PageBBox } from "@/lib/review-bbox";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
+import {
+  mapWorkerFieldsToDisplay,
+  type ReviewFieldState,
+} from "@/lib/review-fields";
 
-type FieldState = {
-  value: string;
-  confidence: number;
-  status?: string;
-  bbox?: PageBBox;
-};
+type FieldState = ReviewFieldState & { bbox?: PageBBox };
 
 type ReviewPayload = {
   id: string;
@@ -31,7 +30,7 @@ type ReviewPayload = {
   fileUrl: string;
   extractionId: string | null;
   documentId: string | null;
-  fieldsJson: Record<string, FieldState>;
+  fieldsJson: Record<string, unknown>;
   lineItems: Array<{
     description?: string;
     vatCode?: string;
@@ -74,21 +73,17 @@ const FIELD_ORDER = [
   "grand_total",
 ] as const;
 
-function normalizeFields(raw: Record<string, FieldState>): Record<string, FieldState> {
-  const out: Record<string, FieldState> = {};
-  for (const [k, v] of Object.entries(raw || {})) {
-    if (!v || typeof v !== "object") continue;
-    if (typeof (v as FieldState).value === "string") {
-      out[k] = v as FieldState;
-    } else if ("value" in v) {
-      out[k] = {
-        value: String((v as { value: unknown }).value ?? ""),
-        confidence: Number((v as { confidence?: number }).confidence ?? 0.5),
-        status: (v as { status?: string }).status,
-      };
-    }
+function normalizeFields(raw: Record<string, unknown>): Record<string, FieldState> {
+  return mapWorkerFieldsToDisplay(raw) as Record<string, FieldState>;
+}
+
+function moneyMinorFromDisplay(value: string | undefined): number | null {
+  if (value == null || !value.trim()) return null;
+  try {
+    return displayToMinor(value.replace(/,/g, ""));
+  } catch {
+    return null;
   }
-  return out;
 }
 
 function normalizeLines(items: ReviewPayload["lineItems"]) {
@@ -135,7 +130,7 @@ export default function InboxReviewPage() {
       return;
     }
     setReview(data as ReviewPayload);
-    setFields(normalizeFields(data.fieldsJson || {}));
+    setFields(normalizeFields((data.fieldsJson || {}) as Record<string, unknown>));
     setLineItems(normalizeLines(data.lineItems || []));
     setDocumentId(data.documentId || null);
     setLoading(false);
@@ -204,17 +199,14 @@ export default function InboxReviewPage() {
     setFields((prev) => {
       const next = { ...prev, [key]: { ...prev[key], value } };
       if (key === "grand_total" || key === "subtotal" || key === "vat_total") {
-        const subtotal =
-          Math.round(parseFloat((next.subtotal?.value || "0").replace(/,/g, "")) * 100) || 0;
-        const vat =
-          Math.round(parseFloat((next.vat_total?.value || "0").replace(/,/g, "")) * 100) || 0;
-        const grand =
-          Math.round(parseFloat((next.grand_total?.value || "0").replace(/,/g, "")) * 100) || 0;
-        const v = validateInvoiceLineSum({
-          lines: [{ netMinor: subtotal, vatMinor: vat }],
-          grandTotalMinor: grand,
-        });
-        if (next.grand_total) {
+        const subtotal = moneyMinorFromDisplay(next.subtotal?.value);
+        const vat = moneyMinorFromDisplay(next.vat_total?.value);
+        const grand = moneyMinorFromDisplay(next.grand_total?.value);
+        if (subtotal != null && vat != null && grand != null && next.grand_total) {
+          const v = validateInvoiceLineSum({
+            lines: [{ netMinor: subtotal, vatMinor: vat }],
+            grandTotalMinor: grand,
+          });
           next.grand_total = { ...next.grand_total, status: v.fieldStatus.grand_total };
         }
       }
@@ -223,14 +215,12 @@ export default function InboxReviewPage() {
   }
 
   const flags = (() => {
-    if (!fields.subtotal || !fields.vat_total || !fields.grand_total) {
+    const subtotal = moneyMinorFromDisplay(fields.subtotal?.value);
+    const vat = moneyMinorFromDisplay(fields.vat_total?.value);
+    const grand = moneyMinorFromDisplay(fields.grand_total?.value);
+    if (subtotal == null || vat == null || grand == null) {
       return (review?.validationFlags as string[]) || [];
     }
-    const subtotal =
-      Math.round(parseFloat(fields.subtotal.value.replace(/,/g, "")) * 100) || 0;
-    const vat = Math.round(parseFloat(fields.vat_total.value.replace(/,/g, "")) * 100) || 0;
-    const grand =
-      Math.round(parseFloat(fields.grand_total.value.replace(/,/g, "")) * 100) || 0;
     return validateInvoiceLineSum({
       lines: [{ netMinor: subtotal, vatMinor: vat }],
       grandTotalMinor: grand,
