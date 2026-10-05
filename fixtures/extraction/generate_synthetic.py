@@ -141,6 +141,27 @@ def invoice_no_vat_body() -> str:
     )
 
 
+def purchase_bill_body() -> str:
+    """Vendor bill where Desert Falcon is the customer (company-perspective purchase)."""
+    return (
+        "\n".join(
+            [
+                "TAX INVOICE",
+                "Vendor Co LLC",
+                "TRN 100999999999999",
+                "Bill To: Desert Falcon Services FZE",
+                "TRN 100000000000001",
+                "Bill No: BILL-SYN-001",
+                "Date: 15/05/2026",
+                "Consulting services    100.00",
+                "VAT 5%                   5.00",
+                "Total                  105.00",
+            ]
+        )
+        + "\n"
+    )
+
+
 def _write_image_pdf(path: Path, text: str) -> None:
     """Scan-like PDF: raster page with no text layer."""
     import fitz
@@ -294,6 +315,25 @@ def main() -> None:
                 "grand_total": 10000,
                 "supplier_trn": "100000000000001",
                 "vat_missing": True,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    purchase = purchase_bill_body()
+    (ROOT / "text" / "purchase_bill.txt").write_text(purchase, encoding="utf-8")
+    _write_pdf(ROOT / "pdfs" / "purchase_bill.pdf", purchase)
+    (ROOT / "ground_truth" / "purchase_bill.json").write_text(
+        json.dumps(
+            {
+                "doc_type": "purchase_bill",
+                "route": "text",
+                "invoice_no": "BILL-SYN-001",
+                "invoice_date": "2026-05-15",
+                "grand_total": 10500,
+                "supplier_trn": "100999999999999",
             },
             indent=2,
         )

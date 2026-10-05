@@ -95,7 +95,7 @@ class InvoiceGenericParser:
         customer_trn = fields.get("customer_trn")
         net = fields.get("net")
         vat = fields.get("vat")
-        currency = fields.get("currency") or "AED"
+        currency = fields.get("currency")  # None when not printed; do not invent AED
 
         lower = (filename + "\n" + text).lower()
         if re.search(r"\bpurchase\s+bill\b", lower) or "vendor bill" in lower:
@@ -123,12 +123,12 @@ class InvoiceGenericParser:
             party=customer_name or issuer_name,
             document_date=invoice_date,
             period_hint=invoice_date,
-            currency=str(currency),
+            currency=currency or "",
             lines=[
                 ParsedLine(
                     description=description,
                     amount_minor=amount_minor,
-                    currency=str(currency),
+                    currency=currency or "",
                     txn_date=invoice_date,
                     reference=invoice_no,
                     confidence=conf,

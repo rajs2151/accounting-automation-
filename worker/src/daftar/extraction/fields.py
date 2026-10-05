@@ -81,6 +81,29 @@ def _ok(value: Any, confidence: float, source: dict[str, Any] | None) -> dict[st
     return _field(value, confidence=confidence, status="ok", source=source)
 
 
+def _has_valid_source(source: dict[str, Any] | None) -> bool:
+    """True only when source has a page and a 4-number bbox."""
+    if not source:
+        return False
+    page = source.get("page")
+    bbox = source.get("bbox")
+    if page is None or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in bbox)
+
+
+def _located(value: Any, confidence: float, source: dict[str, Any] | None) -> dict[str, Any]:
+    """Status ok only with a real source; otherwise low + null source, lower confidence."""
+    if _has_valid_source(source):
+        return _ok(value, confidence, source)
+    return _field(
+        value,
+        confidence=min(float(confidence), 0.7),
+        status="low",
+        source=None,
+    )
+
+
 def _union_bbox(words: list[dict[str, Any]]) -> list[float]:
     return [
         min(float(w["x0"]) for w in words),
@@ -142,11 +165,12 @@ def _amount_source(
     boxes: list[dict[str, Any]],
     raw: str,
     page: int,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    """Locate amount on page; return valid {page,bbox} or None (never bbox-null with ok)."""
     src = find_source(boxes, raw, page=page) if boxes else None
-    if src and src.get("bbox") is not None:
+    if _has_valid_source(src):
         return src
-    return {"page": page, "bbox": None}
+    return None
 
 
 def _search_pages_last_first(
@@ -227,8 +251,8 @@ def extract_invoice_fields(
         src = find_source(boxes, val, prefer_pages=prefer_first) if boxes else None
         out["invoice_no"] = val
         out["document_number"] = val
-        out["fields"]["invoice_no"] = _ok(val, base_conf, src)
-        out["fields"]["document_number"] = _ok(val, base_conf, src)
+        out["fields"]["invoice_no"] = _located(val, base_conf, src)
+        out["fields"]["document_number"] = _located(val, base_conf, src)
     else:
         out["fields"]["invoice_no"] = _missing(0.2)
         out["fields"]["document_number"] = _missing(0.2)
@@ -240,8 +264,8 @@ def extract_invoice_fields(
         src = find_source(boxes, raw, prefer_pages=prefer_first) if boxes else None
         out["invoice_date"] = iso
         out["document_date"] = iso
-        out["fields"]["invoice_date"] = _ok(iso, base_conf, src)
-        out["fields"]["document_date"] = _ok(iso, base_conf, src)
+        out["fields"]["invoice_date"] = _located(iso, base_conf, src)
+        out["fields"]["document_date"] = _located(iso, base_conf, src)
     else:
         out["fields"]["invoice_date"] = _missing(0.2)
         out["fields"]["document_date"] = _missing(0.2)
@@ -251,7 +275,7 @@ def extract_invoice_fields(
     if issuer_name:
         src = find_source(boxes, issuer_name, prefer_pages=prefer_first) if boxes else None
         out["issuer_name"] = issuer_name
-        out["fields"]["issuer_name"] = _ok(issuer_name, base_conf, src)
+        out["fields"]["issuer_name"] = _located(issuer_name, base_conf, src)
     else:
         out["fields"]["issuer_name"] = _missing()
 
@@ -259,8 +283,8 @@ def extract_invoice_fields(
         src = find_source(boxes, issuer_trn, prefer_pages=prefer_first) if boxes else None
         out["supplier_trn"] = issuer_trn
         out["issuer_trn"] = issuer_trn
-        out["fields"]["supplier_trn"] = _ok(issuer_trn, base_conf, src)
-        out["fields"]["issuer_trn"] = _ok(issuer_trn, base_conf, src)
+        out["fields"]["supplier_trn"] = _located(issuer_trn, base_conf, src)
+        out["fields"]["issuer_trn"] = _located(issuer_trn, base_conf, src)
     else:
         out["fields"]["supplier_trn"] = _missing(0.2)
         out["fields"]["issuer_trn"] = _missing(0.2)
@@ -268,14 +292,14 @@ def extract_invoice_fields(
     if customer_name:
         src = find_source(boxes, customer_name, prefer_pages=prefer_first) if boxes else None
         out["customer_name"] = customer_name
-        out["fields"]["customer_name"] = _ok(customer_name, base_conf, src)
+        out["fields"]["customer_name"] = _located(customer_name, base_conf, src)
     else:
         out["fields"]["customer_name"] = _missing()
 
     if customer_trn:
         src = find_source(boxes, customer_trn, prefer_pages=prefer_first) if boxes else None
         out["customer_trn"] = customer_trn
-        out["fields"]["customer_trn"] = _ok(customer_trn, base_conf, src)
+        out["fields"]["customer_trn"] = _located(customer_trn, base_conf, src)
     else:
         out["fields"]["customer_trn"] = _missing()
 
@@ -284,12 +308,9 @@ def extract_invoice_fields(
         val = cur.group(1).upper()
         src = find_source(boxes, cur.group(1), prefer_pages=prefer_last) if boxes else None
         out["currency"] = val
-        out["fields"]["currency"] = _ok(val, base_conf, src)
-    elif re.search(r"\d+\.\d{2}", blob):
-        # Fixtures omit the code but amounts are AED; mark low, no invented source.
-        out["currency"] = "AED"
-        out["fields"]["currency"] = _field("AED", confidence=0.7, status="low", source=None)
+        out["fields"]["currency"] = _located(val, base_conf, src)
     else:
+        # No printed currency code — do not invent AED; review UI may default later.
         out["fields"]["currency"] = _missing()
 
     # Page-aware totals: last page first. Never invent VAT.
@@ -315,7 +336,7 @@ def extract_invoice_fields(
         raw, page = net_hit
         fils = parse_amount_fils(raw)
         out["net"] = fils
-        out["fields"]["net"] = _ok(fils, base_conf, _amount_source(boxes, raw, page))
+        out["fields"]["net"] = _located(fils, base_conf, _amount_source(boxes, raw, page))
     else:
         out["fields"]["net"] = _missing()
 
@@ -323,7 +344,7 @@ def extract_invoice_fields(
         raw, page = vat_hit
         fils = parse_amount_fils(raw)
         out["vat"] = fils
-        out["fields"]["vat"] = _ok(fils, base_conf, _amount_source(boxes, raw, page))
+        out["fields"]["vat"] = _located(fils, base_conf, _amount_source(boxes, raw, page))
     else:
         out["fields"]["vat"] = _missing()
 
@@ -333,8 +354,8 @@ def extract_invoice_fields(
         out["grand_total"] = fils
         out["gross"] = fils
         src = _amount_source(boxes, raw, page)
-        out["fields"]["grand_total"] = _ok(fils, base_conf, src)
-        out["fields"]["gross"] = _ok(fils, base_conf, src)
+        out["fields"]["grand_total"] = _located(fils, base_conf, src)
+        out["fields"]["gross"] = _located(fils, base_conf, src)
     else:
         out["fields"]["grand_total"] = _missing(0.2)
         out["fields"]["gross"] = _missing(0.2)
