@@ -97,19 +97,37 @@ def classify_document(
         needs = conf < 0.55 or doc_type is None
         return Classification(doc_type, conf, reasons + [reason], needs)
 
+    # Gateway / Stripe may only be obvious from the filename (CSV preset).
     if "balance_history" in lower or ("stripe" in lower and ".csv" in lower):
         return hit("gateway_statement", 0.95, "stripe_csv")
     if "trial balance" in lower or "trial_balance" in lower:
         return hit("trial_balance", 0.9, "trial_balance_keyword")
-    if "credit statement" in lower or "credit card" in lower or "card statement" in lower:
-        return hit("card_statement", 0.85, "card_keyword")
     if (
-        "account statement" in lower
-        or IBAN_RE.search(blob)
-        or ("iban" in lower and "opening" in lower)
+        "credit statement" in lower
+        or "credit card" in lower
+        or "card statement" in lower
     ):
-        conf = 0.9 if IBAN_RE.search(blob) else 0.8
-        return hit("bank_statement", conf, "bank_keyword_or_iban")
+        return hit("card_statement", 0.85, "card_keyword")
+
+    # Bank statements: content only (IBAN / opening-closing / txn table) — not filename.
+    body = text or ""
+    body_lower = body.lower()
+    has_iban = IBAN_RE.search(body) is not None
+    has_opening = "opening balance" in body_lower or (
+        "opening" in body_lower and "balance" in body_lower
+    )
+    has_closing = "closing balance" in body_lower
+    has_txn_table = bool(
+        re.search(r"(?m)^\d{1,2}/\d{1,2}/\d{4}\s+.+\s+[\d,]+\.\d{2}\s+(CR|DR)\s*$", body)
+    )
+    if (
+        ("account statement" in body_lower and (has_iban or has_opening or has_txn_table))
+        or (has_iban and has_opening and has_closing)
+        or (has_iban and has_opening and has_txn_table)
+        or ("iban" in body_lower and has_opening and (has_closing or has_txn_table))
+    ):
+        conf = 0.92 if has_iban and (has_opening or has_txn_table) else 0.8
+        return hit("bank_statement", conf, "bank_content_iban_or_balances")
 
     looks_invoice = (
         "tax invoice" in lower

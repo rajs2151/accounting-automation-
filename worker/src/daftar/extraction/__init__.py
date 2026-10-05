@@ -27,6 +27,72 @@ __all__ = [
 ]
 
 
+def _balance_diff(opening: int, closing: int, lines: list[dict[str, Any]]) -> int:
+    """opening + credits - debits - closing; 0 means balanced."""
+    running = opening
+    for ln in lines:
+        debit = int(ln.get("debit_minor") or 0)
+        credit = int(ln.get("credit_minor") or 0)
+        if debit == 0 and credit == 0:
+            amount = int(ln.get("amount_minor") or 0)
+            if ln.get("debit"):
+                debit = amount
+            else:
+                credit = amount
+        running = running + credit - debit
+    return running - closing
+
+
+def _line_debit_credit(ln: dict[str, Any] | Any) -> tuple[int, int]:
+    if isinstance(ln, dict):
+        if "debit_minor" in ln or "credit_minor" in ln:
+            return int(ln.get("debit_minor") or 0), int(ln.get("credit_minor") or 0)
+        amount = int(ln.get("amount_minor") or 0)
+        if ln.get("debit"):
+            return amount, 0
+        return 0, amount
+    amount = int(getattr(ln, "amount_minor", 0) or 0)
+    if getattr(ln, "debit", True):
+        return amount, 0
+    return 0, amount
+
+
+def _stmt_line_dict(ln: Any) -> dict[str, Any]:
+    if isinstance(ln, dict):
+        debit, credit = _line_debit_credit(ln)
+        meta = ln.get("meta") or {}
+        return {
+            "txn_date": ln.get("txn_date") or ln.get("line_date"),
+            "description": ln.get("description") or "",
+            "debit_minor": debit,
+            "credit_minor": credit,
+            "amount_minor": ln.get("amount_minor"),
+            "debit": ln.get("debit"),
+            "running_balance_minor": ln.get("running_balance_minor")
+            if ln.get("running_balance_minor") is not None
+            else meta.get("running_balance_minor"),
+            "reference": ln.get("reference"),
+            "source": ln.get("source") or meta.get("source"),
+            "source_page": ln.get("source_page") or meta.get("source_page"),
+            "source_bbox": ln.get("source_bbox") or meta.get("source_bbox"),
+            "confidence": ln.get("confidence", 0.95),
+        }
+    meta = getattr(ln, "meta", None) or {}
+    debit, credit = _line_debit_credit(ln)
+    return {
+        "txn_date": getattr(ln, "txn_date", None),
+        "description": getattr(ln, "description", "") or "",
+        "debit_minor": debit,
+        "credit_minor": credit,
+        "running_balance_minor": meta.get("running_balance_minor"),
+        "reference": getattr(ln, "reference", None),
+        "source": meta.get("source"),
+        "source_page": meta.get("source_page"),
+        "source_bbox": meta.get("source_bbox"),
+        "confidence": (getattr(ln, "confidence", 100) or 100) / 100.0,
+    }
+
+
 def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) -> None:
     inbox_id = payload.get("inboxItemId") or payload.get("inbox_item_id")
     file_id = payload.get("fileId") or payload.get("file_id")
@@ -278,6 +344,16 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
 
     ext_id = str(uuid4())
     conn.execute("DELETE FROM books_extractions WHERE inbox_item_id = %s", (inbox_id,))
+
+    # Re-upload / re-extract: drop prior statement rows for this inbox item (no duplicate lines).
+    prior_stmts = conn.execute(
+        "SELECT id FROM books_statement_extractions WHERE inbox_item_id = %s",
+        (inbox_id,),
+    ).fetchall()
+    for prow in prior_stmts or []:
+        conn.execute("DELETE FROM books_statement_lines WHERE statement_id = %s", (prow["id"],))
+    conn.execute("DELETE FROM books_statement_extractions WHERE inbox_item_id = %s", (inbox_id,))
+
     conn.execute(
         """
         INSERT INTO books_extractions (
@@ -299,56 +375,173 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
         ),
     )
 
-    if doc_type in {"bank_statement", "card_statement", "gateway_statement"} and parsed:
-        stmt_id = str(uuid4())
-        opening = parsed.extras.get("opening_minor") if parsed.extras else None
-        closing = parsed.extras.get("closing_minor") if parsed.extras else None
-        conn.execute(
-            """
-            INSERT INTO books_statement_extractions (
-              id, client_id, file_id, inbox_item_id, bank_name, currency,
-              opening_balance_minor, closing_balance_minor, status, validation_flags
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-            """,
-            (
-                stmt_id,
-                client_id,
-                file_id,
-                inbox_id,
-                parsed.party,
-                parsed.currency or "AED",
-                opening,
-                closing,
-                "needs_review",
-                json.dumps(flags),
-            ),
-        )
-        running = opening or 0
-        for i, ln in enumerate(parsed.lines):
-            debit = ln.amount_minor if ln.debit else 0
-            credit = 0 if ln.debit else ln.amount_minor
-            running = running + credit - debit
-            conn.execute(
-                """
-                INSERT INTO books_statement_lines (
-                  statement_id, client_id, line_date, description, debit_minor, credit_minor,
-                  running_balance_minor, reference, currency, confidence, sort_index
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    stmt_id,
-                    client_id,
-                    ln.txn_date,
-                    ln.description,
-                    debit,
-                    credit,
-                    running,
-                    ln.reference,
-                    ln.currency,
-                    (ln.confidence or 100) / 100.0,
-                    i,
-                ),
-            )
+    if doc_type in {"bank_statement", "card_statement", "gateway_statement"}:
+        extras = (parsed.extras if parsed else None) or {}
+        accounts = extras.get("accounts") if extras else None
+        # Fallback: classify said bank but no parser matched (or wrong parser) — parse raw text.
+        if doc_type == "bank_statement" and not accounts:
+            try:
+                from daftar.parsers.bank_statement_pdf import parse_bank_statement_text
+
+                accounts = parse_bank_statement_text(raw_text, word_boxes)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("bank_statement_fallback_failed: %s", exc)
+                accounts = None
+        if not accounts and parsed:
+            accounts = [
+                {
+                    "iban": extras.get("iban"),
+                    "bank_name": parsed.party,
+                    "period_from": extras.get("period_from"),
+                    "period_to": extras.get("period_to"),
+                    "opening_minor": extras.get("opening_minor"),
+                    "closing_minor": extras.get("closing_minor"),
+                    "balances_found": extras.get("opening_minor") is not None
+                    and extras.get("closing_minor") is not None,
+                    "has_own_activity_block": extras.get("opening_minor") is not None
+                    and extras.get("closing_minor") is not None,
+                    "lines": [_stmt_line_dict(ln) for ln in parsed.lines],
+                    "currency": parsed.currency or "AED",
+                }
+            ]
+        if accounts:
+            flags.append(f"statement_count:{len(accounts)}")
+            for acct in accounts:
+                stmt_id = str(uuid4())
+                balances_found = bool(
+                    acct.get("balances_found", acct.get("has_own_activity_block", False))
+                )
+                opening = acct.get("opening_minor")
+                closing = acct.get("closing_minor")
+                raw_lines = list(acct.get("lines") or [])
+                acct_lines = [_stmt_line_dict(ln) for ln in raw_lines]
+                stmt_flags = list(flags)
+                opening_val: int | None = None
+                closing_val: int | None = None
+                stmt_status = "needs_review"
+
+                if not balances_found or opening is None or closing is None:
+                    stmt_flags.append("balances_not_found")
+                    # Never invent 0/0 for missing printed balances.
+                    opening_val = None
+                    closing_val = None
+                else:
+                    opening_val = int(opening)
+                    closing_val = int(closing)
+                    diff = _balance_diff(opening_val, closing_val, acct_lines)
+                    if diff == 0:
+                        stmt_flags.append("balance_ok")
+                        stmt_status = "ready"
+                    else:
+                        stmt_flags.append("closing_mismatch")
+                        stmt_flags.append(f"balance_diff:{diff}")
+                        stmt_status = "needs_review"
+
+                conn.execute(
+                    """
+                    INSERT INTO books_statement_extractions (
+                      id, client_id, file_id, inbox_item_id, account_label, iban, bank_name, currency,
+                      period_from, period_to, opening_balance_minor, closing_balance_minor,
+                      status, validation_flags
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    """,
+                    (
+                        stmt_id,
+                        client_id,
+                        file_id,
+                        inbox_id,
+                        acct.get("bank_name"),
+                        acct.get("iban"),
+                        acct.get("bank_name"),
+                        acct.get("currency") or (parsed.currency if parsed else None) or "AED",
+                        acct.get("period_from"),
+                        acct.get("period_to"),
+                        opening_val,
+                        closing_val,
+                        stmt_status,
+                        json.dumps(stmt_flags),
+                    ),
+                )
+
+                # Dedupe identical lines within this statement (date+desc+debit+credit+running).
+                seen_keys: set[str] = set()
+                sort_i = 0
+                running = int(opening_val or 0)
+                for ln in acct_lines:
+                    debit = int(ln.get("debit_minor") or 0)
+                    credit = int(ln.get("credit_minor") or 0)
+                    rb = ln.get("running_balance_minor")
+                    if rb is None and opening_val is not None:
+                        running = running + credit - debit
+                        rb = running
+                    key = "|".join(
+                        [
+                            str(ln.get("txn_date") or ""),
+                            str(ln.get("description") or ""),
+                            str(debit),
+                            str(credit),
+                            str(rb if rb is not None else ""),
+                        ]
+                    )
+                    if key in seen_keys:
+                        stmt_flags.append("duplicate_line_skipped")
+                        continue
+                    seen_keys.add(key)
+
+                    source_bbox = ln.get("source_bbox")
+                    source = ln.get("source")
+                    if source_bbox is None and isinstance(source, dict):
+                        source_bbox = {
+                            "page": source.get("page"),
+                            "bbox": source.get("bbox"),
+                        }
+                    elif source_bbox is not None and not isinstance(source_bbox, dict):
+                        source_bbox = {
+                            "page": ln.get("source_page"),
+                            "bbox": source_bbox,
+                        }
+                    elif source_bbox is None and ln.get("source_page") is not None:
+                        source_bbox = {"page": ln.get("source_page"), "bbox": None}
+
+                    conf = ln.get("confidence")
+                    if conf is None:
+                        conf = 0.95
+                    elif isinstance(conf, int) and conf > 1:
+                        conf = conf / 100.0
+
+                    conn.execute(
+                        """
+                        INSERT INTO books_statement_lines (
+                          statement_id, client_id, line_date, description, debit_minor, credit_minor,
+                          running_balance_minor, reference, currency, source_bbox, confidence, sort_index
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+                        """,
+                        (
+                            stmt_id,
+                            client_id,
+                            ln.get("txn_date"),
+                            ln.get("description") or "",
+                            debit,
+                            credit,
+                            rb,
+                            ln.get("reference"),
+                            acct.get("currency") or (parsed.currency if parsed else None) or "AED",
+                            json.dumps(source_bbox) if source_bbox is not None else None,
+                            conf,
+                            sort_i,
+                        ),
+                    )
+                    sort_i += 1
+
+                if "duplicate_line_skipped" in stmt_flags:
+                    conn.execute(
+                        """
+                        UPDATE books_statement_extractions
+                        SET validation_flags = %s::jsonb, updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (json.dumps(stmt_flags), stmt_id),
+                    )
 
     conn.execute(
         """

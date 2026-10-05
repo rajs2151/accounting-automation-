@@ -51,12 +51,14 @@ def register_builtin_parsers() -> list[DocumentParser]:
     from daftar.parsers.invoice_generic import InvoiceGenericParser
     from daftar.parsers.bank_uae_a import BankUaeAParser
     from daftar.parsers.bank_uae_b import BankUaeBParser
+    from daftar.parsers.bank_statement_pdf import BankStatementPdfParser
     from daftar.parsers.card_generic import CardGenericParser
     from daftar.parsers.stripe_balance_history import StripeBalanceHistoryParser
     from daftar.parsers.gateway_pdf_generic import GatewayPdfGenericParser
 
     return [
         StripeBalanceHistoryParser(),
+        BankStatementPdfParser(),
         BankUaeAParser(),
         BankUaeBParser(),
         CardGenericParser(),
@@ -67,8 +69,10 @@ def register_builtin_parsers() -> list[DocumentParser]:
 
 def pick_parser(filename: str, mime: str, content: bytes, parsers: list[DocumentParser] | None = None):
     parsers = parsers or register_builtin_parsers()
+    # PDFs often compress text streams; give can_parse enough bytes to open.
+    sample = content if len(content) <= 256_000 else content[:256_000]
     ranked = sorted(
-        ((p.can_parse(filename, mime, content[:8192]), p) for p in parsers),
+        ((p.can_parse(filename, mime, sample), p) for p in parsers),
         key=lambda item: item[0],
         reverse=True,
     )
