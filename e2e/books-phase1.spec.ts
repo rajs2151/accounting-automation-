@@ -101,6 +101,14 @@ async function insertWorkerShapedExtraction(args: {
         status: "ok",
         source: { page: 1, bbox: [400, 240, 460, 254] },
       },
+      _line_items: [
+        {
+          description: "Professional services",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
     };
     await admin.query(`DELETE FROM books_extractions WHERE inbox_item_id = $1`, [
       args.inboxItemId,
@@ -181,6 +189,29 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Parties" })).toBeVisible();
   await expect(page.getByText("Oasis Retail LLC")).toBeVisible({ timeout: 15000 });
 
+  // UI-1 shell: searchable company switcher, period Select, Ctrl+K search focus
+  await page.getByTestId("books-company-switcher").click();
+  await page.getByPlaceholder("Search companies…").fill("Gulf");
+  await page.getByTestId("company-option-e1000001-0000-4000-8000-000000000002").click();
+  await expect(page.getByTestId("books-company-switcher")).toContainText(/Gulf Crest/i, {
+    timeout: 15000,
+  });
+  await page.getByTestId("books-company-switcher").click();
+  await page.getByPlaceholder("Search companies…").fill("Desert");
+  await page.getByTestId("company-option-e1000001-0000-4000-8000-000000000001").click();
+  await expect(page.getByTestId("books-company-switcher")).toContainText(/Desert Falcon/i, {
+    timeout: 15000,
+  });
+
+  const periodTrigger = page.getByTestId("topbar-period");
+  await expect(periodTrigger).toBeVisible();
+  await periodTrigger.click();
+  await page.keyboard.press("Escape");
+
+  await page.getByTestId("topbar-search").blur();
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("topbar-search")).toBeFocused();
+
   await page.goto("/books/sales");
   await expect(page.getByRole("heading", { name: "Sales invoices" })).toBeVisible();
   await expect(page.getByText("Upload Invoices")).toBeVisible();
@@ -195,6 +226,7 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
 
   await page.goto("/books/expenses");
   await expect(page.getByText(/Coming in Phase 3/i)).toBeVisible();
+  await expect(page.getByText("(Phase 3)")).toHaveCount(0);
 
   await page.goto("/books/inbox");
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();
@@ -248,15 +280,25 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
 
   await page.goto(`/books/inbox/${inboxId}`);
   await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("review-field-invoice_no")).toContainText("INV-SYN-002");
+  await expect(page.getByTestId("review-field-subtotal")).toContainText("100.00");
+  await expect(page.getByTestId("review-field-vat_total")).toContainText("5.00");
+  await expect(page.getByTestId("review-field-grand_total")).toContainText("105.00");
+  await expect(page.getByTestId("review-field-invoice_date")).toContainText("15/05/2026");
+  // Read-first → click to edit exposes field-* input with the same value.
+  await page.getByTestId("review-field-invoice_no").click();
   await expect(page.getByTestId("field-invoice_no")).toHaveValue("INV-SYN-002");
-  await expect(page.getByTestId("field-subtotal")).toHaveValue("100.00");
-  await expect(page.getByTestId("field-vat_total")).toHaveValue("5.00");
-  await expect(page.getByTestId("field-grand_total")).toHaveValue("105.00");
-  await expect(page.getByTestId("field-invoice_date")).toHaveValue("15/05/2026");
+  await page.getByTestId("field-invoice_no").fill("INV-SYN-002-EDIT");
+  await page.getByTestId("field-invoice_no").press("Enter");
+  await expect(page.getByTestId("review-field-invoice_no")).toContainText("INV-SYN-002-EDIT");
   await expect(page.getByTestId("review-file-meta")).toContainText("invoice_02.pdf");
   const preview = page.getByTestId("review-file-pdf").or(page.getByTestId("review-file-image"));
   await expect(preview).toBeVisible({ timeout: 20000 });
   await expect(page.getByTestId("validation-flags")).toContainText(/balanced/i);
+  await expect(page.getByTestId("totals-panel")).toBeVisible();
+  await expect(page.getByTestId("totals-balance-badge")).toContainText(/Balanced/i);
+  await expect(page.getByTestId("vat-by-code-SR")).toContainText(/SR 5% on 100\.00 = 5\.00/);
+  await expect(page.getByTestId("confirm-fields")).toBeVisible();
   await savePhase1("review-split-view.png", await page.screenshot({ fullPage: true }));
   await savePhase1("review-uploaded-invoice-02.png", await page.screenshot({ fullPage: true }));
 
@@ -394,12 +436,22 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
       })
       .toBe(widthBefore);
 
-    await page.getByTestId("field-grand_total").click();
+    // UI-3: hover total → page 2 + labelled chip containing the total.
+    await page.getByTestId("review-field-grand_total").hover();
     await expect(page.getByTestId("review-page-indicator")).toHaveText("2 / 2", {
       timeout: 10000,
     });
     await expect(page.getByTestId("bbox-grand_total")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("source-highlight")).toContainText(/105\.00/);
     await expect(page.getByTestId("location-missing-currency")).toBeVisible();
+
+    // Queue next: newest 2-page doc → older needs-review in the same company list.
+    await expect(page.getByTestId("review-queue-next")).toBeEnabled();
+    const beforeUrl = page.url();
+    await page.getByTestId("review-queue-next").click();
+    await expect.poll(() => page.url()).not.toBe(beforeUrl);
+    await expect(page).toHaveURL(/\/books\/inbox\/[0-9a-f-]+/i);
+    await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
   }
 
   const list = await page.request.get("/api/books/statements");
@@ -410,15 +462,28 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
 
   await page.goto(`/books/statements/${STMT_BALANCED}`);
   await expect(page.getByTestId("statement-review")).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId("statement-account")).not.toHaveValue("—");
-  await expect(page.getByTestId("statement-iban")).toHaveValue(/AE07/);
-  await expect(page.locator('input[value="CLIENT RECEIPT"]')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId("statement-balance-status")).toContainText("OK");
+  await expect(page.getByTestId("statement-account")).not.toHaveText("—");
+  await expect(page.getByTestId("statement-iban")).toContainText(/AE07 \*{4} 3456/);
+  await expect(page.getByTestId("statement-currency")).toHaveText("AED");
+  await expect(page.getByText("CLIENT RECEIPT")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("statement-balance-status")).toContainText("Balanced");
   await expect(page.getByTestId("rb-check-0")).toContainText("✓");
+
+  // Edit opening → Off by; restore → Balanced again.
+  const opening = page.getByTestId("statement-opening");
+  await opening.click();
+  await page.getByTestId("statement-opening").fill("999.00");
+  await page.getByTestId("statement-opening").press("Enter");
+  await expect(page.getByTestId("statement-balance-status")).toContainText(/Off by/);
+  await page.getByTestId("statement-opening").click();
+  await page.getByTestId("statement-opening").fill("1,000.00");
+  await page.getByTestId("statement-opening").press("Enter");
+  await expect(page.getByTestId("statement-balance-status")).toContainText("Balanced");
+
   await savePhase1("statement-review.png", await page.screenshot({ fullPage: true }));
 
   await page.goto(`/books/statements/${STMT_DROPPED}`);
-  await expect(page.locator('input[value*="CARD PAYMENT"]')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(/CARD PAYMENT/)).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId("rb-check-1")).toContainText("✗");
   await savePhase1("statement-review-dropped.png", await page.screenshot({ fullPage: true }));
 
@@ -620,7 +685,7 @@ test("phase1: upload bank statement from /books/statements", async ({ page }) =>
   const row = page.getByTestId(`statement-row-${stmtId}`);
   await expect(row).toContainText(/bank_a/);
   await expect(row).toContainText("2"); // line count
-  await expect(page.getByTestId(`balance-check-${stmtId}`)).toContainText(/ok/i);
+  await expect(page.getByTestId(`balance-check-${stmtId}`)).toContainText(/Balanced|ok/i);
   await expect(row).toContainText(/AE07/);
   await expect(row).toContainText("1,000.00");
   await expect(row).toContainText("1,300.00");
@@ -666,7 +731,7 @@ test("phase1: upload bill → approve → journal visible", async ({ page, conte
   await expect(page.getByTestId("ap-kpi-row")).toBeVisible({ timeout: 15000 });
   await page.getByRole("button", { name: "Review" }).first().click();
   await expect(page.getByTestId("document-review-panels")).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId("totals-panel")).toBeVisible();
+  await expect(page.getByTestId("document-totals-panel")).toBeVisible();
   await expect(page.getByTestId("journal-preview-panel")).toBeVisible();
   await expect(page.getByTestId("journal-preview-balance")).toContainText(/Balanced/i);
 
