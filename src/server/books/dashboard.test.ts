@@ -7,12 +7,8 @@ import test from "node:test";
 import pg from "pg";
 
 import { materializeBooksBankTransactions } from "@/server/books/bank-transactions";
-import {
-  getBooksMonthChecklist,
-  listBooksIssues,
-  setClientVatStagger,
-  vatPeriodForMonth,
-} from "@/server/books/dashboard";
+import { setCompanyVatSettings } from "@/server/books/company-vat-settings";
+import { getBooksMonthChecklist, listBooksIssues, vatPeriodForMonth } from "@/server/books/dashboard";
 import { createBooksDocument } from "@/server/books/documents";
 import { createBooksParty } from "@/server/books/parties";
 import { createTestCompany, type TestCompany } from "@/server/books/test-company";
@@ -226,18 +222,18 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
 
     // VAT stagger: admin only, audited; due date follows the stagger.
     await assert.rejects(
-      setClientVatStagger(OMAR, clientId, { frequency: "quarterly", periodEndMonth: 3 }),
-      /vat_stagger_requires_admin/,
+      setCompanyVatSettings(OMAR, clientId, { vatReturnFrequency: "quarterly", vatPeriodEndMonth: 3 }),
+      /vat_settings_require_admin/,
     );
     await admin.query(
       `INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
       [RAJ, clientId],
     );
     await assert.rejects(
-      setClientVatStagger(RAJ, clientId, { frequency: "quarterly", periodEndMonth: 13 }),
+      setCompanyVatSettings(RAJ, clientId, { vatReturnFrequency: "quarterly", vatPeriodEndMonth: 13 }),
       /vat_stagger_invalid/,
     );
-    await setClientVatStagger(RAJ, clientId, { frequency: "quarterly", periodEndMonth: 3 });
+    await setCompanyVatSettings(RAJ, clientId, { vatReturnFrequency: "quarterly", vatPeriodEndMonth: 3 });
     const withVat = await getBooksMonthChecklist(OMAR, clientId, { periodId: may, today: "2026-07-01" });
     assert.deepEqual(withVat.periodStatus.vat, {
       set: true,
@@ -248,11 +244,11 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
       daysUntilDue: 27,
     });
     const audit = await admin.query(
-      `SELECT after_json FROM books_audit_events WHERE client_id = $1 AND action = 'set_vat_stagger'`,
+      `SELECT after_json FROM books_audit_events WHERE client_id = $1 AND action = 'set_vat_settings'`,
       [clientId],
     );
     assert.equal(audit.rowCount, 1);
-    assert.equal(audit.rows[0].after_json.vat_period_end_month, 3);
+    assert.equal(audit.rows[0].after_json.vatPeriodEndMonth, 3);
 
     await admin.query(`UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`, [may]);
     const locked = await getBooksMonthChecklist(OMAR, clientId, { periodId: may });

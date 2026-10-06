@@ -1,6 +1,25 @@
 # VAT 201 by emirate — design note (P2B-2)
 
-Status: data capture shipped (db/51, `src/server/books/place-of-supply.ts`). The VAT 201 report itself is **not** built yet.
+Status: data capture shipped (db/51, db/53, `src/server/books/place-of-supply.ts`). Owner decisions of
+2026-10-06 applied (see "Decisions" below).
+
+## Decisions (owner, 2026-10-06)
+
+1. **Emirate rule = by supply type**, kept in one function, `decidePlaceOfSupply`. The owner will confirm it
+   with a tax adviser; change it only there, then run the admin re-apply.
+   - Sales: services → the company's own establishment emirate (`clients.establishment_emirate`, set in
+     Settings); goods → the customer's (delivery) emirate.
+   - Purchases: services → the supplier's emirate; goods → delivered to us → the company's emirate.
+   - Foreign counterparty on the party side → `OUTSIDE_UAE`.
+   - Goods vs services per line: `inventory`/`asset` lines, or revenue on a `product` account (4200) = goods;
+     disbursements = no supply; everything else = services. A document mixing goods and services has no single
+     emirate → gap (set an override). A document with no VAT-able lines → `not_applicable` (never a gap).
+   - The draft override (reason required, audited) stays. `reapplyPlaceOfSupplyRule` (admin, audited) re-derives
+     every non-override document, posted included, after a rule or company-emirate change.
+2. **Approve never blocks** on a missing emirate. **VAT return generation blocks** while the gap list for the
+   return period is non-empty.
+3. VAT stagger and establishment emirate are admin-only Settings fields.
+4. VAT 201 box mapping fixed in db/54 (ZR → 4, EX → 5, SR/RC by direction).
 
 ## Why
 
@@ -17,11 +36,12 @@ On `books_documents` (sales invoices, purchase bills, credit notes, debit notes)
 | Column | Meaning |
 |---|---|
 | `place_of_supply` | One of the 7 emirates, `OUTSIDE_UAE`, or NULL (unknown) |
-| `place_of_supply_source` | `party` (from party master) · `original` (note inherits its invoice/bill) · `override` · `missing` |
+| `place_of_supply_source` | `party` · `company` · `original` (note inherits its invoice/bill) · `override` · `missing` · `not_applicable` |
+| `supply_type` | `goods` · `services` · `mixed` · `none` (derived from the lines) |
 | `place_of_supply_reason` | Required when source = `override` (DB check) |
 
 Rules (enforced in code + DB checks):
-- Set from the party at create and refreshed at approve. Once posted the value is frozen; a correction means void and re-issue.
+- Decided by the rule at create and refreshed at approve. Once posted, only the admin re-apply changes it (audited).
 - Party `country <> 'AE'` → `OUTSIDE_UAE`.
 - Credit/debit notes take their original's value, so the adjustment lands in the same emirate box as the supply it corrects.
 - Override: draft only, reason required, written to `books_audit_events` (`set_place_of_supply`, before/after).

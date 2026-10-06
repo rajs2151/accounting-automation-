@@ -55,7 +55,8 @@ const MESSAGES: Record<string, string> = {
   place_of_supply_reason_required: "Give a reason for changing the place of supply.",
   place_of_supply_not_applicable: "Place of supply applies only to invoices, bills and notes.",
   vat_stagger_invalid: "Choose monthly, or quarterly with the month a quarter ends.",
-  vat_stagger_requires_admin: "Only an admin can change the VAT return period.",
+  vat_settings_require_admin: "Only an admin can change the company's VAT settings.",
+  place_of_supply_reapply_requires_admin: "Only an admin can re-apply the place-of-supply rule.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

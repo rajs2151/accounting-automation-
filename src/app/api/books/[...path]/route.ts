@@ -121,13 +121,14 @@ import {
   createReceiptOrPayment,
   getPartyAdvanceBalance,
 } from "@/server/books/settlements";
-import { listPlaceOfSupplyGaps, setDocumentPlaceOfSupply } from "@/server/books/place-of-supply";
-import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
 import {
-  getBooksMonthChecklist,
-  listBooksIssues,
-  setClientVatStagger,
-} from "@/server/books/dashboard";
+  listPlaceOfSupplyGaps,
+  reapplyPlaceOfSupplyRule,
+  setDocumentPlaceOfSupply,
+} from "@/server/books/place-of-supply";
+import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
+import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/company-vat-settings";
+import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -320,6 +321,9 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
+      return NextResponse.json(await getCompanyVatSettings(session.userId, session.clientId));
     }
     if (path[0] === "dashboard" && path.length === 1) {
       return NextResponse.json(
@@ -782,14 +786,28 @@ export async function POST(request: Request, ctx: Ctx) {
         }),
       );
     }
-    if (path[0] === "company" && path[1] === "vat-stagger" && path.length === 2) {
+    if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
       return NextResponse.json(
-        await setClientVatStagger(session.userId, session.clientId, {
-          frequency:
-            body.frequency === "monthly" || body.frequency === "quarterly" ? body.frequency : null,
-          periodEndMonth: body.periodEndMonth == null ? null : Number(body.periodEndMonth),
+        await setCompanyVatSettings(session.userId, session.clientId, {
+          establishmentEmirate:
+            body.establishmentEmirate === undefined ? undefined : (body.establishmentEmirate as string | null),
+          vatReturnFrequency:
+            body.vatReturnFrequency === undefined
+              ? undefined
+              : body.vatReturnFrequency === "monthly" || body.vatReturnFrequency === "quarterly"
+                ? body.vatReturnFrequency
+                : null,
+          vatPeriodEndMonth:
+            body.vatPeriodEndMonth === undefined
+              ? undefined
+              : body.vatPeriodEndMonth == null
+                ? null
+                : Number(body.vatPeriodEndMonth),
         }),
       );
+    }
+    if (path[0] === "place-of-supply" && path[1] === "reapply" && path.length === 2) {
+      return NextResponse.json(await reapplyPlaceOfSupplyRule(session.userId, session.clientId));
     }
     if (path[0] === "documents" && path[2] === "place-of-supply" && path.length === 3) {
       return NextResponse.json(

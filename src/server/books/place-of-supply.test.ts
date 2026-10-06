@@ -1,11 +1,13 @@
 /**
- * P2B-2: posted sales/purchase documents record the place of supply (emirate) from the party master,
- * or an audited document-level override, so a future VAT 201 can group VAT by emirate.
+ * P2B-2 / P2B-5: posted sales/purchase documents record a place of supply (emirate) for VAT 201
+ * grouping. Rule (owner 2026-10-06): services → supplier's establishment emirate (sales: the company),
+ * goods → delivery emirate (sales: the customer). Draft override with reason, audited.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 
+import { setCompanyVatSettings } from "@/server/books/company-vat-settings";
 import {
   approveAndPostBooksDocument,
   createBooksDocument,
@@ -13,16 +15,21 @@ import {
 } from "@/server/books/documents";
 import { createBooksParty, updateBooksParty } from "@/server/books/parties";
 import {
+  decidePlaceOfSupply,
+  documentSupplyType,
+  lineSupplyType,
   listPlaceOfSupplyGaps,
   normalizeEmirate,
   normalizePlaceOfSupply,
   placeOfSupplyFromParty,
+  reapplyPlaceOfSupplyRule,
   setDocumentPlaceOfSupply,
 } from "@/server/books/place-of-supply";
-import { createTestCompany } from "@/server/books/test-company";
+import { createTestCompany, type TestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
+const RAJ = "77777777-7777-4777-8777-777777777777";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -38,10 +45,10 @@ async function withAdmin(t: test.TestContext) {
   }
   const ready = await admin.query(
     `SELECT 1 FROM information_schema.columns
-     WHERE table_name = 'books_documents' AND column_name = 'place_of_supply'`,
+     WHERE table_name = 'books_documents' AND column_name = 'supply_type'`,
   );
   if (!ready.rowCount) {
-    t.skip("db/51 not migrated");
+    t.skip("db/53 not migrated");
     await admin.end();
     return null;
   }
@@ -52,13 +59,13 @@ function stamp() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const SR_LINE: DocLineInput[] = [
+const SERVICE: DocLineInput[] = [
   { description: "Service", lineKind: "revenue", vatCode: "SR", netMinor: 100000, vatMinor: 5000 },
 ];
 
 async function pos(admin: pg.Client, id: string) {
   const r = await admin.query(
-    `SELECT place_of_supply, place_of_supply_source, place_of_supply_reason, status
+    `SELECT place_of_supply, place_of_supply_source, place_of_supply_reason, supply_type, status
      FROM books_documents WHERE id = $1`,
     [id],
   );
@@ -66,8 +73,59 @@ async function pos(admin: pg.Client, id: string) {
     place_of_supply: string | null;
     place_of_supply_source: string | null;
     place_of_supply_reason: string | null;
+    supply_type: string | null;
     status: string;
   };
+}
+
+/** Company in Dubai (via the admin settings API). */
+async function dubaiCompany(admin: pg.Client, label: string) {
+  const company = await createTestCompany(admin, label);
+  await admin.query(
+    `INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+    [RAJ, company.clientId],
+  );
+  await setCompanyVatSettings(RAJ, company.clientId, { establishmentEmirate: "dxb" });
+  return company;
+}
+
+async function party(
+  company: TestCompany,
+  partyType: "customer" | "supplier",
+  name: string,
+  emirate: string | null,
+  trn: string | null,
+  country = "AE",
+) {
+  const p = await createBooksParty(OMAR, company.clientId, {
+    partyType,
+    name: `P2B5 ${name} ${stamp()}`,
+    trn,
+    emirate,
+    country,
+    force: true,
+  });
+  return String(p.id);
+}
+
+async function doc(
+  company: TestCompany,
+  body: {
+    docType: "sales_invoice" | "purchase_bill" | "credit_note" | "debit_note";
+    partyId: string;
+    lines: DocLineInput[];
+    originalDocumentId?: string;
+    placeOfSupply?: string;
+    placeOfSupplyReason?: string;
+  },
+) {
+  const d = await createBooksDocument(OMAR, company.clientId, {
+    issueDate: "2026-05-10",
+    periodId: company.periods["May 2026"],
+    documentNumber: `POS-${stamp()}`,
+    ...body,
+  });
+  return String(d.id);
 }
 
 test("P2B-2: emirate normalisation and party → place of supply", () => {
@@ -78,250 +136,255 @@ test("P2B-2: emirate normalisation and party → place of supply", () => {
   assert.equal(normalizeEmirate("Muscat"), null);
   assert.equal(normalizeEmirate(""), null);
   assert.equal(normalizePlaceOfSupply("outside uae"), "OUTSIDE_UAE");
-  assert.deepEqual(placeOfSupplyFromParty({ country: "AE", emirate: "shj" }), {
-    placeOfSupply: "Sharjah",
-    source: "party",
-  });
   assert.deepEqual(placeOfSupplyFromParty({ country: "US", emirate: null }), {
     placeOfSupply: "OUTSIDE_UAE",
     source: "party",
   });
-  assert.deepEqual(placeOfSupplyFromParty({ country: "AE", emirate: null }), {
-    placeOfSupply: null,
-    source: "missing",
-  });
 });
 
-test("P2B-2: posted documents snapshot the party emirate; later party edits do not change them", async (t) => {
+test("P2B-5: the rule — services → supplier's establishment, goods → delivery", () => {
+  assert.equal(lineSupplyType("revenue", "service"), "services");
+  assert.equal(lineSupplyType("revenue", "product"), "goods");
+  assert.equal(lineSupplyType("inventory", null), "goods");
+  assert.equal(lineSupplyType("asset", null), "goods");
+  assert.equal(lineSupplyType("expense", null), "services");
+  assert.equal(lineSupplyType("disbursement", null), null);
+  assert.equal(documentSupplyType(["services", null]), "services");
+  assert.equal(documentSupplyType(["goods", "services"]), "mixed");
+  assert.equal(documentSupplyType([null]), "none");
+
+  const sharjahCustomer = { country: "AE", emirate: "Sharjah" };
+  const cases: Array<[Parameters<typeof decidePlaceOfSupply>[0], string | null, string]> = [
+    [{ side: "sales", supplyType: "services", companyEmirate: "Dubai", party: sharjahCustomer }, "Dubai", "company"],
+    [{ side: "sales", supplyType: "goods", companyEmirate: "Dubai", party: sharjahCustomer }, "Sharjah", "party"],
+    [{ side: "sales", supplyType: "goods", companyEmirate: "Dubai", party: { country: "OM" } }, "OUTSIDE_UAE", "party"],
+    [{ side: "sales", supplyType: "services", companyEmirate: null, party: sharjahCustomer }, null, "missing"],
+    [{ side: "purchases", supplyType: "services", companyEmirate: "Dubai", party: sharjahCustomer }, "Sharjah", "party"],
+    [{ side: "purchases", supplyType: "goods", companyEmirate: "Dubai", party: sharjahCustomer }, "Dubai", "company"],
+    [{ side: "purchases", supplyType: "services", companyEmirate: "Dubai", party: { country: "US" } }, "OUTSIDE_UAE", "party"],
+    [{ side: "sales", supplyType: "mixed", companyEmirate: "Dubai", party: sharjahCustomer }, null, "missing"],
+    [{ side: "sales", supplyType: "none", companyEmirate: "Dubai", party: sharjahCustomer }, null, "not_applicable"],
+  ];
+  for (const [args, want, source] of cases) {
+    assert.deepEqual(decidePlaceOfSupply(args), { placeOfSupply: want, source }, JSON.stringify(args));
+  }
+});
+
+test("P2B-5: documents snapshot the rule; posted snapshot frozen; notes inherit", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const company = await createTestCompany(admin, "p2b2-snapshot");
-    const clientId = company.clientId;
-    const periodId = company.periods["May 2026"];
-    const s = stamp();
-    const sharjah = await createBooksParty(OMAR, clientId, {
-      partyType: "customer",
-      name: `P2B2 Sharjah ${s}`,
-      trn: "100000000000021",
-      emirate: "Sharjah",
-      force: true,
-    });
-    const inv = await createBooksDocument(OMAR, clientId, {
+    const company = await dubaiCompany(admin, "p2b5-snapshot");
+    const shj = await party(company, "customer", "Sharjah", "Sharjah", "100000000000051");
+    const supplier = await party(company, "supplier", "Ajman", "ajman", "100000000000052");
+
+    // Services sale → company's Dubai, whatever the customer's emirate.
+    const svc = await doc(company, { docType: "sales_invoice", partyId: shj, lines: SERVICE });
+    let p = await pos(admin, svc);
+    assert.deepEqual([p.place_of_supply, p.place_of_supply_source, p.supply_type], ["Dubai", "company", "services"]);
+
+    // Goods sale (product-sales account 4200) → customer's Sharjah.
+    const goods = await doc(company, {
       docType: "sales_invoice",
-      partyId: String(sharjah.id),
-      issueDate: "2026-05-10",
-      periodId,
-      documentNumber: `POS-SHJ-${s}`,
-      lines: SR_LINE,
+      partyId: shj,
+      lines: [
+        {
+          description: "Laptops",
+          lineKind: "revenue",
+          accountId: company.accountIdByCode["4200"],
+          vatCode: "SR",
+          netMinor: 200000,
+          vatMinor: 10000,
+        },
+      ],
     });
-    assert.equal((await pos(admin, String(inv.id))).place_of_supply, "Sharjah");
-    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
-    await updateBooksParty(OMAR, clientId, String(sharjah.id), { emirate: "Dubai" });
-    const after = await pos(admin, String(inv.id));
-    assert.equal(after.place_of_supply, "Sharjah", "posted snapshot is frozen");
-    assert.equal(after.place_of_supply_source, "party");
+    p = await pos(admin, goods);
+    assert.deepEqual([p.place_of_supply, p.place_of_supply_source, p.supply_type], ["Sharjah", "party", "goods"]);
 
-    // Party with no emirate at draft time, fixed before approve → approve snapshots the fix.
-    const blank = await createBooksParty(OMAR, clientId, {
-      partyType: "supplier",
-      name: `P2B2 Blank ${s}`,
-      trn: "100000000000022",
-      force: true,
-    });
-    const bill = await createBooksDocument(OMAR, clientId, {
+    // Purchases: services → supplier's Ajman; inventory → delivered to us in Dubai.
+    const svcBill = await doc(company, {
       docType: "purchase_bill",
-      partyId: String(blank.id),
-      issueDate: "2026-05-11",
-      periodId,
-      documentNumber: `POS-BLANK-${s}`,
-      lines: [{ description: "Rent", lineKind: "expense", vatCode: "SR", netMinor: 40000, vatMinor: 2000 }],
+      partyId: supplier,
+      lines: [{ description: "Audit", lineKind: "expense", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    assert.equal((await pos(admin, String(bill.id))).place_of_supply_source, "missing");
-    await updateBooksParty(OMAR, clientId, String(blank.id), { emirate: "ajman" });
-    await approveAndPostBooksDocument(LAYLA, clientId, String(bill.id));
-    const billPos = await pos(admin, String(bill.id));
-    assert.equal(billPos.place_of_supply, "Ajman");
-    assert.equal(billPos.place_of_supply_source, "party");
-
-    // Foreign supplier → OUTSIDE_UAE; credit note inherits from its original.
-    const foreign = await createBooksParty(OMAR, clientId, {
-      partyType: "supplier",
-      name: `P2B2 Foreign ${s}`,
-      trn: null,
-      country: "US",
-      force: true,
-    });
-    const rc = await createBooksDocument(OMAR, clientId, {
+    assert.equal((await pos(admin, svcBill)).place_of_supply, "Ajman");
+    const stockBill = await doc(company, {
       docType: "purchase_bill",
-      partyId: String(foreign.id),
-      issueDate: "2026-05-12",
-      periodId,
-      documentNumber: `POS-US-${s}`,
-      lines: [{ description: "Cloud", lineKind: "expense", vatCode: "RC_IN", netMinor: 10000, vatMinor: 500 }],
+      partyId: supplier,
+      lines: [{ description: "Stock", lineKind: "inventory", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
     });
-    assert.equal((await pos(admin, String(rc.id))).place_of_supply, "OUTSIDE_UAE");
+    assert.equal((await pos(admin, stockBill)).place_of_supply, "Dubai");
 
-    const cn = await createBooksDocument(OMAR, clientId, {
+    // Disbursement-only rebill: not a supply → not_applicable (never a gap).
+    const rebill = await doc(company, {
+      docType: "sales_invoice",
+      partyId: shj,
+      lines: [{ description: "Gov fee", lineKind: "disbursement", netMinor: 5000, vatMinor: 0 }],
+    });
+    p = await pos(admin, rebill);
+    assert.deepEqual([p.place_of_supply, p.place_of_supply_source, p.supply_type], [null, "not_applicable", "none"]);
+
+    await approveAndPostBooksDocument(LAYLA, company.clientId, goods);
+    await updateBooksParty(OMAR, company.clientId, shj, { emirate: "Fujairah" });
+    assert.equal((await pos(admin, goods)).place_of_supply, "Sharjah", "posted snapshot is frozen");
+
+    const cn = await doc(company, {
       docType: "credit_note",
-      partyId: String(sharjah.id),
-      issueDate: "2026-05-20",
-      periodId,
-      documentNumber: `POS-CN-${s}`,
-      originalDocumentId: String(inv.id),
-      lines: [{ description: "Discount", lineKind: "revenue", vatCode: "SR", netMinor: 10000, vatMinor: 500 }],
+      partyId: shj,
+      originalDocumentId: goods,
+      lines: [
+        {
+          description: "Return",
+          lineKind: "revenue",
+          accountId: company.accountIdByCode["4200"],
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
     });
-    await approveAndPostBooksDocument(LAYLA, clientId, String(cn.id));
-    const cnPos = await pos(admin, String(cn.id));
-    assert.equal(cnPos.place_of_supply, "Sharjah", "note follows the original, not today's party emirate");
-    assert.equal(cnPos.place_of_supply_source, "original");
+    await approveAndPostBooksDocument(LAYLA, company.clientId, cn);
+    p = await pos(admin, cn);
+    assert.deepEqual([p.place_of_supply, p.place_of_supply_source], ["Sharjah", "original"]);
   } finally {
     await admin.end().catch(() => undefined);
   }
 });
 
-test("P2B-2: document-level override needs a reason, is audited, drafts only", async (t) => {
+test("P2B-5: gaps — company emirate missing, mixed supply; admin re-apply fixes posted documents", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
-    const company = await createTestCompany(admin, "p2b2-override");
+    const company = await createTestCompany(admin, "p2b5-gaps");
     const clientId = company.clientId;
-    const periodId = company.periods["May 2026"];
-    const s = stamp();
-    const dubai = await createBooksParty(OMAR, clientId, {
-      partyType: "customer",
-      name: `P2B2 Dubai ${s}`,
-      trn: "100000000000023",
-      emirate: "Dubai",
-      force: true,
+    await admin.query(
+      `INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [RAJ, clientId],
+    );
+    const customer = await party(company, "customer", "Dubai cust", "Dubai", "100000000000053");
+
+    // No establishment emirate yet → services sale is a gap, but approve still works.
+    const svc = await doc(company, { docType: "sales_invoice", partyId: customer, lines: SERVICE });
+    await approveAndPostBooksDocument(LAYLA, clientId, svc);
+    assert.equal((await pos(admin, svc)).place_of_supply_source, "missing");
+
+    const mixed = await doc(company, {
+      docType: "sales_invoice",
+      partyId: customer,
+      lines: [
+        ...SERVICE,
+        {
+          description: "Hardware",
+          lineKind: "revenue",
+          accountId: company.accountIdByCode["4200"],
+          vatCode: "SR",
+          netMinor: 40000,
+          vatMinor: 2000,
+        },
+      ],
     });
-    const base = {
-      docType: "sales_invoice" as const,
-      partyId: String(dubai.id),
-      issueDate: "2026-05-10",
-      periodId,
-      lines: SR_LINE,
-    };
+    await approveAndPostBooksDocument(LAYLA, clientId, mixed);
+    const rebill = await doc(company, {
+      docType: "sales_invoice",
+      partyId: customer,
+      lines: [{ description: "Gov fee", lineKind: "disbursement", netMinor: 5000, vatMinor: 0 }],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, rebill);
+
+    let gaps = await listPlaceOfSupplyGaps(OMAR, clientId);
+    assert.deepEqual(
+      gaps.map((g) => [g.id, g.why]).sort(),
+      [
+        [mixed, "mixed_supply"],
+        [svc, "company_emirate_missing"],
+      ].sort(),
+    );
+
+    await assert.rejects(reapplyPlaceOfSupplyRule(OMAR, clientId), /reapply_requires_admin/);
+    await setCompanyVatSettings(RAJ, clientId, { establishmentEmirate: "Abu Dhabi" });
+    const re = await reapplyPlaceOfSupplyRule(RAJ, clientId);
+    assert.equal(re.changed, 1, "only the services invoice changes; mixed stays a gap");
+    assert.equal((await pos(admin, svc)).place_of_supply, "Abu Dhabi");
+    gaps = await listPlaceOfSupplyGaps(OMAR, clientId);
+    assert.deepEqual(
+      gaps.map((g) => g.id),
+      [mixed],
+    );
+    const audit = await admin.query(
+      `SELECT before_json, after_json FROM books_audit_events
+       WHERE client_id = $1 AND entity_id = $2 AND action = 'reapply_place_of_supply'`,
+      [clientId, svc],
+    );
+    assert.equal(audit.rowCount, 1);
+    assert.equal(audit.rows[0].before_json.source, "missing");
+    assert.equal(audit.rows[0].after_json.placeOfSupply, "Abu Dhabi");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("P2B-2: document-level override needs a reason, is audited, drafts only, survives approve", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await dubaiCompany(admin, "p2b5-override");
+    const clientId = company.clientId;
+    const customer = await party(company, "customer", "Dubai", "Dubai", "100000000000054");
     await assert.rejects(
-      createBooksDocument(OMAR, clientId, { ...base, documentNumber: `OV0-${s}`, placeOfSupply: "Abu Dhabi" }),
+      doc(company, { docType: "sales_invoice", partyId: customer, lines: SERVICE, placeOfSupply: "Abu Dhabi" }),
       /place_of_supply_reason_required/,
     );
     await assert.rejects(
-      createBooksDocument(OMAR, clientId, {
-        ...base,
-        documentNumber: `OV0b-${s}`,
+      doc(company, {
+        docType: "sales_invoice",
+        partyId: customer,
+        lines: SERVICE,
         placeOfSupply: "Muscat",
         placeOfSupplyReason: "x",
       }),
       /invalid_place_of_supply/,
     );
-
-    const inv = await createBooksDocument(OMAR, clientId, {
-      ...base,
-      documentNumber: `OV1-${s}`,
+    const inv = await doc(company, {
+      docType: "sales_invoice",
+      partyId: customer,
+      lines: SERVICE,
       placeOfSupply: "abu dhabi",
-      placeOfSupplyReason: "Goods delivered to the Abu Dhabi branch",
+      placeOfSupplyReason: "Service supplied from the Abu Dhabi branch",
     });
-    let p = await pos(admin, String(inv.id));
-    assert.equal(p.place_of_supply, "Abu Dhabi");
-    assert.equal(p.place_of_supply_source, "override");
+    let p = await pos(admin, inv);
+    assert.deepEqual([p.place_of_supply, p.place_of_supply_source, p.supply_type], ["Abu Dhabi", "override", "services"]);
 
-    // Clear → back to party; set again via API helper → audited before/after.
-    await setDocumentPlaceOfSupply(OMAR, clientId, String(inv.id), { placeOfSupply: null });
-    assert.equal((await pos(admin, String(inv.id))).place_of_supply, "Dubai");
+    await setDocumentPlaceOfSupply(OMAR, clientId, inv, { placeOfSupply: null });
+    assert.equal((await pos(admin, inv)).place_of_supply, "Dubai", "back to the rule (company emirate)");
     await assert.rejects(
-      setDocumentPlaceOfSupply(OMAR, clientId, String(inv.id), { placeOfSupply: "Fujairah", reason: " " }),
+      setDocumentPlaceOfSupply(OMAR, clientId, inv, { placeOfSupply: "Fujairah", reason: " " }),
       /place_of_supply_reason_required/,
     );
-    await setDocumentPlaceOfSupply(OMAR, clientId, String(inv.id), {
+    await setDocumentPlaceOfSupply(OMAR, clientId, inv, {
       placeOfSupply: "Fujairah",
-      reason: "Service performed at the Fujairah site",
+      reason: "Branch in Fujairah supplies this contract",
     });
     const audit = await admin.query(
       `SELECT before_json, after_json, actor FROM books_audit_events
-       WHERE client_id = $1 AND entity_id = $2 AND action = 'set_place_of_supply'
-       ORDER BY at`,
-      [clientId, inv.id],
+       WHERE client_id = $1 AND entity_id = $2 AND action = 'set_place_of_supply' ORDER BY at`,
+      [clientId, inv],
     );
     assert.equal(audit.rowCount, 2);
     assert.equal(audit.rows[1].before_json.placeOfSupply, "Dubai");
     assert.equal(audit.rows[1].after_json.placeOfSupply, "Fujairah");
-    assert.equal(audit.rows[1].after_json.reason, "Service performed at the Fujairah site");
     assert.equal(String(audit.rows[1].actor), OMAR);
 
-    // Approve keeps the override (party master is not re-applied).
-    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
-    p = await pos(admin, String(inv.id));
+    await approveAndPostBooksDocument(LAYLA, clientId, inv);
+    p = await pos(admin, inv);
     assert.equal(p.place_of_supply, "Fujairah");
-    assert.equal(p.place_of_supply_reason, "Service performed at the Fujairah site");
-
-    // Posted → immutable (correction = void + re-issue).
+    assert.equal(p.place_of_supply_reason, "Branch in Fujairah supplies this contract");
+    // Admin re-apply never touches overrides.
+    await reapplyPlaceOfSupplyRule(RAJ, clientId);
+    assert.equal((await pos(admin, inv)).place_of_supply, "Fujairah");
     await assert.rejects(
-      setDocumentPlaceOfSupply(OMAR, clientId, String(inv.id), { placeOfSupply: "Dubai", reason: "oops" }),
+      setDocumentPlaceOfSupply(OMAR, clientId, inv, { placeOfSupply: "Dubai", reason: "oops" }),
       /not_draft/,
     );
-  } finally {
-    await admin.end().catch(() => undefined);
-  }
-});
-
-test("P2B-2: output VAT groups by emirate; posted documents with no emirate are listed as gaps", async (t) => {
-  const admin = await withAdmin(t);
-  if (!admin) return;
-  try {
-    const company = await createTestCompany(admin, "p2b2-group");
-    const clientId = company.clientId;
-    const periodId = company.periods["May 2026"];
-    const s = stamp();
-    const mk = (name: string, emirate: string | null, trn: string) =>
-      createBooksParty(OMAR, clientId, {
-        partyType: "customer",
-        name: `P2B2 ${name} ${s}`,
-        trn,
-        emirate,
-        force: true,
-      });
-    const dxb = await mk("DXB", "Dubai", "100000000000024");
-    const auh = await mk("AUH", "Abu Dhabi", "100000000000025");
-    const none = await mk("None", null, "100000000000026");
-    const post = async (partyId: string, n: string, net: number) => {
-      const d = await createBooksDocument(OMAR, clientId, {
-        docType: "sales_invoice",
-        partyId,
-        issueDate: "2026-05-15",
-        periodId,
-        documentNumber: `GRP-${n}-${s}`,
-        lines: [{ description: "Svc", lineKind: "revenue", vatCode: "SR", netMinor: net, vatMinor: net / 20 }],
-      });
-      await approveAndPostBooksDocument(LAYLA, clientId, String(d.id));
-      return String(d.id);
-    };
-    await post(String(dxb.id), "1", 100000);
-    await post(String(dxb.id), "2", 20000);
-    await post(String(auh.id), "3", 60000);
-    const gapId = await post(String(none.id), "4", 40000);
-
-    const grouped = await admin.query(
-      `SELECT COALESCE(place_of_supply, '(missing)') AS e, SUM(vat_minor)::bigint AS vat
-       FROM books_documents
-       WHERE client_id = $1 AND doc_type = 'sales_invoice' AND status = 'posted'
-       GROUP BY 1 ORDER BY 1`,
-      [clientId],
-    );
-    assert.deepEqual(
-      grouped.rows.map((r) => [r.e, Number(r.vat)]),
-      [
-        ["(missing)", 2000],
-        ["Abu Dhabi", 3000],
-        ["Dubai", 6000],
-      ],
-    );
-    const gaps = await listPlaceOfSupplyGaps(OMAR, clientId, { from: "2026-05-01", to: "2026-05-31" });
-    assert.deepEqual(
-      gaps.map((g: { id: string }) => g.id),
-      [gapId],
-    );
-    assert.equal(gaps[0].vatMinor, 2000);
   } finally {
     await admin.end().catch(() => undefined);
   }

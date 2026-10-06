@@ -464,9 +464,9 @@ export async function createBooksDocument(userId: string, clientId: string, body
          WHERE id = $1 AND client_id = $2`,
         [id, clientId, posOverride.placeOfSupply, posOverride.reason],
       );
-    } else {
-      await refreshDraftPlaceOfSupply(db, clientId, id);
     }
+    // Keeps an override's emirate; always records the supply type.
+    await refreshDraftPlaceOfSupply(db, clientId, id);
     const posRow = await db.query(
       `SELECT place_of_supply, place_of_supply_source FROM books_documents WHERE id = $1`,
       [id],

@@ -9,12 +9,13 @@ import { withUser } from "@/lib/db";
 import { computeStatementCoverage, normalizeIban } from "@/lib/statement-coverage";
 import { listBooksBankAccounts } from "@/server/books/bank-accounts";
 import { listBankReconciliations } from "@/server/books/bank-recon";
-import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
 import { statementListBalanceCheck } from "@/server/books/statement-extractions";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
-export type VatFrequency = "monthly" | "quarterly";
+import type { VatFrequency } from "@/server/books/company-vat-settings";
+
+export type { VatFrequency };
 
 function iso(v: unknown): string {
   if (v instanceof Date) {
@@ -358,43 +359,4 @@ export async function getBooksMonthChecklist(
     },
     issues: { count: issues.length, href: "/books#issues" },
   };
-}
-
-/** Admin sets the company's VAT return stagger (audited). Pass frequency null to clear. */
-export async function setClientVatStagger(
-  userId: string,
-  clientId: string,
-  body: { frequency: VatFrequency | null; periodEndMonth?: number | null },
-) {
-  return withUser(userId, async (db) => {
-    await assertSyntheticTenant(db, clientId);
-    const role = await db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
-    if (String(role.rows[0]?.role) !== "admin") throw new BooksError("vat_stagger_requires_admin", "forbidden");
-    const freq = body.frequency;
-    if (freq !== null && freq !== "monthly" && freq !== "quarterly") {
-      throw new BooksError("vat_stagger_invalid", "invalid");
-    }
-    const endMonth = freq === "quarterly" ? Number(body.periodEndMonth) : null;
-    if (freq === "quarterly" && !(Number.isInteger(endMonth) && endMonth! >= 1 && endMonth! <= 12)) {
-      throw new BooksError("vat_stagger_invalid", "invalid");
-    }
-    const before = await db.query(
-      `SELECT vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
-      [clientId],
-    );
-    await db.query(
-      `UPDATE clients SET vat_return_frequency = $2, vat_period_end_month = $3 WHERE id = $1`,
-      [clientId, freq, endMonth],
-    );
-    await writeBooksAudit(db, {
-      clientId,
-      actor: userId,
-      action: "set_vat_stagger",
-      entity: "client",
-      entityId: clientId,
-      before: before.rows[0] || null,
-      after: { vat_return_frequency: freq, vat_period_end_month: endMonth },
-    });
-    return { clientId, frequency: freq, periodEndMonth: endMonth };
-  });
 }
