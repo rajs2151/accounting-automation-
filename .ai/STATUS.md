@@ -96,3 +96,4 @@
 - 2026-10-06 | P2A-3 | PASS | books_bank_rules; apply suggestions; preview; create-from-txn
 - 2026-10-06 | P2A-4 | PASS | db/41 payout_group; card 2150 / gateway 1310; e2e Unmatched→RV link; unit 178p/1s e2e 5/5
 - 2026-10-06 | P2A-5 | PASS | ready≠eligible without balance_ok; period picker label; unit+e2e green
+- 2026-10-06 | RPT-1 | PASS (cloud: unit 209/202p/7s, e2e reports+journals 3/3 local) | ReportTable; TB+Ledger+Day Book+Ageing; drill to source; XLSX/CSV/print; owner: old booksAccountLedger double-counts pre-period lines
