@@ -5,7 +5,7 @@ import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
-import { createReceiptOrPayment } from "@/server/books/settlements";
+import { createContra, createReceiptOrPayment } from "@/server/books/settlements";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export type { BooksBankTxnType };
@@ -76,9 +76,33 @@ export type BooksBankTransactionRow = {
   monthKey: string | null;
   openItemId: string | null;
   openItemLabel: string | null;
+  linkedTxnId: string | null;
+  linkedTxnLabel: string | null;
   journalEntryId: string | null;
   entryNo: string | null;
 };
+
+async function hasLinkedTxnColumn(db: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null }> }) {
+  const col = await db.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'books_bank_transactions' AND column_name = 'linked_txn_id'`,
+  );
+  return Boolean(col.rowCount);
+}
+
+function txnAmountMinor(row: { debit_minor?: unknown; credit_minor?: unknown; debitMinor?: unknown; creditMinor?: unknown }) {
+  const debit = Number(row.debit_minor ?? row.debitMinor ?? 0);
+  const credit = Number(row.credit_minor ?? row.creditMinor ?? 0);
+  return Math.max(debit, credit);
+}
+
+function isMoneyOut(row: { debit_minor?: unknown; credit_minor?: unknown }) {
+  return Number(row.debit_minor || 0) > 0;
+}
+
+function isMoneyIn(row: { debit_minor?: unknown; credit_minor?: unknown }) {
+  return Number(row.credit_minor || 0) > 0;
+}
 
 function parseTxnType(raw: unknown): BooksBankTxnType | null {
   if (raw == null || raw === "") return null;
@@ -217,6 +241,17 @@ export async function listBooksBankTransactions(
     await assertSyntheticTenant(db, clientId);
     const status = opts?.status && opts.status !== "all" ? opts.status : null;
     const q = opts?.q?.trim() || null;
+    const hasLink = await hasLinkedTxnColumn(db);
+    const linkSelect = hasLink
+      ? `t.linked_txn_id AS "linkedTxnId",
+              CASE WHEN lt.id IS NULL THEN NULL
+                   ELSE COALESCE(la.code, '') || ' · ' || COALESCE(lt.description, '')
+              END AS "linkedTxnLabel",`
+      : `NULL::uuid AS "linkedTxnId", NULL::text AS "linkedTxnLabel",`;
+    const linkJoin = hasLink
+      ? `LEFT JOIN books_bank_transactions lt ON lt.id = t.linked_txn_id
+       LEFT JOIN books_accounts la ON la.id = lt.account_id`
+      : "";
     const rows = await db.query(
       `SELECT t.id, t.account_id AS "accountId",
               a.code AS "accountCode", a.name AS "accountName",
@@ -230,6 +265,7 @@ export async function listBooksBankTransactions(
               ca.code AS "categoryAccountCode", ca.name AS "categoryAccountName",
               t.note, t.exclude_reason AS "excludeReason",
               t.open_item_id AS "openItemId",
+              ${linkSelect}
               t.journal_entry_id AS "journalEntryId",
               je.entry_no AS "entryNo",
               CASE WHEN oi.id IS NULL THEN NULL
@@ -243,6 +279,7 @@ export async function listBooksBankTransactions(
        LEFT JOIN books_parties p ON p.id = oi.party_id
        LEFT JOIN books_documents d ON d.id = oi.document_id
        LEFT JOIN books_journal_entries je ON je.id = t.journal_entry_id
+       ${linkJoin}
        WHERE t.client_id = $1
          AND ($2::uuid IS NULL OR t.account_id = $2)
          AND ($3::text IS NULL OR t.review_status = $3)
@@ -284,6 +321,8 @@ export async function listBooksBankTransactions(
         monthKey: txnDate ? txnDate.slice(0, 7) : null,
         openItemId: r.openItemId ? String(r.openItemId) : null,
         openItemLabel: r.openItemLabel ? String(r.openItemLabel).trim() : null,
+        linkedTxnId: r.linkedTxnId ? String(r.linkedTxnId) : null,
+        linkedTxnLabel: r.linkedTxnLabel ? String(r.linkedTxnLabel).trim() : null,
         journalEntryId: r.journalEntryId ? String(r.journalEntryId) : null,
         entryNo: r.entryNo != null ? String(r.entryNo) : null,
       };
@@ -347,6 +386,16 @@ export async function updateBooksBankTransaction(
       reviewStatus = "needs_review";
     }
 
+    const typeChangedAwayFromTransfer =
+      body.txnType !== undefined && String(row.txn_type) === "transfer" && txnType !== "transfer";
+    if (typeChangedAwayFromTransfer && row.linked_txn_id && (await hasLinkedTxnColumn(db))) {
+      await db.query(
+        `UPDATE books_bank_transactions SET linked_txn_id = NULL, updated_at = now()
+         WHERE client_id = $1 AND (id = $2 OR id = $3 OR linked_txn_id = $2 OR linked_txn_id = $3)`,
+        [clientId, id, row.linked_txn_id],
+      );
+    }
+
     await db.query(
       `UPDATE books_bank_transactions SET
          txn_type = $3,
@@ -404,7 +453,10 @@ export async function markBooksBankTransactionReviewed(
       throw new BooksError("bank_txn_posted", "conflict");
     }
     if (!row.txn_type) throw new BooksError("txn_type_required", "invalid");
-    if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
+    // Transfers need a counterpart link at post time; category COA is for non-transfer types.
+    if (String(row.txn_type) !== "transfer" && !row.category_account_id) {
+      throw new BooksError("category_account_required", "invalid");
+    }
 
     await db.query(
       `UPDATE books_bank_transactions SET
@@ -448,11 +500,26 @@ export async function excludeBooksBankTransaction(
       throw new BooksError("bank_txn_posted", "conflict");
     }
 
+    const hasLink = await hasLinkedTxnColumn(db);
+    if (hasLink && row.linked_txn_id) {
+      await db.query(
+        `UPDATE books_bank_transactions SET linked_txn_id = NULL, updated_at = now()
+         WHERE client_id = $1 AND (id = $2 OR id = $3 OR linked_txn_id = $2 OR linked_txn_id = $3)`,
+        [clientId, id, row.linked_txn_id],
+      );
+    }
+
     await db.query(
-      `UPDATE books_bank_transactions SET
-         review_status = 'excluded', exclude_reason = $3,
-         reviewed_by = $4, reviewed_at = now(), updated_at = now()
-       WHERE id = $1 AND client_id = $2`,
+      hasLink
+        ? `UPDATE books_bank_transactions SET
+             review_status = 'excluded', exclude_reason = $3,
+             reviewed_by = $4, reviewed_at = now(), updated_at = now(),
+             linked_txn_id = NULL
+           WHERE id = $1 AND client_id = $2`
+        : `UPDATE books_bank_transactions SET
+             review_status = 'excluded', exclude_reason = $3,
+             reviewed_by = $4, reviewed_at = now(), updated_at = now()
+           WHERE id = $1 AND client_id = $2`,
       [id, clientId, excludeReason, userId],
     );
 
@@ -523,6 +590,185 @@ export async function listBooksBankTxnMatchCandidates(
       currency: String(r.currency),
       score: Number(r.score),
     }));
+  });
+}
+
+/** Counterpart transfer candidates: other account, opposite direction, same amount/currency. */
+export async function listBooksBankTxnTransferCandidates(
+  userId: string,
+  clientId: string,
+  txnId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasLinkedTxnColumn(db))) {
+      throw new BooksError("c3_bank_txn_transfer_migration_required", "invalid");
+    }
+    const txn = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    if (!txn.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const row = txn.rows[0];
+    if (String(row.txn_type || "") !== "transfer") return [];
+
+    const amount = txnAmountMinor(row);
+    if (amount <= 0) return [];
+    const wantIn = isMoneyOut(row);
+    const wantOut = isMoneyIn(row);
+    if (!wantIn && !wantOut) return [];
+
+    const rows = await db.query(
+      `SELECT t.id, t.account_id AS "accountId", a.code AS "accountCode", a.name AS "accountName",
+              t.txn_date AS "txnDate", t.description, t.currency,
+              t.debit_minor AS "debitMinor", t.credit_minor AS "creditMinor",
+              t.review_status AS "reviewStatus"
+       FROM books_bank_transactions t
+       JOIN books_accounts a ON a.id = t.account_id
+       WHERE t.client_id = $1
+         AND t.id <> $2
+         AND t.account_id <> $3
+         AND t.txn_type = 'transfer'
+         AND t.linked_txn_id IS NULL
+         AND t.review_status IN ('needs_review', 'ready')
+         AND t.currency = $4
+         AND GREATEST(t.debit_minor, t.credit_minor) = $5
+         AND (
+           ($6::boolean AND t.credit_minor = $5) OR
+           ($7::boolean AND t.debit_minor = $5)
+         )
+       ORDER BY t.txn_date DESC NULLS LAST
+       LIMIT 25`,
+      [
+        clientId,
+        txnId,
+        row.account_id,
+        String(row.currency || "AED"),
+        amount,
+        wantIn,
+        wantOut,
+      ],
+    );
+    return rows.rows.map((r) => ({
+      txnId: String(r.id),
+      accountId: String(r.accountId),
+      accountCode: r.accountCode ? String(r.accountCode) : null,
+      accountName: r.accountName ? String(r.accountName) : null,
+      txnDate: isoDate(r.txnDate),
+      description: String(r.description || ""),
+      currency: String(r.currency || "AED"),
+      debitMinor: Number(r.debitMinor || 0),
+      creditMinor: Number(r.creditMinor || 0),
+      reviewStatus: String(r.reviewStatus),
+    }));
+  });
+}
+
+export async function linkBooksBankTransferPair(
+  userId: string,
+  clientId: string,
+  txnId: string,
+  counterpartTxnId: string,
+) {
+  if (txnId === counterpartTxnId) throw new BooksError("transfer_same_txn", "invalid");
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasLinkedTxnColumn(db))) {
+      throw new BooksError("c3_bank_txn_transfer_migration_required", "invalid");
+    }
+
+    const a = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    const b = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [counterpartTxnId, clientId],
+    );
+    if (!a.rowCount || !b.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const left = a.rows[0];
+    const right = b.rows[0];
+
+    for (const row of [left, right]) {
+      if (String(row.txn_type || "") !== "transfer") {
+        throw new BooksError("transfer_type_required", "invalid");
+      }
+      if (!["needs_review", "ready"].includes(String(row.review_status))) {
+        throw new BooksError("bank_txn_not_editable", "conflict");
+      }
+      if (row.linked_txn_id) throw new BooksError("transfer_already_linked", "conflict");
+    }
+    if (String(left.account_id) === String(right.account_id)) {
+      throw new BooksError("transfer_same_account", "invalid");
+    }
+    if (String(left.currency || "AED") !== String(right.currency || "AED")) {
+      throw new BooksError("currency_mismatch", "invalid");
+    }
+    if (txnAmountMinor(left) !== txnAmountMinor(right) || txnAmountMinor(left) <= 0) {
+      throw new BooksError("transfer_amount_mismatch", "invalid");
+    }
+    const opposite =
+      (isMoneyOut(left) && isMoneyIn(right)) || (isMoneyIn(left) && isMoneyOut(right));
+    if (!opposite) throw new BooksError("transfer_direction_mismatch", "invalid");
+
+    await db.query(
+      `UPDATE books_bank_transactions SET linked_txn_id = $2, updated_at = now()
+       WHERE id = $1 AND client_id = $3`,
+      [txnId, counterpartTxnId, clientId],
+    );
+    await db.query(
+      `UPDATE books_bank_transactions SET linked_txn_id = $2, updated_at = now()
+       WHERE id = $1 AND client_id = $3`,
+      [counterpartTxnId, txnId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "link_bank_transfer_pair",
+      entity: "books_bank_transaction",
+      entityId: txnId,
+      after: { linkedTxnId: counterpartTxnId },
+    });
+    return { id: txnId, linkedTxnId: counterpartTxnId };
+  });
+}
+
+export async function unlinkBooksBankTransferPair(
+  userId: string,
+  clientId: string,
+  txnId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasLinkedTxnColumn(db))) {
+      throw new BooksError("c3_bank_txn_transfer_migration_required", "invalid");
+    }
+    const before = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.review_status) === "posted") {
+      throw new BooksError("bank_txn_posted", "conflict");
+    }
+    const otherId = row.linked_txn_id ? String(row.linked_txn_id) : null;
+    await db.query(
+      `UPDATE books_bank_transactions SET linked_txn_id = NULL, updated_at = now()
+       WHERE client_id = $1 AND (id = $2 OR id = $3 OR linked_txn_id = $2 OR linked_txn_id = $3)`,
+      [clientId, txnId, otherId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "unlink_bank_transfer_pair",
+      entity: "books_bank_transaction",
+      entityId: txnId,
+      before: { linkedTxnId: otherId },
+      after: { linkedTxnId: null },
+    });
+    return { id: txnId, linkedTxnId: null };
   });
 }
 
@@ -607,7 +853,8 @@ export async function matchBooksBankTransaction(
 
 /**
  * Dual-control post: approver ≠ reviewed_by.
- * Matched receipt/payment → createReceiptOrPayment; else bank vs category journal.
+ * Transfer pair → one Contra; matched receipt/payment → createReceiptOrPayment;
+ * else bank vs category journal.
  */
 export async function postBooksBankTransaction(
   approverId: string,
@@ -634,6 +881,30 @@ export async function postBooksBankTransaction(
     if (!row.reviewed_by) throw new BooksError("bank_txn_not_reviewed", "conflict");
     await requireDualControlActor(db, approverId, String(row.reviewed_by), "post");
 
+    let counterpart: typeof row | null = null;
+    if (String(row.txn_type || "") === "transfer") {
+      if (!(await hasLinkedTxnColumn(db))) {
+        throw new BooksError("c3_bank_txn_transfer_migration_required", "invalid");
+      }
+      if (!row.linked_txn_id) throw new BooksError("transfer_link_required", "invalid");
+      const other = await db.query(
+        `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+        [row.linked_txn_id, clientId],
+      );
+      if (!other.rowCount) throw new BooksError("transfer_counterpart_missing", "not_found");
+      counterpart = other.rows[0];
+      if (String(counterpart.review_status) !== "ready") {
+        throw new BooksError("transfer_counterpart_not_ready", "conflict");
+      }
+      if (!counterpart.reviewed_by) throw new BooksError("bank_txn_not_reviewed", "conflict");
+      if (String(counterpart.reviewed_by) !== String(row.reviewed_by)) {
+        await requireDualControlActor(db, approverId, String(counterpart.reviewed_by), "post");
+      }
+      if (String(counterpart.linked_txn_id) !== String(row.id)) {
+        throw new BooksError("transfer_link_broken", "conflict");
+      }
+    }
+
     const txnDate = isoDate(row.txn_date);
     if (!txnDate) throw new BooksError("txn_date_required", "invalid");
     const period = await db.query(
@@ -646,13 +917,14 @@ export async function postBooksBankTransaction(
 
     return {
       row,
+      counterpart,
       periodId: String(period.rows[0].id),
       txnDate,
       preparerId: String(row.reviewed_by),
     };
   });
 
-  const { row, periodId, txnDate, preparerId } = loaded;
+  const { row, counterpart, periodId, txnDate, preparerId } = loaded;
   const txnType = String(row.txn_type || "");
   const debit = Number(row.debit_minor || 0);
   const credit = Number(row.credit_minor || 0);
@@ -663,8 +935,31 @@ export async function postBooksBankTransaction(
   let journalEntryId: string;
   let entryNo: string;
   let settlementDocumentId: string | null = null;
+  let pairedTxnId: string | null = null;
 
-  if (row.open_item_id && (txnType === "customer_receipt" || txnType === "supplier_payment")) {
+  if (txnType === "transfer" && counterpart) {
+    const out = isMoneyOut(row) ? row : isMoneyOut(counterpart) ? counterpart : null;
+    const inn = isMoneyIn(row) ? row : isMoneyIn(counterpart) ? counterpart : null;
+    if (!out || !inn) throw new BooksError("transfer_direction_mismatch", "invalid");
+    const amount = txnAmountMinor(out);
+    if (amount !== txnAmountMinor(inn) || amount <= 0) {
+      throw new BooksError("transfer_amount_mismatch", "invalid");
+    }
+    const outDate = isoDate(out.txn_date) || txnDate;
+    const contra = await createContra(preparerId, approverId, clientId, {
+      issueDate: outDate,
+      periodId,
+      fromAccountId: String(out.account_id),
+      toAccountId: String(inn.account_id),
+      currency,
+      originalAmountMinor: amount,
+      memo: memo || "Transfer",
+    });
+    journalEntryId = contra.journalEntryId;
+    entryNo = String(contra.entryNo);
+    settlementDocumentId = contra.documentId;
+    pairedTxnId = String(counterpart.id);
+  } else if (row.open_item_id && (txnType === "customer_receipt" || txnType === "supplier_payment")) {
     const oi = await withUser(approverId, async (db) => {
       const r = await db.query(
         `SELECT id, party_id, open_original_minor FROM books_open_items
@@ -724,6 +1019,7 @@ export async function postBooksBankTransaction(
   }
 
   await withUser(approverId, async (db) => {
+    const ids = pairedTxnId ? [txnId, pairedTxnId] : [txnId];
     await db.query(
       `UPDATE books_bank_transactions SET
          review_status = 'posted',
@@ -732,26 +1028,29 @@ export async function postBooksBankTransaction(
          posted_by = $5,
          posted_at = now(),
          updated_at = now()
-       WHERE id = $1 AND client_id = $2 AND review_status = 'ready'`,
-      [txnId, clientId, journalEntryId, settlementDocumentId, approverId],
+       WHERE client_id = $2 AND id = ANY($1::uuid[]) AND review_status = 'ready'`,
+      [ids, clientId, journalEntryId, settlementDocumentId, approverId],
     );
-    await writeBooksAudit(db, {
-      clientId,
-      actor: approverId,
-      action: "post_bank_transaction",
-      entity: "books_bank_transaction",
-      entityId: txnId,
-      before: { review_status: "ready" },
-      after: {
-        review_status: "posted",
-        journalEntryId,
-        entryNo,
-        settlementDocumentId,
-      },
-    });
+    for (const id of ids) {
+      await writeBooksAudit(db, {
+        clientId,
+        actor: approverId,
+        action: "post_bank_transaction",
+        entity: "books_bank_transaction",
+        entityId: id,
+        before: { review_status: "ready" },
+        after: {
+          review_status: "posted",
+          journalEntryId,
+          entryNo,
+          settlementDocumentId,
+          pairedTxnId,
+        },
+      });
+    }
   });
 
-  return { id: txnId, journalEntryId, entryNo, settlementDocumentId };
+  return { id: txnId, journalEntryId, entryNo, settlementDocumentId, pairedTxnId };
 }
 
 /** Exported for unit tests of eligibility without DB. */

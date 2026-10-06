@@ -61,12 +61,15 @@ import {
 } from "@/server/books/bank-accounts";
 import {
   excludeBooksBankTransaction,
+  linkBooksBankTransferPair,
   listBooksBankTxnMatchCandidates,
+  listBooksBankTxnTransferCandidates,
   listBooksBankTransactions,
   markBooksBankTransactionReviewed,
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  unlinkBooksBankTransferPair,
   updateBooksBankTransaction,
 } from "@/server/books/bank-transactions";
 import {
@@ -364,6 +367,11 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "bank-transactions" && path[2] === "match-candidates" && path.length === 3) {
       return NextResponse.json(
         await listBooksBankTxnMatchCandidates(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "transfer-candidates" && path.length === 3) {
+      return NextResponse.json(
+        await listBooksBankTxnTransferCandidates(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "statements" && path.length === 1) {
@@ -852,6 +860,16 @@ export async function POST(request: Request, ctx: Ctx) {
         ),
       );
     }
+    if (path[0] === "bank-transactions" && path[2] === "transfer-link" && path.length === 3) {
+      return NextResponse.json(
+        await linkBooksBankTransferPair(
+          session.userId,
+          session.clientId,
+          path[1],
+          String(body.counterpartId || ""),
+        ),
+      );
+    }
     if (path[0] === "bank-transactions" && path[2] === "post" && path.length === 3) {
       return NextResponse.json(
         await postBooksBankTransaction(session.userId, session.clientId, path[1]),
@@ -1069,6 +1087,11 @@ export async function DELETE(request: Request, ctx: Ctx) {
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(
         await softDeleteBooksDocumentDraft(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "transfer-link" && path.length === 3) {
+      return NextResponse.json(
+        await unlinkBooksBankTransferPair(session.userId, session.clientId, path[1]),
       );
     }
     return NextResponse.json({ error: "not_found" }, { status: 404 });

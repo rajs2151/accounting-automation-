@@ -6,6 +6,7 @@ import pg from "pg";
 import {
   __testStatementEligible,
   excludeBooksBankTransaction,
+  linkBooksBankTransferPair,
   listBooksBankTransactions,
   markBooksBankTransactionReviewed,
   matchBooksBankTransaction,
@@ -320,6 +321,150 @@ test("C3-2: match AR open item + dual-control post receipt", async (t) => {
       [oi.rows[0].id],
     );
     assert.equal(Number(oiAfter.rows[0].open_original_minor), 0);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C3-3: transfer pair posts one Contra CV", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  const linkCol = await admin.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'books_bank_transactions' AND column_name = 'linked_txn_id'`,
+  );
+  if (!linkCol.rowCount) {
+    t.skip("db/37 transfer link not migrated");
+    await admin.end();
+    return;
+  }
+  try {
+    const company = await createTestCompany(admin, "c3-xfer");
+    const clientId = company.clientId;
+    const fromBank = company.accountIdByCode["1120"];
+    const toBank = company.accountIdByCode["1110"];
+    assert.ok(fromBank && toBank);
+
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'AED Bank', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [fromBank],
+    );
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'Cash', iban = NULL, iban_last4 = NULL WHERE id = $1`,
+      [toBank],
+    );
+
+    async function stmtWithLine(opts: {
+      accountId: string;
+      iban: string | null;
+      debit: number;
+      credit: number;
+      desc: string;
+    }) {
+      const fileId = randomUUID();
+      const stmtId = randomUUID();
+      const lineId = randomUUID();
+      await admin.query(
+        `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,'application/pdf',10,$6)`,
+        [
+          fileId,
+          clientId,
+          `xf-${randomUUID()}`,
+          `books/${clientId}/${fileId}/x.pdf`,
+          `${opts.desc}.pdf`,
+          OMAR,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_extractions (
+           id, client_id, file_id, account_id, iban, period_from, period_to,
+           opening_balance_minor, closing_balance_minor, status, validation_flags
+         ) VALUES (
+           $1,$2,$3,$4,$5,'2026-05-01','2026-05-31',
+           0,$6,'ready','["balance_ok"]'::jsonb
+         )`,
+        [
+          stmtId,
+          clientId,
+          fileId,
+          opts.accountId,
+          opts.iban,
+          opts.credit - opts.debit,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_lines (
+           id, statement_id, client_id, line_date, description,
+           debit_minor, credit_minor, currency, sort_index
+         ) VALUES ($1,$2,$3,'2026-05-12',$4,$5,$6,'AED',0)`,
+        [lineId, stmtId, clientId, opts.desc, opts.debit, opts.credit],
+      );
+    }
+
+    await stmtWithLine({
+      accountId: fromBank,
+      iban: "AE070331234567890123456",
+      debit: 7500,
+      credit: 0,
+      desc: "Transfer out to cash",
+    });
+    await stmtWithLine({
+      accountId: toBank,
+      iban: null,
+      debit: 0,
+      credit: 7500,
+      desc: "Transfer in from bank",
+    });
+
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const listed = await listBooksBankTransactions(OMAR, clientId, {
+      materialize: false,
+      status: "needs_review",
+    });
+    assert.equal(listed.length, 2);
+    const out = listed.find((r) => r.debitMinor === 7500);
+    const inn = listed.find((r) => r.creditMinor === 7500);
+    assert.ok(out && inn);
+
+    await updateBooksBankTransaction(OMAR, clientId, out.id, { txnType: "transfer" });
+    await updateBooksBankTransaction(OMAR, clientId, inn.id, { txnType: "transfer" });
+
+    await assert.rejects(
+      () => linkBooksBankTransferPair(OMAR, clientId, out.id, out.id),
+      (e: unknown) => e instanceof BooksError && e.message === "transfer_same_txn",
+    );
+
+    await linkBooksBankTransferPair(OMAR, clientId, out.id, inn.id);
+    await markBooksBankTransactionReviewed(OMAR, clientId, out.id);
+    await markBooksBankTransactionReviewed(OMAR, clientId, inn.id);
+
+    await assert.rejects(
+      () => postBooksBankTransaction(OMAR, clientId, out.id),
+      (e: unknown) =>
+        e instanceof BooksError &&
+        (e.message === "post_requires_approver" || e.message === "post_preparer_cannot_approve"),
+    );
+
+    const posted = await postBooksBankTransaction(LAYLA, clientId, out.id);
+    assert.match(String(posted.entryNo), /^CV-2026-\d+$/);
+    assert.equal(posted.pairedTxnId, inn.id);
+
+    const after = await listBooksBankTransactions(OMAR, clientId, {
+      status: "posted",
+      materialize: false,
+    });
+    assert.equal(after.length, 2);
+    assert.equal(after[0]!.journalEntryId, after[1]!.journalEntryId);
+    assert.equal(after[0]!.journalEntryId, posted.journalEntryId);
+
+    const allocs = await admin.query(
+      `SELECT 1 FROM books_allocations WHERE settlement_journal_id = $1`,
+      [posted.journalEntryId],
+    );
+    assert.equal(allocs.rowCount, 0);
   } finally {
     await admin.end().catch(() => undefined);
   }

@@ -26,10 +26,18 @@ const MESSAGES: Record<string, string> = {
   bank_txn_not_editable: "That transaction can no longer be edited.",
   c3_bank_transactions_migration_required: "Database migration db/35 is required for Transactions.",
   c3_bank_txn_match_migration_required: "Database migration db/36 is required for match/post.",
+  c3_bank_txn_transfer_migration_required: "Database migration db/37 is required for transfer pairs.",
   bank_txn_not_ready: "Only Ready transactions can be posted.",
   bank_txn_not_reviewed: "Mark the transaction reviewed before posting.",
   match_requires_receipt_or_payment: "Match is only for customer receipts or supplier payments.",
   match_amount_direction: "Amount direction does not match this transaction type.",
+  transfer_link_required: "Link the other account’s transfer before posting.",
+  transfer_counterpart_not_ready: "Mark the linked transfer Ready before posting.",
+  transfer_same_account: "Transfer pair must be between two different accounts.",
+  transfer_amount_mismatch: "Transfer amounts must match exactly.",
+  transfer_direction_mismatch: "Link an outgoing transfer to an incoming one.",
+  transfer_already_linked: "That transfer is already linked.",
+  transfer_type_required: "Both sides must be typed as Transfer.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

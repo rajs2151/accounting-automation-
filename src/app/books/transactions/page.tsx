@@ -45,6 +45,8 @@ type TxnRow = {
   monthKey: string | null;
   openItemId: string | null;
   openItemLabel: string | null;
+  linkedTxnId: string | null;
+  linkedTxnLabel: string | null;
   journalEntryId: string | null;
   entryNo: string | null;
 };
@@ -55,6 +57,15 @@ type MatchCand = {
   documentNumber: string | null;
   openOriginalMinor: number;
   score: number;
+};
+
+type TransferCand = {
+  txnId: string;
+  accountCode: string | null;
+  accountName: string | null;
+  description: string;
+  debitMinor: number;
+  creditMinor: number;
 };
 
 type Tab = "needs_review" | "ready" | "excluded" | "posted";
@@ -130,6 +141,7 @@ function TransactionsInner() {
     posted: 0,
   });
   const [matchCands, setMatchCands] = useState<Record<string, MatchCand[]>>({});
+  const [transferCands, setTransferCands] = useState<Record<string, TransferCand[]>>({});
 
   useEffect(() => {
     async function loadCounts() {
@@ -225,6 +237,55 @@ function TransactionsInner() {
       return;
     }
     toast.success(openItemId ? "Matched" : "Match cleared");
+    void reload();
+  }
+
+  async function loadTransferCandidates(id: string) {
+    if (transferCands[id]) return;
+    const res = await fetch(`/api/books/bank-transactions/${id}/transfer-candidates`);
+    const data = await res.json().catch(() => []);
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    if (Array.isArray(data)) setTransferCands((prev) => ({ ...prev, [id]: data }));
+  }
+
+  async function setTransferLink(id: string, counterpartId: string | null) {
+    if (!counterpartId) {
+      const res = await fetch(`/api/books/bank-transactions/${id}/transfer-link`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(apiErrorMessage(data));
+        return;
+      }
+      toast.success("Transfer unlinked");
+      setTransferCands((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      void reload();
+      return;
+    }
+    const res = await fetch(`/api/books/bank-transactions/${id}/transfer-link`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ counterpartId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success("Transfer linked");
+    setTransferCands((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     void reload();
   }
 
@@ -425,30 +486,74 @@ function TransactionsInner() {
                         </Select>
                       </td>
                       <td className="px-3 py-2">
-                        <Select
-                          value={r.categoryAccountId || undefined}
-                          onValueChange={(v) =>
-                            void patchRow(r.id, { categoryAccountId: v || null })
-                          }
-                          disabled={r.reviewStatus === "excluded" || r.reviewStatus === "posted"}
-                        >
-                          <SelectTrigger
-                            className="h-8 w-[180px]"
-                            data-testid={`txn-category-${r.id}`}
+                        {r.txnType === "transfer" ? (
+                          <span className="text-xs text-muted-foreground">Pair (CV)</span>
+                        ) : (
+                          <Select
+                            value={r.categoryAccountId || undefined}
+                            onValueChange={(v) =>
+                              void patchRow(r.id, { categoryAccountId: v || null })
+                            }
+                            disabled={r.reviewStatus === "excluded" || r.reviewStatus === "posted"}
                           >
-                            <SelectValue placeholder="COA account" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {coa.map((a) => (
-                              <SelectItem key={a.id} value={a.id}>
-                                {a.code} · {a.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                            <SelectTrigger
+                              className="h-8 w-[180px]"
+                              data-testid={`txn-category-${r.id}`}
+                            >
+                              <SelectValue placeholder="COA account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {coa.map((a) => (
+                                <SelectItem key={a.id} value={a.id}>
+                                  {a.code} · {a.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
                       </td>
                       <td className="px-3 py-2">
-                        {r.txnType === "customer_receipt" || r.txnType === "supplier_payment" ? (
+                        {r.txnType === "transfer" ? (
+                          r.reviewStatus === "posted" ? (
+                            <span className="text-xs text-muted-foreground">
+                              {r.linkedTxnLabel || "—"}
+                            </span>
+                          ) : (
+                            <Select
+                              value={r.linkedTxnId || "__none__"}
+                              onValueChange={(v) =>
+                                void setTransferLink(r.id, !v || v === "__none__" ? null : v)
+                              }
+                              onOpenChange={(open) => {
+                                if (open) void loadTransferCandidates(r.id);
+                              }}
+                            >
+                              <SelectTrigger
+                                className="h-8 w-[220px]"
+                                data-testid={`txn-transfer-${r.id}`}
+                              >
+                                <SelectValue placeholder="Link other account" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__none__">No link</SelectItem>
+                                {(transferCands[r.id] || []).map((c) => (
+                                  <SelectItem key={c.txnId} value={c.txnId}>
+                                    {(c.accountCode || "?") +
+                                      ` · ${c.description || "Transfer"} · ${
+                                        c.creditMinor > 0 ? "+" : "−"
+                                      }${Math.max(c.debitMinor, c.creditMinor)}`}
+                                  </SelectItem>
+                                ))}
+                                {r.linkedTxnId &&
+                                !(transferCands[r.id] || []).some((c) => c.txnId === r.linkedTxnId) ? (
+                                  <SelectItem value={r.linkedTxnId}>
+                                    {r.linkedTxnLabel || r.linkedTxnId.slice(0, 8)}
+                                  </SelectItem>
+                                ) : null}
+                              </SelectContent>
+                            </Select>
+                          )
+                        ) : r.txnType === "customer_receipt" || r.txnType === "supplier_payment" ? (
                           r.reviewStatus === "posted" ? (
                             <span className="text-xs text-muted-foreground">
                               {r.openItemLabel || "—"}
