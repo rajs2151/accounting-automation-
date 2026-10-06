@@ -4,19 +4,22 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   ArrowLeftRight,
-  FileSpreadsheet,
-  Home,
+  BookOpen,
+  ChartColumn,
+  FileText,
+  HandCoins,
   Inbox,
   Landmark,
   Languages,
+  LayoutDashboard,
   PanelLeft,
   Receipt,
   Search,
   Settings,
   Upload,
   Users,
+  Wallet,
 } from "lucide-react";
 
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
@@ -53,25 +56,49 @@ type Directory = {
 type NavItem = {
   href: string;
   label: string;
-  icon: typeof Home;
+  icon: typeof LayoutDashboard;
+  /** Other routes that belong to this item (highlight it there too). */
+  also?: string[];
   soon?: boolean;
 };
 
-const NAV: NavItem[] = [
-  { href: "/books", label: "Home", icon: Home },
-  { href: "/books/inbox", label: "Inbox", icon: Inbox },
-  { href: "/books/sales", label: "Sales", icon: FileSpreadsheet },
-  { href: "/books/purchases", label: "Purchases", icon: Receipt },
-  { href: "/books/receipts", label: "Receipts", icon: Landmark },
-  { href: "/books/parties", label: "Parties", icon: Users },
-  { href: "/books/banking", label: "Banking", icon: Landmark },
-  { href: "/books/transactions", label: "Transactions", icon: ArrowLeftRight },
-  { href: "/books/rules", label: "Rules", icon: Settings },
-  { href: "/books/expenses", label: "Expenses", icon: Receipt },
-  { href: "/books/journals", label: "Ledger", icon: Landmark },
-  { href: "/books/reports/trial-balance", label: "Reports", icon: FileSpreadsheet },
-  { href: "/books/health", label: "Company Health", icon: Activity },
-  { href: "/books/settings", label: "Settings", icon: Settings },
+/**
+ * Books menu in the order work flows: documents come in → sales / purchases / expenses → money in and
+ * out → bank → the books themselves. Bank rules and statements live inside Bank transactions / Bank
+ * accounts; the placeholder Company Health page is not listed.
+ */
+const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
+  {
+    items: [
+      { href: "/books", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/books/inbox", label: "Inbox", icon: Inbox },
+    ],
+  },
+  {
+    label: "Sales & purchases",
+    items: [
+      { href: "/books/sales", label: "Sales", icon: FileText },
+      { href: "/books/purchases", label: "Purchases", icon: Receipt },
+      { href: "/books/expenses", label: "Expenses", icon: Wallet },
+      { href: "/books/receipts", label: "Receipts & payments", icon: HandCoins },
+      { href: "/books/parties", label: "Customers & suppliers", icon: Users },
+    ],
+  },
+  {
+    label: "Bank",
+    items: [
+      { href: "/books/banking", label: "Bank accounts", icon: Landmark, also: ["/books/statements"] },
+      { href: "/books/transactions", label: "Bank transactions", icon: ArrowLeftRight, also: ["/books/rules"] },
+    ],
+  },
+  {
+    label: "Accounting",
+    items: [
+      { href: "/books/journals", label: "Journals", icon: BookOpen },
+      { href: "/books/reports/trial-balance", label: "Reports", icon: ChartColumn, also: ["/books/reports"] },
+    ],
+  },
+  { items: [{ href: "/books/settings", label: "Settings", icon: Settings }] },
 ];
 
 function periodDotClass(status: string) {
@@ -157,44 +184,56 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     ? directory!.clientId
     : switcherClients[0]?.id || directory?.clientId || "";
 
+  const isActive = (item: NavItem) =>
+    item.href === "/books"
+      ? pathname === "/books"
+      : [item.href, ...(item.also || [])].some((h) => pathname === h || pathname.startsWith(`${h}/`));
+
   const nav = (
     <nav className="flex flex-col gap-0.5 px-2">
-      {NAV.map((item) => {
-        const active =
-          item.href === "/books"
-            ? pathname === "/books"
-            : pathname === item.href || pathname.startsWith(`${item.href}/`);
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={() => setMobileOpen(false)}
-            title={item.label}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-              active
-                ? "bg-primary-subtle text-primary"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              collapsed && "justify-center px-2",
-            )}
-          >
-            <Icon className="size-[18px] shrink-0" />
-            {collapsed ? (
-              <span className="sr-only">{item.label}</span>
-            ) : (
-              <>
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                {item.soon ? (
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">
-                    Soon
-                  </Badge>
-                ) : null}
-              </>
-            )}
-          </Link>
-        );
-      })}
+      {NAV_GROUPS.map((group, gi) => (
+        <div key={group.label || `g${gi}`} className={cn("flex flex-col gap-0.5", gi > 0 && "mt-3")}>
+          {group.label && !collapsed ? (
+            <div className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              {group.label}
+            </div>
+          ) : null}
+          {group.items.map((item) => {
+            const active = isActive(item);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setMobileOpen(false)}
+                title={item.label}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-primary-subtle text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  collapsed && "justify-center px-2",
+                )}
+              >
+                <Icon className="size-[18px] shrink-0" />
+                {collapsed ? (
+                  <span className="sr-only">{item.label}</span>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {item.soon ? (
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">
+                        Soon
+                      </Badge>
+                    ) : null}
+                  </>
+                )}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 

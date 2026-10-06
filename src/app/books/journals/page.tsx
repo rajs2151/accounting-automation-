@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
@@ -407,17 +406,11 @@ export default function BooksJournalsPage() {
   return (
     <>
       <LedgerPageChrome
-        title="Ledger"
-        subtitle="Journal entries for the selected period — source of truth for balances."
-        infoBanner="Tip: click a row to open the side drawer. Posted entries are immutable; use reversal + new entry to correct."
+        title="Journals"
+        subtitle="Every posted voucher for the period, as debits and credits. Balances and reports are built from these."
+        infoBanner="Click a row to open it. Posted entries can’t be edited — reverse it and post a corrected entry."
         rightActions={
           <>
-            <Link
-              href="/books/rules"
-              className="inline-flex h-7 items-center rounded-lg border border-border bg-background px-2.5 text-sm font-medium hover:bg-muted"
-            >
-              Rules
-            </Link>
             <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="create-journal-open">
               Create Entry
             </Button>

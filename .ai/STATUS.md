@@ -121,3 +121,4 @@
 - 2026-10-07 | P4-3 | PASS | Create Entry templates; accrual auto-reverse; prepayment 1410 warning; payroll; Expense voucher option
 - 2026-10-06 | HOME-1 | PASS (cloud: unit 222/215p/7s) | dashboard: money row (AR/AP/cash), linked doc counts, unassigned uploads -> inbox?unassigned=1, Reports shortcuts replace stray Ledger/TB buttons
 2026-10-06 UI-NOTION-2: one table style + click-row-to-open (sales/purchases review drawer, inbox, statements, transactions); peek skips editable rows; drawer widths fixed
+2026-10-06 UI-NAV-1: grouped menu with accounting names (Journals, Bank accounts/transactions, Customers & suppliers); dashboard flow strip; dead options removed

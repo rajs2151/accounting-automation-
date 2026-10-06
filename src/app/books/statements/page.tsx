@@ -113,9 +113,9 @@ export default function StatementsListPage() {
     <div className="space-y-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Statement staging</h1>
+          <h1 className="text-2xl font-semibold">Bank statements</h1>
           <p className="text-sm text-muted-foreground">
-            Phase 1 review only — Phase 2 bank matching consumes these rows.
+            Check each upload balances (opening + lines = closing). Its lines then appear in Bank transactions.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

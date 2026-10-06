@@ -513,9 +513,9 @@ function TransactionsInner() {
     <div className="space-y-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Transactions</h1>
+          <h1 className="text-2xl font-semibold">Bank transactions</h1>
           <p className="text-sm text-muted-foreground">
-            Categorize, match open invoices/bills, then an approver posts
+            Lines from your bank statements: match each to an invoice or bill, or pick an account — an approver then posts it
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -524,7 +524,7 @@ function TransactionsInner() {
             className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
             data-testid="txn-rules-link"
           >
-            Rules
+            Bank rules
           </Link>
           <Button
             variant="outline"

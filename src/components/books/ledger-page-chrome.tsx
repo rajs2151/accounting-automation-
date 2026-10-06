@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import {
   BookOpen,
   Bookmark,
@@ -51,7 +50,6 @@ import {
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { csvCell } from "@/lib/csv";
-import { cn } from "@/lib/utils";
 
 type TagRow = { id: string; name: string; colour: string; usageCount?: number };
 type UserRow = { id: string; name: string; role?: string };
@@ -917,13 +915,7 @@ export function LedgerPageChrome({
   transactionsEmpty?: boolean;
   toolbar?: ReactNode;
 }) {
-  const pathname = usePathname();
   const [bannerOpen, setBannerOpen] = useState(true);
-
-  const tabs = [
-    { href: "/books/transactions", label: "Transactions" },
-    { href: "/books/journals", label: "Journals" },
-  ];
 
   return (
     <div className="space-y-4" data-testid="ledger-page-chrome">
@@ -938,26 +930,6 @@ export function LedgerPageChrome({
           <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">{rightActions}</div>
-      </div>
-
-      <div className="flex gap-1 border-b border-border">
-        {tabs.map((tab) => {
-          const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
-          return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              className={cn(
-                "border-b-2 px-4 py-2 text-sm -mb-px",
-                active
-                  ? "border-primary font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {tab.label}
-            </Link>
-          );
-        })}
       </div>
 
       {toolbar}

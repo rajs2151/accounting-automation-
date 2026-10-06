@@ -187,7 +187,7 @@ test.beforeEach(async ({ context }) => {
 
 test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await page.goto("/books/parties");
-  await expect(page.getByRole("heading", { name: "Parties" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Customers & suppliers" })).toBeVisible();
   await expect(page.getByText("Oasis Retail LLC")).toBeVisible({ timeout: 15000 });
 
   // UI-1 shell: searchable company switcher, period Select, Ctrl+K search focus
@@ -241,7 +241,7 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByText("(Phase 3)")).toHaveCount(0);
 
   await page.goto("/books/banking");
-  await expect(page.getByRole("heading", { name: "Banking" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bank accounts" })).toBeVisible();
   await expect(page.getByTestId("banking-accounts-table")).toBeVisible();
 
   await page.goto("/books/transactions");
@@ -251,7 +251,7 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
 
   await page.goto("/books/journals");
   await expect(page.getByTestId("ledger-page-chrome")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Ledger" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Journals" })).toBeVisible();
   await expect(page.getByText("Beta")).toBeVisible();
   await expect(page.getByTestId("create-journal-open")).toBeVisible();
   await expect(page.getByRole("link", { name: "Journals" })).toBeVisible();
@@ -589,7 +589,7 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await savePhase1("inbox.png", await page.screenshot({ fullPage: true }));
 
   await page.goto("/books/parties");
-  await expect(page.getByRole("heading", { name: "Parties" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Customers & suppliers" })).toBeVisible();
   await savePhase1("parties.png", await page.screenshot({ fullPage: true }));
 });
 
@@ -665,7 +665,7 @@ async function insertWorkerShapedStatement(args: {
 
 test("phase1: upload bank statement from /books/statements", async ({ page }) => {
   await page.goto("/books/statements");
-  await expect(page.getByRole("heading", { name: "Statement staging" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Bank statements" })).toBeVisible({
     timeout: 15000,
   });
   await expect(page.getByTestId("statement-upload")).toBeVisible();

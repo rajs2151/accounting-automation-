@@ -20,7 +20,7 @@ test("journals create+post, audit tab, and trial balance totals", async ({ page,
   ]);
 
   await page.goto("/books/journals");
-  await expect(page.getByRole("heading", { name: "Ledger" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Journals" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("books-data-grid")).toBeVisible();
 
   await expect(page.getByTestId("books-data-grid")).toBeVisible({ timeout: 30_000 });

@@ -221,9 +221,9 @@ export default function BankingPage() {
     <div className="space-y-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Banking</h1>
+          <h1 className="text-2xl font-semibold">Bank accounts</h1>
           <p className="text-sm text-muted-foreground">
-            Bank, card, gateway and cash accounts · statement coverage (matching in Phase 2)
+            Bank, card, payment-gateway and cash accounts, and whether each month’s statement is in
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -270,7 +270,7 @@ export default function BankingPage() {
             className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
             data-testid="banking-statements-link"
           >
-            All statements
+            Bank statements
           </Link>
         </div>
       </div>

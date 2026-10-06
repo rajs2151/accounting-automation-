@@ -79,7 +79,7 @@ export default function PartiesPage() {
   return (
     <div className="space-y-4 py-4">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Parties</h1>
+        <h1 className="text-2xl font-semibold">Customers &amp; suppliers</h1>
         <div className="flex gap-2">
           <Button
             variant={partyType === "customer" ? "default" : "outline"}

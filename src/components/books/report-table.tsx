@@ -396,7 +396,7 @@ const REPORT_TABS = [
   { href: "/books/reports/ageing?side=ap", label: "Payables ageing", key: "ap" },
 ] as const;
 
-/** Reports tab strip (P&L / Balance sheet / Cash flow stay disabled until Phase 6). */
+/** Reports tab strip (P&L / Balance sheet / Cash flow are added here in Phase 6). */
 export function ReportsNav({ active }: { active: (typeof REPORT_TABS)[number]["key"] }) {
   return (
     <div className="flex flex-wrap gap-2 border-b border-border pb-2 text-sm print:hidden" data-testid="reports-nav">
@@ -408,11 +408,6 @@ export function ReportsNav({ active }: { active: (typeof REPORT_TABS)[number]["k
         >
           {t.label}
         </Link>
-      ))}
-      {["Profit & loss", "Balance sheet", "Cash flow"].map((t) => (
-        <span key={t} className="cursor-not-allowed rounded-md px-3 py-1 text-muted-foreground opacity-60" title="Available in Phase 6">
-          {t}
-        </span>
       ))}
     </div>
   );

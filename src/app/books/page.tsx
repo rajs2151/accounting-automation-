@@ -112,8 +112,89 @@ const REPORT_SHORTCUTS = [
   { href: "/books/reports/day-book", label: "Day book", note: "Every voucher by date" },
   { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", note: "Who owes you" },
   { href: "/books/reports/ageing?side=ap", label: "Payables ageing", note: "What you owe" },
-  { href: "/books/journals", label: "Ledger", note: "Journal entries" },
+  { href: "/books/journals", label: "Journals", note: "Every posted voucher" },
 ];
+
+/**
+ * How values move through the books, left to right, with what is waiting at each step. Every number
+ * links to the place where that work is done.
+ */
+function BooksFlow({ d }: { d: Checklist }) {
+  const toReview = d.documentsToReview.count + d.bankLines.needsReview;
+  const steps: Array<{ n: number; title: string; note: string; count: number | null; countLabel: string; href: string }> = [
+    {
+      n: 1,
+      title: "Upload",
+      note: "Bills, invoices, receipts and bank statements go to the Inbox and are read automatically.",
+      count: d.unassignedInbox.count,
+      countLabel: "unassigned",
+      href: "/books/inbox",
+    },
+    {
+      n: 2,
+      title: "Review",
+      note: "Check each document's party, amounts and VAT; match bank lines to invoices or bills.",
+      count: toReview,
+      countLabel: "to review",
+      href: d.documentsToReview.count ? d.documentsToReview.href : d.bankLines.href,
+    },
+    {
+      n: 3,
+      title: "Approve & post",
+      note: "A second person approves. Posting writes the journal entry: debits = credits.",
+      count: d.bankLines.readyNotPosted,
+      countLabel: "waiting",
+      href: d.bankLines.readyNotPosted ? d.bankLines.href : "/books/journals",
+    },
+    {
+      n: 4,
+      title: "Reports",
+      note: "Posted entries update account ledgers, the trial balance, ageing and the VAT return.",
+      count: null,
+      countLabel: "",
+      href: "/books/reports/trial-balance",
+    },
+  ];
+  return (
+    <section className="space-y-2" data-testid="dashboard-flow">
+      <h2 className="font-medium">How your books flow</h2>
+      <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {steps.map((s) => (
+          <li key={s.n}>
+            <Link
+              href={s.href}
+              data-testid={`dash-flow-${s.n}`}
+              className="group flex h-full flex-col gap-1 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/40 hover:bg-muted/30"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">
+                  <span className="me-1.5 inline-flex size-5 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums text-muted-foreground">
+                    {s.n}
+                  </span>
+                  {s.title}
+                </span>
+                {s.count != null ? (
+                  <span
+                    className={
+                      s.count
+                        ? "whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-400"
+                        : "whitespace-nowrap text-xs text-muted-foreground"
+                    }
+                  >
+                    {s.count ? `${s.count} ${s.countLabel}` : "All clear"}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground transition-transform group-hover:translate-x-0.5">→</span>
+                )}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">{s.note}</p>
+            </Link>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
 
 const COVERAGE_LABEL = { covered: "✓ to month end", gap: "✗ gap", missing: "✗ no statement" } as const;
 
@@ -178,12 +259,11 @@ export default function BooksHomePage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 py-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">This month</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {d
             ? `${d.period.label} · ${formatDateUae(d.period.start)} – ${formatDateUae(d.period.end)}`
-            : "Monthly checklist"}{" "}
-          · synthetic companies only until portal security passes.
+            : "Month-end checklist"}
         </p>
       </div>
 
@@ -217,11 +297,13 @@ export default function BooksHomePage() {
         </div>
       ) : null}
 
+      {d ? <BooksFlow d={d} /> : null}
+
       {d ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="dashboard-checklist">
           <Card
             testId="dash-statements"
-            title="Statements uploaded"
+            title="Bank statements"
             tone={d.statements.ok ? "success" : "danger"}
             statusLabel={d.statements.ok ? "Complete" : "Missing"}
             href={d.statements.href}
@@ -271,13 +353,13 @@ export default function BooksHomePage() {
 
           <Card
             testId="dash-bank-lines"
-            title="Bank lines to review"
+            title="Bank transactions to review"
             tone={d.bankLines.needsReview + d.bankLines.readyNotPosted ? "warning" : "success"}
             statusLabel={String(d.bankLines.needsReview + d.bankLines.readyNotPosted)}
             href={d.bankLines.href}
             action="Review now"
           >
-            Needs review {d.bankLines.needsReview} · Ready, not posted {d.bankLines.readyNotPosted}
+            To categorise or match {d.bankLines.needsReview} · Waiting for approval {d.bankLines.readyNotPosted}
           </Card>
 
           <Card
@@ -293,7 +375,7 @@ export default function BooksHomePage() {
 
           <Card
             testId="dash-period"
-            title="Period status"
+            title="Period & VAT"
             tone={d.periodStatus.locked ? "neutral" : "info"}
             statusLabel={d.periodStatus.locked ? "Locked" : "Open"}
             href={d.periodStatus.href}

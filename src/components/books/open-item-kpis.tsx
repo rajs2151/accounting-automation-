@@ -101,12 +101,6 @@ export function OpenItemKpiTiles({ side }: { side: "AR" | "AP" }) {
         title={due7.title}
         testId={`${prefix}-due-7`}
       />
-      <Tile
-        label="Unmatched to bank"
-        display="—"
-        title="Available in Phase 2"
-        testId={`${prefix}-unmatched`}
-      />
     </div>
   );
 }
