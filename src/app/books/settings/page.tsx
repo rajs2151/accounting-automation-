@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { VatSettingsSection } from "@/components/books/vat-settings-section";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -824,6 +825,8 @@ export default function BooksSettingsPage() {
         </div>
         <Button onClick={saveProfile}>Save profile</Button>
       </section>
+
+      <VatSettingsSection />
 
       <CoaSection periodId={periodId} />
 
