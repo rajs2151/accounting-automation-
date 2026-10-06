@@ -1,89 +1,131 @@
 "use client";
 
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
 
-import { formatMinor } from "@/lib/money";
+import {
+  ReportBreadcrumbs,
+  ReportTable,
+  readTrail,
+  trailParam,
+  useReportMeta,
+  type ReportColumn,
+} from "@/components/books/report-table";
+import { formatDateUae } from "@/lib/date";
+import type { ReportRow } from "@/lib/report-table";
 
-type LedgerLine = {
-  entryId: string;
-  entryNo: string | null;
-  entryDate: string;
-  memo: string;
-  debitMinor: number;
-  creditMinor: number;
-  balanceMinor: number;
+type Ledger = {
+  account: { id: string; code: string; name: string; normalBalance: "debit" | "credit" };
+  period: { id: string; label: string; start: string; end: string };
+  opening: { debitMinor: number; creditMinor: number; balanceMinor: number };
+  lines: Array<{
+    entryId: string;
+    entryNo: string | null;
+    date: string;
+    memo: string;
+    debitMinor: number;
+    creditMinor: number;
+    balanceMinor: number;
+  }>;
+  currentTotal: { debitMinor: number; creditMinor: number };
+  closing: { debitMinor: number; creditMinor: number; balanceMinor: number };
 };
+
+const COLUMNS: ReportColumn[] = [
+  { key: "date", label: "Date", kind: "text" },
+  { key: "entry", label: "Entry", kind: "text" },
+  { key: "debit", label: "Debit" },
+  { key: "credit", label: "Credit" },
+  { key: "balance", label: "Balance" },
+];
 
 function AccountLedgerInner() {
   const params = useSearchParams();
+  const router = useRouter();
+  const meta = useReportMeta();
   const periodId = params.get("periodId") || "";
   const accountId = params.get("accountId") || "";
-  const [data, setData] = useState<{
-    periodLabel: string;
-    account: { code: string; name: string };
-    lines: LedgerLine[];
-  } | null>(null);
+  const trail = useMemo(() => readTrail(params.get("trail")), [params]);
+  const [data, setData] = useState<Ledger | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!periodId || !accountId) return;
-    fetch(`/api/books/account-ledger?periodId=${periodId}&accountId=${accountId}`)
+    fetch(`/api/books/reports/ledger?periodId=${periodId}&accountId=${accountId}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.error) setError(String(json.error));
-        else setData(json);
+        else setData(json as Ledger);
       })
       .catch(() => setError("load_failed"));
   }, [periodId, accountId]);
 
+  const rows: Array<ReportRow & { text: Record<string, string> }> = (data?.lines || []).map((l, i) => ({
+    id: `${l.entryId}:${i}`,
+    label: l.memo || "—",
+    values: { debit: l.debitMinor, credit: l.creditMinor, balance: l.balanceMinor },
+    text: { date: formatDateUae(l.date), entry: l.entryNo || l.entryId.slice(0, 8) },
+    drill: { entryId: l.entryId },
+  }));
+  const title = data ? `${data.account.code} · ${data.account.name}` : "Account ledger";
+  const here = `/books/reports/account-ledger?periodId=${periodId}&accountId=${accountId}&trail=${trailParam(trail)}`;
+
   return (
-    <div className="space-y-4">
-      <div>
-        <Link href="/books/reports/trial-balance" className="text-sm text-muted-foreground underline">
-          ← Trial balance
-        </Link>
+    <div className="space-y-4 pb-10">
+      <div className="print:hidden">
+        <ReportBreadcrumbs trail={trail} current={data ? `${data.account.code} ${data.account.name}` : "Account ledger"} />
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">Account ledger</h1>
         {data ? (
           <p className="text-sm text-muted-foreground">
-            {data.account.code} · {data.account.name} · {data.periodLabel}
+            {title} · {data.period.label} ({formatDateUae(data.period.start)} – {formatDateUae(data.period.end)})
           </p>
         ) : null}
       </div>
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
-      <div className="overflow-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-muted/95">
-            <tr className="text-left text-xs text-muted-foreground">
-              <th className="px-3 py-2">Date</th>
-              <th className="px-3 py-2">Entry</th>
-              <th className="px-3 py-2">Description</th>
-              <th className="px-3 py-2 text-right">Debit</th>
-              <th className="px-3 py-2 text-right">Credit</th>
-              <th className="px-3 py-2 text-right">Balance</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data?.lines.map((line) => (
-              <tr key={`${line.entryId}-${line.entryDate}-${line.debitMinor}`} className="border-t border-border">
-                <td className="px-3 py-2 whitespace-nowrap">{line.entryDate}</td>
-                <td className="px-3 py-2 font-mono text-xs">{line.entryNo || line.entryId.slice(0, 8)}</td>
-                <td className="px-3 py-2">{line.memo}</td>
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {line.debitMinor ? formatMinor(line.debitMinor) : ""}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {line.creditMinor ? formatMinor(line.creditMinor) : ""}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums font-medium">
-                  {formatMinor(line.balanceMinor)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {data ? (
+        <ReportTable
+          testId="ledger-report"
+          stateKey={`ledger:${periodId}:${accountId}`}
+          title={`Account ledger — ${title}`}
+          company={meta.company}
+          preparedBy={meta.preparedBy}
+          periodLabel={data.period.label}
+          labelHeader="Particulars"
+          columns={COLUMNS}
+          rows={rows}
+          emptyText="No postings in this period."
+          exportName={`ledger-${data.account.code}-${data.period.label}`.replace(/\s+/g, "-")}
+          footer={[
+            {
+              id: "opening",
+              label: "Opening balance",
+              values: { debit: data.opening.debitMinor, credit: data.opening.creditMinor, balance: data.opening.balanceMinor },
+              testId: "ledger-opening",
+            },
+            {
+              id: "current",
+              label: "Current total",
+              values: { debit: data.currentTotal.debitMinor, credit: data.currentTotal.creditMinor },
+              testId: "ledger-current",
+            },
+            {
+              id: "closing",
+              label: "Closing balance",
+              values: { debit: data.closing.debitMinor, credit: data.closing.creditMinor, balance: data.closing.balanceMinor },
+              testId: "ledger-closing",
+            },
+          ]}
+          onUp={() => {
+            const back = trail.at(-1);
+            if (back) router.push(back.href);
+          }}
+          onDrill={(r) => {
+            const entryId = (r.drill as { entryId: string }).entryId;
+            const next = [...trail, { label: `${data.account.code} ledger`, href: here }];
+            router.push(`/books/reports/entry?id=${entryId}&trail=${trailParam(next)}`);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
