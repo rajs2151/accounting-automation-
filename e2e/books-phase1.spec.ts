@@ -256,6 +256,18 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByTestId("create-journal-open")).toBeVisible();
   await expect(page.getByRole("link", { name: "Journals" })).toBeVisible();
 
+  // P4-3: Create Entry templates — accrual auto-reverse; prepayment asset warning
+  await page.getByTestId("create-journal-open").click();
+  const createSheet = page.getByTestId("create-entry-sheet");
+  await expect(createSheet).toBeVisible({ timeout: 15_000 });
+  await createSheet.getByTestId("create-entry-template-accrual").click();
+  await expect(createSheet.getByTestId("create-entry-auto-reverse-checkbox")).toBeChecked();
+  await expect(createSheet.getByTestId("create-entry-template-hint")).toContainText(/auto-reverse/i);
+  await createSheet.getByTestId("create-entry-template-prepayment").click();
+  await expect(createSheet.getByTestId("create-entry-template-warning")).toContainText(/1410|asset/i);
+  await expect(createSheet.getByTestId("create-entry-auto-reverse-checkbox")).not.toBeChecked();
+  await createSheet.getByRole("button", { name: "Cancel" }).click();
+
   await page.goto("/books/inbox");
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();
 });

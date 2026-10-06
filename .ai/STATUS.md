@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
-- Current task: P4-2 PASS — next P4-3 Create Entry templates
+- Current task: P4-3 PASS — next P4-4 schedule/recurring
+- 2026-10-07: P4-3 PASS — Create Entry templates (accrual auto-reverse, prepayment asset warning, payroll)
 - 2026-10-07: P4-2 PASS — SideDrawer Dr/Cr line cards, parent account, audit timeline + actor
 - 2026-10-07: P4-1 PASS — Split(n), Expense voucher filter, reversed grey, Rules link, e2e chrome
 - 2026-10-07: Phase 3 CLOSED + pushed; Phase 4 started
@@ -114,6 +115,10 @@
 - 2026-10-07 | Phase 3 | CLOSED | pushed P3-1..3 to origin/feat/books-phase1; ready for Phase 4
 - 2026-10-07 | P4-1 | PASS | Ledger Journals list: Split(n), Expense filter, reversed grey, e2e chrome
 - 2026-10-07 | P4-2 | PASS | SideDrawer line Dr/Cr cards + parent; audit actor/timeline; linked entry nos
+<<<<<<< HEAD
 - 2026-10-06 | RPT-1 | PASS (cloud: unit 209/202p/7s, e2e reports+journals 3/3 local) | ReportTable; TB+Ledger+Day Book+Ageing; drill to source; XLSX/CSV/print; owner: old booksAccountLedger double-counts pre-period lines
 - 2026-10-06 | RPT-1d | PASS (cloud: unit 210/203p/7s, e2e reports+journals 3/3 local) | fixed old booksAccountLedger double count; ageing credits from receipt/payment journals (direct + bank-line); due = issue + terms; tb-vat-note restored
 - 2026-10-06 | UI-NOTION | PASS (cloud: unit 210/203p/7s; e2e local 6 pass, 3 env-only fails identical on baseline) | Notion-style tables + side peek on every Books table; drawer restyle; no sheet blur
+=======
+- 2026-10-07 | P4-3 | PASS | Create Entry templates; accrual auto-reverse; prepayment 1410 warning; payroll; Expense voucher option
+>>>>>>> d357eb4 (P4-3: Create Entry templates with accrual auto-reverse and prepayment warning.)

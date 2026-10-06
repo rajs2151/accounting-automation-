@@ -248,7 +248,7 @@ function ManageTagsDialog({
 }
 
 export function LedgerToolbar({
-  periodId,
+  periodId: _periodId,
   toolbarSearch,
   onToolbarSearchChange,
   types,
