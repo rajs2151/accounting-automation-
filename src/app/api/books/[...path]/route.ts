@@ -56,6 +56,10 @@ import {
   updateBooksTag,
 } from "@/server/books/tags";
 import {
+  listBooksBankAccounts,
+  updateBooksBankAccountSetup,
+} from "@/server/books/bank-accounts";
+import {
   acknowledgeBooksDocumentCheckVat,
   approveAndPostBooksDocument,
   createBooksDocument,
@@ -318,6 +322,9 @@ export async function GET(request: Request, ctx: Ctx) {
       return NextResponse.json(
         await getBooksInboxReview(session.userId, session.clientId, path[1]),
       );
+    }
+    if (path[0] === "bank-accounts" && path.length === 1) {
+      return NextResponse.json(await listBooksBankAccounts(session.userId, session.clientId));
     }
     if (path[0] === "statements" && path.length === 1) {
       return NextResponse.json(await listStatementExtractions(session.userId, session.clientId));
@@ -892,6 +899,20 @@ export async function PATCH(request: Request, ctx: Ctx) {
           closingBalanceMinor:
             body.closingBalanceMinor != null ? Number(body.closingBalanceMinor) : undefined,
           lines: Array.isArray(body.lines) ? body.lines : [],
+        }),
+      );
+    }
+    if (path[0] === "bank-accounts" && path.length === 2) {
+      return NextResponse.json(
+        await updateBooksBankAccountSetup(session.userId, session.clientId, path[1], {
+          bankName: body.bankName === undefined ? undefined : body.bankName ? String(body.bankName) : null,
+          iban: body.iban === undefined ? undefined : body.iban ? String(body.iban) : null,
+          ibanLast4:
+            body.ibanLast4 === undefined
+              ? undefined
+              : body.ibanLast4
+                ? String(body.ibanLast4)
+                : null,
         }),
       );
     }

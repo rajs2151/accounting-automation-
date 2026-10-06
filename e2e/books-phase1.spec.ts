@@ -230,6 +230,10 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByText(/Coming in Phase 3/i)).toBeVisible();
   await expect(page.getByText("(Phase 3)")).toHaveCount(0);
 
+  await page.goto("/books/banking");
+  await expect(page.getByRole("heading", { name: "Banking" })).toBeVisible();
+  await expect(page.getByTestId("banking-accounts-table")).toBeVisible();
+
   await page.goto("/books/inbox");
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();
 });
