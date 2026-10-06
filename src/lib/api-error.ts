@@ -43,6 +43,7 @@ const MESSAGES: Record<string, string> = {
   remainder_kind_required: "Choose Advance or On account for the unallocated remainder.",
   party_required: "Choose a party for this allocation.",
   open_item_required: "Choose an open invoice or bill for Against item.",
+  p2a_match_suggestions_migration_required: "Database migration db/39 is required for match suggestions.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

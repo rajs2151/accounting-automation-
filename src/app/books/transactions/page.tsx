@@ -59,6 +59,14 @@ type MatchCand = {
   documentNumber: string | null;
   openOriginalMinor: number;
   score: number;
+  band?: string;
+  breakdown?: {
+    amount: number;
+    date: number;
+    name: number;
+    reference: number;
+    warnings: string[];
+  };
 };
 
 type TransferCand = {
@@ -230,12 +238,37 @@ function TransactionsInner() {
   async function loadMatchCandidates(id: string) {
     if (matchCands[id]) return;
     const res = await fetch(`/api/books/bank-transactions/${id}/match-candidates`);
-    const data = await res.json().catch(() => []);
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast.error(apiErrorMessage(data));
       return;
     }
-    if (Array.isArray(data)) setMatchCands((prev) => ({ ...prev, [id]: data }));
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.candidates)
+        ? data.candidates
+        : [];
+    setMatchCands((prev) => ({ ...prev, [id]: list }));
+  }
+
+  async function rejectMatch(id: string, openItemId: string) {
+    const res = await fetch(`/api/books/bank-transactions/${id}/reject-match`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ openItemId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success("Suggestion rejected");
+    setMatchCands((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    void loadMatchCandidates(id);
   }
 
   async function setMatch(id: string, openItemId: string | null) {
@@ -650,7 +683,10 @@ function TransactionsInner() {
                                 {(matchCands[r.id] || []).map((c) => (
                                   <SelectItem key={c.openItemId} value={c.openItemId}>
                                     {(c.documentNumber || "Doc") +
-                                      ` · ${c.partyName} · ${c.openOriginalMinor}`}
+                                      ` · ${c.partyName} · ${c.openOriginalMinor}` +
+                                      (c.score != null
+                                        ? ` · ${Math.round(c.score * 100)}%${c.band ? ` (${c.band})` : ""}`
+                                        : "")}
                                   </SelectItem>
                                 ))}
                                 {r.openItemId &&
@@ -790,11 +826,40 @@ function TransactionsInner() {
                       <SelectContent>
                         {(matchCands[peekRow.id] || []).map((c) => (
                           <SelectItem key={c.openItemId} value={c.openItemId}>
-                            {(c.documentNumber || "Doc") + ` · ${c.openOriginalMinor}`}
+                            {(c.documentNumber || "Doc") +
+                              ` · ${c.openOriginalMinor} · ${Math.round((c.score || 0) * 100)}%`}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {(matchCands[peekRow.id] || []).slice(0, 3).map((c) => (
+                      <div
+                        key={`brk-${c.openItemId}`}
+                        className="rounded border border-border p-2 text-xs"
+                        data-testid={`txn-score-${c.openItemId}`}
+                      >
+                        <div className="font-medium">
+                          {c.documentNumber || "Doc"} · {Math.round(c.score * 100)}% · {c.band}
+                        </div>
+                        {c.breakdown ? (
+                          <div className="text-muted-foreground">
+                            amt {c.breakdown.amount} · date {c.breakdown.date} · name{" "}
+                            {c.breakdown.name} · ref {c.breakdown.reference}
+                            {c.breakdown.warnings?.length
+                              ? ` · ${c.breakdown.warnings.join(", ")}`
+                              : ""}
+                          </div>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="mt-1 h-7 px-2"
+                          onClick={() => void rejectMatch(peekRow.id, c.openItemId)}
+                        >
+                          Reject suggestion
+                        </Button>
+                      </div>
+                    ))}
                     <Select value={feeAccountId || undefined} onValueChange={(v) => v && setFeeAccountId(v)}>
                       <SelectTrigger className="h-8 w-[180px]">
                         <SelectValue placeholder="Fee account" />

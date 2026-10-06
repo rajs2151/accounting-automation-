@@ -3,6 +3,7 @@ import {
   bankTxnUnallocatedMinor,
   type BankTxnAllocKind,
 } from "@/lib/bank-txn-alloc";
+import { scoreBankOpenItemMatch, subsetSumBundle } from "@/lib/bank-txn-match-score";
 import { BANK_TXN_TYPES, type BooksBankTxnType } from "@/lib/bank-txn-types";
 import { withUser } from "@/lib/db";
 import { normalizeIban } from "@/lib/statement-coverage";
@@ -798,7 +799,7 @@ export async function setBooksBankTxnAllocations(
   });
 }
 
-/** Suggest open AR/AP items for a Ready receipt/payment txn (amount-aware, thin C3-2). */
+/** Suggest open AR/AP items with weighted score breakdown (P2A-2). */
 export async function listBooksBankTxnMatchCandidates(
   userId: string,
   clientId: string,
@@ -807,7 +808,8 @@ export async function listBooksBankTxnMatchCandidates(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const txn = await db.query(
-      `SELECT id, txn_type, currency, debit_minor, credit_minor, review_status
+      `SELECT id, txn_type, currency, debit_minor, credit_minor, review_status,
+              txn_date, description, reference
        FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
       [txnId, clientId],
     );
@@ -817,40 +819,141 @@ export async function listBooksBankTxnMatchCandidates(
     let side: "AR" | "AP" | null = null;
     if (txnType === "customer_receipt") side = "AR";
     if (txnType === "supplier_payment") side = "AP";
-    if (!side) return [];
+    if (!side) return { candidates: [], bundle: null as null };
 
     const amount =
       side === "AR" ? Number(row.credit_minor || 0) : Number(row.debit_minor || 0);
     const currency = String(row.currency || "AED");
+    const directionOk =
+      (side === "AR" && Number(row.credit_minor || 0) > 0) ||
+      (side === "AP" && Number(row.debit_minor || 0) > 0);
+
+    const rejected = await db.query(
+      `SELECT open_item_id FROM books_bank_txn_rejected_matches
+       WHERE client_id = $1 AND bank_txn_id = $2`,
+      [clientId, txnId],
+    ).catch(() => ({ rows: [] as Array<{ open_item_id: unknown }> }));
+    const rejectedIds = new Set(rejected.rows.map((r) => String(r.open_item_id)));
 
     const rows = await db.query(
       `SELECT oi.id, oi.party_id AS "partyId", p.name AS "partyName",
               oi.open_original_minor AS "openOriginalMinor",
               oi.currency, d.document_number AS "documentNumber",
-              CASE WHEN oi.open_original_minor = $4 THEN 100
-                   WHEN oi.open_original_minor > 0
-                        AND ABS(oi.open_original_minor - $4) * 10000 / oi.open_original_minor <= 500
-                     THEN 80
-                   ELSE 40
-              END AS score
+              d.issue_date AS "issueDate"
        FROM books_open_items oi
        JOIN books_parties p ON p.id = oi.party_id
        LEFT JOIN books_documents d ON d.id = oi.document_id
        WHERE oi.client_id = $1 AND oi.side = $2 AND oi.status IN ('open','partial')
          AND oi.currency = $3 AND oi.open_original_minor > 0
-       ORDER BY score DESC, oi.open_original_minor ASC
-       LIMIT 25`,
-      [clientId, side, currency, amount],
+       ORDER BY oi.open_original_minor ASC
+       LIMIT 80`,
+      [clientId, side, currency],
     );
-    return rows.rows.map((r) => ({
-      openItemId: String(r.id),
-      partyId: String(r.partyId),
-      partyName: String(r.partyName),
-      documentNumber: r.documentNumber ? String(r.documentNumber) : null,
-      openOriginalMinor: Number(r.openOriginalMinor),
-      currency: String(r.currency),
-      score: Number(r.score),
-    }));
+
+    const scored = rows.rows
+      .filter((r) => !rejectedIds.has(String(r.id)))
+      .map((r) => {
+        const fit = scoreBankOpenItemMatch({
+          bankAmountMinor: amount,
+          openAmountMinor: Number(r.openOriginalMinor),
+          bankDateIso: isoDate(row.txn_date),
+          openDateIso: isoDate(r.issueDate),
+          bankDescription: String(row.description || ""),
+          partyName: String(r.partyName),
+          bankReference: row.reference == null ? null : String(row.reference),
+          documentNumber: r.documentNumber ? String(r.documentNumber) : null,
+          directionOk,
+        });
+        return {
+          openItemId: String(r.id),
+          partyId: String(r.partyId),
+          partyName: String(r.partyName),
+          documentNumber: r.documentNumber ? String(r.documentNumber) : null,
+          openOriginalMinor: Number(r.openOriginalMinor),
+          currency: String(r.currency),
+          score: fit.score,
+          band: fit.band,
+          breakdown: fit.breakdown,
+          source: "score" as const,
+        };
+      })
+      .filter((c) => c.band !== "none")
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 25);
+
+    const opens = rows.rows
+      .filter((r) => !rejectedIds.has(String(r.id)))
+      .map((r) => Number(r.openOriginalMinor));
+    const bundleIdx = subsetSumBundle(amount, opens, 0);
+    let bundle: {
+      openItemIds: string[];
+      totalMinor: number;
+      label: string;
+    } | null = null;
+    if (bundleIdx && bundleIdx.length >= 2) {
+      const ids = bundleIdx.map((i) => String(rows.rows[i]!.id));
+      const total = bundleIdx.reduce((s, i) => s + Number(rows.rows[i]!.openOriginalMinor), 0);
+      bundle = {
+        openItemIds: ids,
+        totalMinor: total,
+        label: `Bundle ${ids.length} items = ${total}`,
+      };
+    }
+
+    // Persist top score on the txn when columns exist (best effort).
+    if (scored[0]) {
+      await db
+        .query(
+          `UPDATE books_bank_transactions SET
+             match_score = $3, match_score_breakdown = $4::jsonb, match_band = $5, updated_at = now()
+           WHERE id = $1 AND client_id = $2`,
+          [
+            txnId,
+            clientId,
+            scored[0].score,
+            JSON.stringify(scored[0].breakdown),
+            scored[0].band,
+          ],
+        )
+        .catch(() => undefined);
+    }
+
+    return { candidates: scored, bundle };
+  });
+}
+
+export async function rejectBooksBankTxnMatchSuggestion(
+  userId: string,
+  clientId: string,
+  txnId: string,
+  openItemId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const txn = await db.query(
+      `SELECT id FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    if (!txn.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const table = await db.query(`SELECT to_regclass('books_bank_txn_rejected_matches') AS t`);
+    if (!table.rows[0]?.t) {
+      throw new BooksError("p2a_match_suggestions_migration_required", "invalid");
+    }
+    await db.query(
+      `INSERT INTO books_bank_txn_rejected_matches (client_id, bank_txn_id, open_item_id, rejected_by)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (bank_txn_id, open_item_id) DO NOTHING`,
+      [clientId, txnId, openItemId, userId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "reject_bank_txn_match_suggestion",
+      entity: "books_bank_transaction",
+      entityId: txnId,
+      after: { openItemId },
+    });
+    return { id: txnId, openItemId, rejected: true };
   });
 }
 

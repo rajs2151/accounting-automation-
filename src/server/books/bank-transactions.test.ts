@@ -8,11 +8,13 @@ import {
   __testStatementEligible,
   excludeBooksBankTransaction,
   linkBooksBankTransferPair,
+  listBooksBankTxnMatchCandidates,
   listBooksBankTransactions,
   markBooksBankTransactionReviewed,
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  rejectBooksBankTxnMatchSuggestion,
   setBooksBankTxnAllocations,
   updateBooksBankTransaction,
 } from "@/server/books/bank-transactions";
@@ -677,6 +679,106 @@ test("P2A-1: 1:N split + bank fee; unallocated gate; N:1 partial", async (t) => 
     );
     assert.equal(Number(oiC.rows[0].open_original_minor), 0);
     assert.equal(String(oiC.rows[0].status), "closed");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("P2A-2: scored candidates; reject remembered", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  const rej = await admin.query(`SELECT to_regclass('books_bank_txn_rejected_matches') AS t`);
+  if (!rej.rows[0]?.t) {
+    t.skip("db/39 match suggestions not migrated");
+    await admin.end();
+    return;
+  }
+  try {
+    const company = await createTestCompany(admin, "p2a2-score");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    const bank = company.accountIdByCode["1120"];
+    const ar = company.accountIdByCode["1210"];
+    assert.ok(periodId && bank && ar);
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'P2A2', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank],
+    );
+    const partyName = `Score Co ${Date.now()}`;
+    const customer = await createBooksParty(OMAR, clientId, {
+      partyType: "customer",
+      name: partyName,
+      force: true,
+    });
+    const docNo = `SCR-${Date.now()}`;
+    const inv = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: String(customer.id),
+      issueDate: "2026-05-01",
+      periodId,
+      documentNumber: docNo,
+      lines: [
+        {
+          description: "Svc",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
+    const oi = await admin.query(
+      `SELECT id FROM books_open_items WHERE document_id = $1`,
+      [inv.id],
+    );
+    const fileId = randomUUID();
+    const stmtId = randomUUID();
+    const lineId = randomUUID();
+    await admin.query(
+      `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,'s.pdf','application/pdf',10,$5)`,
+      [fileId, clientId, `sc-${randomUUID()}`, `books/${clientId}/${fileId}/s.pdf`, OMAR],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_extractions (
+         id, client_id, file_id, account_id, iban, period_from, period_to,
+         opening_balance_minor, closing_balance_minor, status, validation_flags
+       ) VALUES (
+         $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+         0,10500,'ready','["balance_ok"]'::jsonb
+       )`,
+      [stmtId, clientId, fileId, bank],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_lines (
+         id, statement_id, client_id, line_date, description, reference,
+         debit_minor, credit_minor, currency, sort_index
+       ) VALUES ($1,$2,$3,'2026-05-03',$4,$5,0,10500,'AED',0)`,
+      [lineId, stmtId, clientId, `${partyName} payment`, docNo],
+    );
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const listed = await listBooksBankTransactions(OMAR, clientId, {
+      materialize: false,
+      status: "needs_review",
+    });
+    const txnId = listed[0]!.id;
+    await updateBooksBankTransaction(OMAR, clientId, txnId, {
+      txnType: "customer_receipt",
+      categoryAccountId: ar,
+    });
+    const before = await listBooksBankTxnMatchCandidates(OMAR, clientId, txnId);
+    assert.ok(before.candidates.length >= 1);
+    assert.ok(before.candidates[0]!.score >= 0.5);
+    assert.ok(before.candidates[0]!.breakdown);
+    await rejectBooksBankTxnMatchSuggestion(OMAR, clientId, txnId, String(oi.rows[0].id));
+    const after = await listBooksBankTxnMatchCandidates(OMAR, clientId, txnId);
+    assert.equal(
+      after.candidates.some((c) => c.openItemId === String(oi.rows[0].id)),
+      false,
+    );
   } finally {
     await admin.end().catch(() => undefined);
   }

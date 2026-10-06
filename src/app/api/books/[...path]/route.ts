@@ -70,6 +70,7 @@ import {
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  rejectBooksBankTxnMatchSuggestion,
   setBooksBankTxnAllocations,
   unlinkBooksBankTransferPair,
   updateBooksBankTransaction,
@@ -865,6 +866,16 @@ export async function POST(request: Request, ctx: Ctx) {
           body.openItemId == null || body.openItemId === ""
             ? null
             : String(body.openItemId),
+        ),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "reject-match" && path.length === 3) {
+      return NextResponse.json(
+        await rejectBooksBankTxnMatchSuggestion(
+          session.userId,
+          session.clientId,
+          path[1],
+          String(body.openItemId || ""),
         ),
       );
     }
