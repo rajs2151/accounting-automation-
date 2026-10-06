@@ -129,6 +129,7 @@ import {
 import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
 import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/company-vat-settings";
 import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
+import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -324,6 +325,25 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
       return NextResponse.json(await getCompanyVatSettings(session.userId, session.clientId));
+    }
+    if (path[0] === "vat201" && path[1] === "draft" && path.length === 2) {
+      try {
+        return NextResponse.json(
+          await generateVat201Draft(session.userId, session.clientId, {
+            from: url.searchParams.get("from") || undefined,
+            to: url.searchParams.get("to") || undefined,
+            monthEnd: url.searchParams.get("monthEnd") || undefined,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof VatReturnBlockedError) {
+          return NextResponse.json(
+            { error: error.message, code: error.code, gaps: error.gaps },
+            { status: 409 },
+          );
+        }
+        throw error;
+      }
     }
     if (path[0] === "dashboard" && path.length === 1) {
       return NextResponse.json(

@@ -51,7 +51,14 @@ Rules (enforced in code + DB checks):
 Gap list: `listPlaceOfSupplyGaps` / `GET /api/books/place-of-supply/gaps?from&to` returns posted documents with
 no emirate (party has none) and their VAT. Approve does **not** block on a missing emirate yet (see open questions).
 
-## How the report will use it (later)
+## How the report uses it
+
+Server-side draft shipped in P2B-7: `generateVat201Draft` (`src/server/books/vat201.ts`,
+`GET /api/books/vat201/draft?from&to` or `?monthEnd` → company VAT period). It is read-only; filing and a
+UI page come later. The design below is what it implements. Box 9 counts SR purchase lines only in
+entries that recovered input VAT on 1430; reverse charge goes to Boxes 3 + 10. Boxes 2, 6, 7 (tourist
+refunds, imports) are not produced yet. VAT-control lines from entries with no document (manual JVs)
+are reported as `unlinked`, never boxed.
 
 For a VAT period (company stagger, monthly/quarterly from `books_periods`):
 

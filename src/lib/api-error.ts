@@ -57,6 +57,10 @@ const MESSAGES: Record<string, string> = {
   vat_stagger_invalid: "Choose monthly, or quarterly with the month a quarter ends.",
   vat_settings_require_admin: "Only an admin can change the company's VAT settings.",
   place_of_supply_reapply_requires_admin: "Only an admin can re-apply the place-of-supply rule.",
+  vat_return_blocked_place_of_supply_gaps:
+    "Some posted documents in this VAT period have no place of supply. Fix the gap list first.",
+  vat_stagger_not_set: "Set the company's VAT return period in Settings first.",
+  vat_return_range_required: "Choose a VAT period or a date range.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {
