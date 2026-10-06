@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { StatusBadge } from "@/components/books/status-badge";
 import { apiErrorMessage } from "@/lib/api-error";
+import { formatMinor } from "@/lib/money";
 import { formatDateUae } from "@/lib/date";
 import { isDevUiEnabled } from "@/lib/dev-ui";
 
@@ -84,6 +85,36 @@ function Card(props: {
   );
 }
 
+type Kpi = { totalOutstandingAedMinor: number; overdueAedMinor: number; dueIn7DaysAedMinor: number };
+type Money = { ar: Kpi | null; ap: Kpi | null; cashMinor: number | null; cashAccounts: number };
+
+function MoneyTile(props: { testId: string; label: string; amountMinor: number | null; note: string; href: string; tone?: "danger" }) {
+  return (
+    <Link
+      href={props.href}
+      data-testid={props.testId}
+      className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40 hover:bg-muted/30"
+    >
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{props.label}</div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums">
+        {props.amountMinor == null ? "—" : formatMinor(props.amountMinor)}
+        <span className="ms-1 text-xs font-normal text-muted-foreground">AED</span>
+      </div>
+      <div className={props.tone === "danger" ? "mt-1 text-xs text-red-600" : "mt-1 text-xs text-muted-foreground"}>
+        {props.note}
+      </div>
+    </Link>
+  );
+}
+
+const REPORT_SHORTCUTS = [
+  { href: "/books/reports/trial-balance", label: "Trial balance", note: "Balances by account" },
+  { href: "/books/reports/day-book", label: "Day book", note: "Every voucher by date" },
+  { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", note: "Who owes you" },
+  { href: "/books/reports/ageing?side=ap", label: "Payables ageing", note: "What you owe" },
+  { href: "/books/journals", label: "Ledger", note: "Journal entries" },
+];
+
 const COVERAGE_LABEL = { covered: "✓ to month end", gap: "✗ gap", missing: "✗ no statement" } as const;
 
 export default function BooksHomePage() {
@@ -91,6 +122,33 @@ export default function BooksHomePage() {
   const [data, setData] = useState<Checklist | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [money, setMoney] = useState<Money | null>(null);
+
+  // Money at a glance (today): open receivables / payables and cash & bank balances.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      fetch("/api/books/open-items/kpis?side=AR").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/books/open-items/kpis?side=AP").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/books/bank-accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]).then(([ar, ap, banks]) => {
+      if (cancelled) return;
+      const cash = Array.isArray(banks)
+        ? (banks as Array<{ instrumentType: string; ledgerBalanceMinor: number }>).filter(
+            (b) => b.instrumentType === "bank" || b.instrumentType === "cash",
+          )
+        : null;
+      setMoney({
+        ar: ar && !ar.error ? (ar as Kpi) : null,
+        ap: ap && !ap.error ? (ap as Kpi) : null,
+        cashMinor: cash ? cash.reduce((s, b) => s + Number(b.ledgerBalanceMinor || 0), 0) : null,
+        cashAccounts: cash?.length ?? 0,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [periodId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,6 +189,34 @@ export default function BooksHomePage() {
 
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
+      {money ? (
+        <div className="grid gap-4 sm:grid-cols-3" data-testid="dashboard-money">
+          <MoneyTile
+            testId="dash-money-ar"
+            label="Receivables"
+            amountMinor={money.ar?.totalOutstandingAedMinor ?? null}
+            note={money.ar ? (money.ar.overdueAedMinor ? `${formatMinor(money.ar.overdueAedMinor)} overdue` : "Nothing overdue") : "—"}
+            tone={money.ar?.overdueAedMinor ? "danger" : undefined}
+            href="/books/reports/ageing?side=ar"
+          />
+          <MoneyTile
+            testId="dash-money-ap"
+            label="Payables"
+            amountMinor={money.ap?.totalOutstandingAedMinor ?? null}
+            note={money.ap ? (money.ap.overdueAedMinor ? `${formatMinor(money.ap.overdueAedMinor)} overdue` : "Nothing overdue") : "—"}
+            tone={money.ap?.overdueAedMinor ? "danger" : undefined}
+            href="/books/reports/ageing?side=ap"
+          />
+          <MoneyTile
+            testId="dash-money-cash"
+            label="Cash & bank"
+            amountMinor={money.cashMinor}
+            note={`Ledger balance · ${money.cashAccounts} account${money.cashAccounts === 1 ? "" : "s"}`}
+            href="/books/banking"
+          />
+        </div>
+      ) : null}
+
       {d ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="dashboard-checklist">
           <Card
@@ -148,7 +234,7 @@ export default function BooksHomePage() {
                     <span>
                       {a.code} {a.name}
                     </span>
-                    <span className={a.state === "covered" ? "text-emerald-700" : "text-red-600"}>
+                    <span className={`shrink-0 whitespace-nowrap ${a.state === "covered" ? "text-emerald-700" : "text-red-600"}`}>
                       {COVERAGE_LABEL[a.state]}
                     </span>
                   </li>
@@ -167,8 +253,20 @@ export default function BooksHomePage() {
             href={d.documentsToReview.href}
             action="Review documents"
           >
-            Bills {d.documentsToReview.purchaseBills} · Invoices {d.documentsToReview.salesInvoices} · Notes{" "}
-            {d.documentsToReview.notes} · Statements {d.documentsToReview.statements}
+            <span className="flex flex-wrap gap-x-3 gap-y-1">
+              <Link href="/books/purchases" className="hover:text-foreground hover:underline">
+                Bills {d.documentsToReview.purchaseBills}
+              </Link>
+              <Link href="/books/sales" className="hover:text-foreground hover:underline">
+                Invoices {d.documentsToReview.salesInvoices}
+              </Link>
+              <Link href="/books/sales" className="hover:text-foreground hover:underline">
+                Notes {d.documentsToReview.notes}
+              </Link>
+              <Link href="/books/statements" className="hover:text-foreground hover:underline">
+                Statements {d.documentsToReview.statements}
+              </Link>
+            </span>
           </Card>
 
           <Card
@@ -184,13 +282,13 @@ export default function BooksHomePage() {
 
           <Card
             testId="dash-unassigned"
-            title="Unassigned inbox"
+            title="Unassigned uploads"
             tone={d.unassignedInbox.count ? "warning" : "success"}
             statusLabel={String(d.unassignedInbox.count)}
             href={d.unassignedInbox.href}
-            action="Open inbox"
+            action="Assign to a company"
           >
-            Files not matched to a company.
+            Firm-wide: files uploaded without a company, waiting to be routed.
           </Card>
 
           <Card
@@ -234,19 +332,23 @@ export default function BooksHomePage() {
         )}
       </section>
 
+      <section className="space-y-2" data-testid="dashboard-reports">
+        <h2 className="font-medium">Reports</h2>
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {REPORT_SHORTCUTS.map((r) => (
+            <Link
+              key={r.href}
+              href={r.href}
+              className="rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/40 hover:bg-muted/30"
+            >
+              <div className="text-sm font-medium">{r.label}</div>
+              <div className="text-xs text-muted-foreground">{r.note}</div>
+            </Link>
+          ))}
+        </div>
+      </section>
+
       <div className="flex flex-wrap gap-2">
-        <Link
-          href="/books/journals"
-          className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm hover:bg-muted"
-        >
-          Ledger
-        </Link>
-        <Link
-          href="/books/reports/trial-balance"
-          className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm hover:bg-muted"
-        >
-          Trial balance
-        </Link>
         {isDevUiEnabled() ? (
           <Link
             href="/dev/ui"

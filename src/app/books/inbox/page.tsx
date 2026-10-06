@@ -27,7 +27,8 @@ export default function InboxPage() {
   const searchParams = useSearchParams();
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<InboxRow[]>([]);
-  const [unassigned, setUnassigned] = useState(false);
+  // Deep link from the dashboard: /books/inbox?unassigned=1 opens the firm-wide unassigned list.
+  const [unassigned, setUnassigned] = useState(() => searchParams.get("unassigned") === "1");
 
   const reload = useCallback(async () => {
     const qs = unassigned ? "?unassigned=1" : "";

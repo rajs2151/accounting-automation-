@@ -343,14 +343,22 @@ export async function getBooksMonthChecklist(
       salesInvoices,
       notes,
       statements: statementsToReview,
-      href: "/books/purchases",
+      // Open the queue that actually has work (bills first, then invoices, then statements).
+      href:
+        purchaseBills > 0
+          ? "/books/purchases"
+          : salesInvoices + notes > 0
+            ? "/books/sales"
+            : statementsToReview > 0
+              ? "/books/statements"
+              : "/books/purchases",
     },
     bankLines: {
       needsReview: Number(counts.bank.rows[0].needs_review),
       readyNotPosted: Number(counts.bank.rows[0].ready),
       href: "/books/transactions",
     },
-    unassignedInbox: { count: Number(counts.unassigned.rows[0].n), href: "/books/inbox" },
+    unassignedInbox: { count: Number(counts.unassigned.rows[0].n), href: "/books/inbox?unassigned=1" },
     periodStatus: {
       status: period.status,
       locked: !["OPEN", "REOPENED"].includes(period.status),
