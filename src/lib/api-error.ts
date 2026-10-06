@@ -25,6 +25,11 @@ const MESSAGES: Record<string, string> = {
   bank_txn_not_found: "That bank transaction was not found.",
   bank_txn_not_editable: "That transaction can no longer be edited.",
   c3_bank_transactions_migration_required: "Database migration db/35 is required for Transactions.",
+  c3_bank_txn_match_migration_required: "Database migration db/36 is required for match/post.",
+  bank_txn_not_ready: "Only Ready transactions can be posted.",
+  bank_txn_not_reviewed: "Mark the transaction reviewed before posting.",
+  match_requires_receipt_or_payment: "Match is only for customer receipts or supplier payments.",
+  match_amount_direction: "Amount direction does not match this transaction type.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

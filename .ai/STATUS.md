@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: next is C3-2 (match + post) or polish backlog
+- Current task: next is C3-3 (transfers/bulk) or polish backlog
+- 2026-10-06: C3-2 PASS — 1:1 open-item match + dual-control post (RV/PY or category JV).
 - 2026-10-06: C3-1 PASS — bank txns Needs Review / Ready / Excluded; categorize only (no journal post).
 - 2026-10-06: C2-2 PASS — intended account on upload, IBAN≠account block, sample CSV, statement logs.
 - 2026-10-06: C1b-2 PASS — apply customer advance on sales approve (optional, never default).
@@ -33,8 +34,8 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b · C2-1 · C1b-2 · C2-2 · C3-1
-2. C3-2+: match open items + dual-control post
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b · C2-1 · C1b-2 · C2-2 · C3-1 · C3-2
+2. C3 follow-ups: transfer pairs, N:1 splits, bulk post, rules
 3. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions
@@ -82,3 +83,4 @@
 - 2026-10-06 | C1b-2 | PASS | optional apply 2320 advance on sales approve; unit + gates
 - 2026-10-06 | C2-2 | PASS | intended account + IBAN mismatch flag; sample CSV; statement logs
 - 2026-10-06 | C3-1 | PASS | books_bank_transactions materialize + categorize UI; no post
+- 2026-10-06 | C3-2 | PASS | match open item + dual-control post; Posted tab

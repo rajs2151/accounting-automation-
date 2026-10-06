@@ -61,9 +61,12 @@ import {
 } from "@/server/books/bank-accounts";
 import {
   excludeBooksBankTransaction,
+  listBooksBankTxnMatchCandidates,
   listBooksBankTransactions,
   markBooksBankTransactionReviewed,
+  matchBooksBankTransaction,
   materializeBooksBankTransactions,
+  postBooksBankTransaction,
   updateBooksBankTransaction,
 } from "@/server/books/bank-transactions";
 import {
@@ -356,6 +359,11 @@ export async function GET(request: Request, ctx: Ctx) {
           status: url.searchParams.get("status") || undefined,
           q: url.searchParams.get("q") || undefined,
         }),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "match-candidates" && path.length === 3) {
+      return NextResponse.json(
+        await listBooksBankTxnMatchCandidates(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "statements" && path.length === 1) {
@@ -830,6 +838,23 @@ export async function POST(request: Request, ctx: Ctx) {
           path[1],
           String(body.reason || body.excludeReason || ""),
         ),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "match" && path.length === 3) {
+      return NextResponse.json(
+        await matchBooksBankTransaction(
+          session.userId,
+          session.clientId,
+          path[1],
+          body.openItemId == null || body.openItemId === ""
+            ? null
+            : String(body.openItemId),
+        ),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "post" && path.length === 3) {
+      return NextResponse.json(
+        await postBooksBankTransaction(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "statements" && path[1] === "csv" && path.length === 2) {

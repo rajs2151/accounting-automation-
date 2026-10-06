@@ -43,9 +43,21 @@ type TxnRow = {
   note: string;
   excludeReason: string | null;
   monthKey: string | null;
+  openItemId: string | null;
+  openItemLabel: string | null;
+  journalEntryId: string | null;
+  entryNo: string | null;
 };
 
-type Tab = "needs_review" | "ready" | "excluded";
+type MatchCand = {
+  openItemId: string;
+  partyName: string;
+  documentNumber: string | null;
+  openOriginalMinor: number;
+  score: number;
+};
+
+type Tab = "needs_review" | "ready" | "excluded" | "posted";
 
 function TransactionsInner() {
   const search = useSearchParams();
@@ -111,12 +123,19 @@ function TransactionsInner() {
     return { current: rows.length };
   }, [rows.length]);
 
-  const [tabCounts, setTabCounts] = useState({ needs_review: 0, ready: 0, excluded: 0 });
+  const [tabCounts, setTabCounts] = useState({
+    needs_review: 0,
+    ready: 0,
+    excluded: 0,
+    posted: 0,
+  });
+  const [matchCands, setMatchCands] = useState<Record<string, MatchCand[]>>({});
+
   useEffect(() => {
     async function loadCounts() {
       const base = new URLSearchParams();
       if (accountId && accountId !== "all") base.set("accountId", accountId);
-      const statuses: Tab[] = ["needs_review", "ready", "excluded"];
+      const statuses: Tab[] = ["needs_review", "ready", "excluded", "posted"];
       const results = await Promise.all(
         statuses.map(async (s) => {
           const p = new URLSearchParams(base);
@@ -126,7 +145,7 @@ function TransactionsInner() {
           return [s, Array.isArray(data) ? data.length : 0] as const;
         }),
       );
-      const next = { needs_review: 0, ready: 0, excluded: 0 };
+      const next = { needs_review: 0, ready: 0, excluded: 0, posted: 0 };
       for (const [s, n] of results) next[s] = n;
       setTabCounts(next);
     }
@@ -183,6 +202,47 @@ function TransactionsInner() {
     void reload();
   }
 
+  async function loadMatchCandidates(id: string) {
+    if (matchCands[id]) return;
+    const res = await fetch(`/api/books/bank-transactions/${id}/match-candidates`);
+    const data = await res.json().catch(() => []);
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    if (Array.isArray(data)) setMatchCands((prev) => ({ ...prev, [id]: data }));
+  }
+
+  async function setMatch(id: string, openItemId: string | null) {
+    const res = await fetch(`/api/books/bank-transactions/${id}/match`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ openItemId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(openItemId ? "Matched" : "Match cleared");
+    void reload();
+  }
+
+  async function postTxn(id: string) {
+    const res = await fetch(`/api/books/bank-transactions/${id}/post`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(`Posted ${data.entryNo || ""}`.trim());
+    void reload();
+  }
+
   const grouped = useMemo(() => {
     const map = new Map<string, TxnRow[]>();
     for (const r of rows) {
@@ -199,7 +259,7 @@ function TransactionsInner() {
         <div>
           <h1 className="text-2xl font-semibold">Transactions</h1>
           <p className="text-sm text-muted-foreground">
-            Categorize bank lines from statements — matching and posting come later
+            Categorize, match open invoices/bills, then an approver posts
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -274,8 +334,8 @@ function TransactionsInner() {
           <TabsTrigger value="excluded" data-testid="txn-tab-excluded">
             Excluded ({tabCounts.excluded})
           </TabsTrigger>
-          <TabsTrigger value="posted" disabled title="Available when posting ships">
-            Posted
+          <TabsTrigger value="posted" data-testid="txn-tab-posted">
+            Posted ({tabCounts.posted})
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -307,6 +367,7 @@ function TransactionsInner() {
               <th className="px-3 py-2">Description</th>
               <th className="px-3 py-2">Type</th>
               <th className="px-3 py-2">Account</th>
+              <th className="px-3 py-2">Match</th>
               <th className="px-3 py-2 text-right">Amount</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2" />
@@ -315,13 +376,13 @@ function TransactionsInner() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
                   Loading…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
                   No transactions in this tab
                   {counts.current === 0 ? " — upload a balanced statement from Banking" : ""}.
                 </td>
@@ -330,7 +391,7 @@ function TransactionsInner() {
               grouped.map(([month, items]) => (
                 <Fragment key={`m-${month}`}>
                   <tr className="border-t border-border bg-muted/20">
-                    <td colSpan={7} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                    <td colSpan={8} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
                       {month}
                     </td>
                   </tr>
@@ -349,7 +410,7 @@ function TransactionsInner() {
                         <Select
                           value={r.txnType || undefined}
                           onValueChange={(v) => void patchRow(r.id, { txnType: v || null })}
-                          disabled={r.reviewStatus === "excluded"}
+                          disabled={r.reviewStatus === "excluded" || r.reviewStatus === "posted"}
                         >
                           <SelectTrigger className="h-8 w-[160px]" data-testid={`txn-type-${r.id}`}>
                             <SelectValue placeholder="Type" />
@@ -369,7 +430,7 @@ function TransactionsInner() {
                           onValueChange={(v) =>
                             void patchRow(r.id, { categoryAccountId: v || null })
                           }
-                          disabled={r.reviewStatus === "excluded"}
+                          disabled={r.reviewStatus === "excluded" || r.reviewStatus === "posted"}
                         >
                           <SelectTrigger
                             className="h-8 w-[180px]"
@@ -386,6 +447,49 @@ function TransactionsInner() {
                           </SelectContent>
                         </Select>
                       </td>
+                      <td className="px-3 py-2">
+                        {r.txnType === "customer_receipt" || r.txnType === "supplier_payment" ? (
+                          r.reviewStatus === "posted" ? (
+                            <span className="text-xs text-muted-foreground">
+                              {r.openItemLabel || "—"}
+                            </span>
+                          ) : (
+                            <Select
+                              value={r.openItemId || "__none__"}
+                              onValueChange={(v) =>
+                                void setMatch(r.id, !v || v === "__none__" ? null : v)
+                              }
+                              onOpenChange={(open) => {
+                                if (open) void loadMatchCandidates(r.id);
+                              }}
+                            >
+                              <SelectTrigger
+                                className="h-8 w-[200px]"
+                                data-testid={`txn-match-${r.id}`}
+                              >
+                                <SelectValue placeholder="Match invoice/bill" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__none__">No match</SelectItem>
+                                {(matchCands[r.id] || []).map((c) => (
+                                  <SelectItem key={c.openItemId} value={c.openItemId}>
+                                    {(c.documentNumber || "Doc") +
+                                      ` · ${c.partyName} · ${c.openOriginalMinor}`}
+                                  </SelectItem>
+                                ))}
+                                {r.openItemId &&
+                                !(matchCands[r.id] || []).some((c) => c.openItemId === r.openItemId) ? (
+                                  <SelectItem value={r.openItemId}>
+                                    {r.openItemLabel || r.openItemId.slice(0, 8)}
+                                  </SelectItem>
+                                ) : null}
+                              </SelectContent>
+                            </Select>
+                          )
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         <span className={r.amountSignedMinor >= 0 ? "text-emerald-700" : "text-red-700"}>
                           {r.amountSignedMinor >= 0 ? "+" : "−"}
@@ -394,6 +498,9 @@ function TransactionsInner() {
                       </td>
                       <td className="px-3 py-2">
                         <StatusBadge meta={bankTxnReviewStatusLabel(r.reviewStatus)} />
+                        {r.entryNo ? (
+                          <div className="text-xs text-muted-foreground">{r.entryNo}</div>
+                        ) : null}
                         {r.excludeReason ? (
                           <div className="text-xs text-muted-foreground">{r.excludeReason}</div>
                         ) : null}
@@ -408,6 +515,15 @@ function TransactionsInner() {
                                 onClick={() => void markReviewed(r.id)}
                               >
                                 Mark reviewed
+                              </Button>
+                            ) : null}
+                            {r.reviewStatus === "ready" ? (
+                              <Button
+                                size="sm"
+                                data-testid={`txn-post-${r.id}`}
+                                onClick={() => void postTxn(r.id)}
+                              >
+                                Post
                               </Button>
                             ) : null}
                             <Button

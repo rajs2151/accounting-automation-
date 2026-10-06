@@ -8,13 +8,18 @@ import {
   excludeBooksBankTransaction,
   listBooksBankTransactions,
   markBooksBankTransactionReviewed,
+  matchBooksBankTransaction,
   materializeBooksBankTransactions,
+  postBooksBankTransaction,
   updateBooksBankTransaction,
 } from "@/server/books/bank-transactions";
+import { approveAndPostBooksDocument, createBooksDocument } from "@/server/books/documents";
 import { BooksError } from "@/server/books/errors";
+import { createBooksParty } from "@/server/books/parties";
 import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
+const LAYLA = "44444444-4444-4444-8444-444444444444";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -180,6 +185,141 @@ test("C3-1: materialize idempotent; skip ineligible; mark/exclude gates", async 
     });
     assert.equal(excluded.length, 1);
     assert.equal(excluded[0]!.excludeReason, "Not a company txn");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C3-2: match AR open item + dual-control post receipt", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  const matchCol = await admin.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'books_bank_transactions' AND column_name = 'open_item_id'`,
+  );
+  if (!matchCol.rowCount) {
+    t.skip("db/36 match columns not migrated");
+    await admin.end();
+    return;
+  }
+  try {
+    const company = await createTestCompany(admin, "c3-post");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    assert.ok(periodId);
+    const bank = (
+      await admin.query(
+        `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1120'`,
+        [clientId],
+      )
+    ).rows[0];
+    const ar = (
+      await admin.query(
+        `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1210'`,
+        [clientId],
+      )
+    ).rows[0];
+    assert.ok(bank && ar);
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'C3 Bank', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank.id],
+    );
+
+    const customer = await createBooksParty(OMAR, clientId, {
+      partyType: "customer",
+      name: `C3 Cust ${Date.now()}`,
+      force: true,
+    });
+    const inv = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: String(customer.id),
+      issueDate: "2026-05-01",
+      periodId,
+      documentNumber: `C3-INV-${Date.now()}`,
+      lines: [
+        {
+          description: "Svc",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
+    const oi = await admin.query(
+      `SELECT id, open_original_minor FROM books_open_items WHERE document_id = $1`,
+      [inv.id],
+    );
+    assert.equal(Number(oi.rows[0].open_original_minor), 10500);
+
+    const fileId = randomUUID();
+    const stmtId = randomUUID();
+    const lineId = randomUUID();
+    await admin.query(
+      `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,'r.pdf','application/pdf',10,$5)`,
+      [fileId, clientId, `c3p-${randomUUID()}`, `books/${clientId}/${fileId}/r.pdf`, OMAR],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_extractions (
+         id, client_id, file_id, account_id, iban, period_from, period_to,
+         opening_balance_minor, closing_balance_minor, status, validation_flags
+       ) VALUES (
+         $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+         0,10500,'ready','["balance_ok"]'::jsonb
+       )`,
+      [stmtId, clientId, fileId, bank.id],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_lines (
+         id, statement_id, client_id, line_date, description,
+         debit_minor, credit_minor, currency, sort_index
+       ) VALUES ($1,$2,$3,'2026-05-08','Customer receipt',0,10500,'AED',0)`,
+      [lineId, stmtId, clientId],
+    );
+
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const listed = await listBooksBankTransactions(OMAR, clientId, {
+      materialize: false,
+      status: "needs_review",
+    });
+    assert.equal(listed.length, 1);
+    const txnId = listed[0]!.id;
+
+    await updateBooksBankTransaction(OMAR, clientId, txnId, {
+      txnType: "customer_receipt",
+      categoryAccountId: String(ar.id),
+    });
+    await markBooksBankTransactionReviewed(OMAR, clientId, txnId);
+    await matchBooksBankTransaction(OMAR, clientId, txnId, String(oi.rows[0].id));
+
+    // Omar is preparer (accountant) — cannot post.
+    await assert.rejects(
+      () => postBooksBankTransaction(OMAR, clientId, txnId),
+      (e: unknown) =>
+        e instanceof BooksError &&
+        (e.message === "post_requires_approver" || e.message === "post_preparer_cannot_approve"),
+    );
+
+    const posted = await postBooksBankTransaction(LAYLA, clientId, txnId);
+    assert.ok(posted.entryNo);
+    assert.ok(posted.journalEntryId);
+
+    const after = await listBooksBankTransactions(OMAR, clientId, {
+      status: "posted",
+      materialize: false,
+    });
+    assert.equal(after.length, 1);
+    assert.equal(after[0]!.openItemId, String(oi.rows[0].id));
+
+    const oiAfter = await admin.query(
+      `SELECT open_original_minor, status FROM books_open_items WHERE id = $1`,
+      [oi.rows[0].id],
+    );
+    assert.equal(Number(oiAfter.rows[0].open_original_minor), 0);
   } finally {
     await admin.end().catch(() => undefined);
   }
