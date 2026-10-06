@@ -28,6 +28,15 @@ test("journals create+post, audit tab, and trial balance totals", async ({ page,
   const sheet = page.getByTestId("create-entry-sheet");
   await expect(sheet).toBeVisible({ timeout: 15_000 });
 
+  // P4-3: Accrual template defaults auto-reverse; prepayment warns about asset treatment
+  await sheet.getByTestId("create-entry-template-accrual").click();
+  await expect(sheet.getByTestId("create-entry-auto-reverse-checkbox")).toBeChecked();
+  await expect(sheet.getByTestId("create-entry-template-hint")).toContainText(/auto-reverse/i);
+  await sheet.getByTestId("create-entry-template-prepayment").click();
+  await expect(sheet.getByTestId("create-entry-template-warning")).toContainText(/1410|asset/i);
+  await expect(sheet.getByTestId("create-entry-auto-reverse-checkbox")).not.toBeChecked();
+  await sheet.getByTestId("create-entry-template-blank").click();
+
   await sheet.locator("#ce-desc").fill("E2E manual sale");
   const accounts = sheet.getByTestId("create-entry-account");
   await accounts.nth(0).selectOption(ACCT_1120);

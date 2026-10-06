@@ -10,9 +10,15 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildJournalTemplate,
+  type JournalTemplateKey,
+  warnPrepaymentBookedAsAccrual,
+} from "@/lib/journal-templates";
 import { formatMinor } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { vatAmountForBase, vatCodeLabel } from "@/lib/vat";
+
 const VOUCHER_TYPE_OPTIONS = [
   "Sales",
   "Purchase",
@@ -24,6 +30,7 @@ const VOUCHER_TYPE_OPTIONS = [
   "Debit Note",
   "Opening",
   "Closing",
+  "Expense",
 ] as const;
 
 type Account = { id: string; code: string; name: string; accountType?: string };
@@ -42,14 +49,7 @@ type LineDraft = {
 
 type BooksTag = { id: string; name: string; colour: string };
 
-type TemplateKey =
-  | "blank"
-  | "accrual"
-  | "prepayment"
-  | "depreciation"
-  | "reclassification"
-  | "vat_settlement";
-
+type TemplateKey = JournalTemplateKey;
 export type CreateEntryPrefill = {
   entryDate?: string;
   memo?: string;
@@ -288,13 +288,14 @@ export function CreateEntrySheet({
   const [recurringStart, setRecurringStart] = useState(() => new Date().toISOString().slice(0, 10));
   const [recurringOccurrences, setRecurringOccurrences] = useState(12);
   const [autoReverse, setAutoReverse] = useState(false);
+  const [templateHint, setTemplateHint] = useState("");
+  const [templateWarning, setTemplateWarning] = useState("");
   const [pendingFiles, setPendingFiles] = useState<Array<{ fileId: string; name: string }>>([]);
   const [dismissedVatKeys, setDismissedVatKeys] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [vatPaymentHint, setVatPaymentHint] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     if (!open) return;
     fetch("/api/books/tags")
@@ -362,15 +363,25 @@ export function CreateEntrySheet({
     return Array.from({ length: n }, (_, i) => addMonths(recurringStart, recurringFreq, i));
   }, [recurring, recurringOccurrences, recurringStart, recurringFreq]);
 
+  const policyWarning = useMemo(() => {
+    if (template === "accrual" || template === "payroll") return null;
+    return warnPrepaymentBookedAsAccrual(
+      lines.filter((l) => !l.isAutoVatCompanion),
+      accounts,
+    );
+  }, [template, lines, accounts]);
+
   const applyTemplate = useCallback(
     async (key: TemplateKey) => {
       setTemplate(key);
       setVatPaymentHint("");
-      if (key === "blank") {
-        setLines([emptyLine(), emptyLine()]);
-        return;
-      }
+      setError("");
+
       if (key === "vat_settlement") {
+        const meta = buildJournalTemplate(key);
+        setAutoReverse(meta.autoReverseNextPeriod);
+        setTemplateHint(meta.hint || "");
+        setTemplateWarning(meta.warning || "");
         if (!periodId) {
           setError("Select a period for VAT settlement.");
           return;
@@ -411,40 +422,27 @@ export function CreateEntrySheet({
         }
         return;
       }
-      const bank = accountByCode(accounts, "1120");
-      const rent = accountByCode(accounts, "6200");
-      const accrued = accountByCode(accounts, "2120");
-      const prepaid = accountByCode(accounts, "1410");
-      const depr = accountByCode(accounts, "6800");
-      const accumDepr = accountByCode(accounts, "1690");
-      const office = accountByCode(accounts, "6600");
-      const rev = accountByCode(accounts, "4100");
 
-      if (key === "accrual") {
-        setDescription("Accrual");
-        setLines([
-          { ...emptyLine(), accountId: rent, debitMinor: 0, creditMinor: 0 },
-          { ...emptyLine(), accountId: accrued, debitMinor: 0, creditMinor: 0 },
-        ]);
-      } else if (key === "prepayment") {
-        setDescription("Prepayment");
-        setLines([
-          { ...emptyLine(), accountId: prepaid, debitMinor: 0 },
-          { ...emptyLine(), accountId: bank, creditMinor: 0 },
-        ]);
-      } else if (key === "depreciation") {
-        setDescription("Depreciation");
-        setLines([
-          { ...emptyLine(), accountId: depr, debitMinor: 0 },
-          { ...emptyLine(), accountId: accumDepr, creditMinor: 0 },
-        ]);
-      } else if (key === "reclassification") {
-        setDescription("Reclassification");
-        setLines([
-          { ...emptyLine(), accountId: office, debitMinor: 0 },
-          { ...emptyLine(), accountId: rev, creditMinor: 0 },
-        ]);
+      const meta = buildJournalTemplate(key);
+      setDescription(meta.description);
+      setAutoReverse(meta.autoReverseNextPeriod);
+      setTemplateHint(meta.hint || "");
+      setTemplateWarning(meta.warning || "");
+
+      if (key === "blank" || meta.lines.length === 0) {
+        setLines([emptyLine(), emptyLine()]);
+        return;
       }
+
+      setLines(
+        meta.lines.map((seed) => ({
+          ...emptyLine(),
+          accountId: accountByCode(accounts, seed.accountCode),
+          debitMinor: 0,
+          creditMinor: 0,
+          lineMemo: seed.lineMemo,
+        })),
+      );
     },
     [accounts, periodId],
   );
@@ -646,6 +644,7 @@ export function CreateEntrySheet({
                 ["accrual", "Accrual"],
                 ["prepayment", "Prepayment"],
                 ["depreciation", "Depreciation"],
+                ["payroll", "Payroll"],
                 ["reclassification", "Reclassification"],
                 ["vat_settlement", "VAT settlement"],
               ] as const
@@ -656,11 +655,26 @@ export function CreateEntrySheet({
                 size="sm"
                 variant={template === key ? "default" : "outline"}
                 onClick={() => void applyTemplate(key)}
+                data-testid={`create-entry-template-${key}`}
               >
                 {label}
               </Button>
             ))}
           </div>
+          {templateHint ? (
+            <p className="mb-2 text-xs text-muted-foreground" data-testid="create-entry-template-hint">
+              {templateHint}
+            </p>
+          ) : null}
+          {templateWarning || policyWarning ? (
+            <p
+              className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+              data-testid="create-entry-template-warning"
+              role="status"
+            >
+              {policyWarning || templateWarning}
+            </p>
+          ) : null}
           {vatPaymentHint ? (
             <p className="mt-2 text-xs text-muted-foreground" data-testid="vat-settlement-hint">
               {vatPaymentHint}
@@ -943,8 +957,13 @@ export function CreateEntrySheet({
               <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
               Recurring entry
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={autoReverse} onChange={(e) => setAutoReverse(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm" data-testid="create-entry-auto-reverse">
+              <input
+                type="checkbox"
+                checked={autoReverse}
+                onChange={(e) => setAutoReverse(e.target.checked)}
+                data-testid="create-entry-auto-reverse-checkbox"
+              />
               Auto-reverse next period
             </label>
           </div>
