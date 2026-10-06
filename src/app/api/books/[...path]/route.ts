@@ -122,6 +122,7 @@ import {
   getPartyAdvanceBalance,
 } from "@/server/books/settlements";
 import { listPlaceOfSupplyGaps, setDocumentPlaceOfSupply } from "@/server/books/place-of-supply";
+import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -314,6 +315,18 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "bank-recon" && (path.length === 1 || path.length === 2)) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        path.length === 1
+          ? await listBankReconciliations(session.userId, session.clientId, { periodId })
+          : await getBankReconciliation(session.userId, session.clientId, {
+              accountId: path[1],
+              periodId,
+            }),
+      );
     }
     if (path[0] === "place-of-supply" && path[1] === "gaps" && path.length === 2) {
       return NextResponse.json(

@@ -72,7 +72,7 @@ export async function listBooksBankAccounts(userId: string, clientId: string) {
                 FROM books_journal_lines l
                 JOIN books_journal_entries e ON e.id = l.entry_id
                 WHERE l.account_id = a.id AND e.client_id = a.client_id
-                  AND e.status = 'posted' AND e.deleted_at IS NULL
+                  AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
               ), 0)::bigint AS "ledgerBalanceMinor"
        FROM books_accounts a
        WHERE a.client_id = $1 AND a.active = true AND a.is_postable = true
