@@ -450,9 +450,17 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
               e.content_hash AS "contentHash", e.created_by AS "createdBy",
-              e.posted_at AS "postedAt", e.created_at AS "createdAt"
+              cu.name AS "createdByName",
+              e.posted_at AS "postedAt", e.created_at AS "createdAt",
+              rev.entry_no AS "reversesEntryNo",
+              byrev.entry_no AS "reversedByEntryNo",
+              corr.entry_no AS "correctsEntryNo"
        FROM books_journal_entries e
        LEFT JOIN books_periods p ON p.id = e.period_id
+       LEFT JOIN users cu ON cu.id = e.created_by
+       LEFT JOIN books_journal_entries rev ON rev.id = e.reverses_entry_id
+       LEFT JOIN books_journal_entries byrev ON byrev.id = e.reversed_by_entry_id
+       LEFT JOIN books_journal_entries corr ON corr.id = e.corrects_entry_id
        WHERE e.id = $1 AND e.client_id = $2 AND e.deleted_at IS NULL`,
       [entryId, clientId],
     );

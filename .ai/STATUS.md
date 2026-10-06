@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
-- Current task: P4-1 PASS — next P4-2 SideDrawer Overview/Audit polish
+- Current task: P4-2 PASS — next P4-3 Create Entry templates
+- 2026-10-07: P4-2 PASS — SideDrawer Dr/Cr line cards, parent account, audit timeline + actor
 - 2026-10-07: P4-1 PASS — Split(n), Expense voucher filter, reversed grey, Rules link, e2e chrome
 - 2026-10-07: Phase 3 CLOSED + pushed; Phase 4 started
 - 2026-10-07: Phase 3 pushed (`11d21bb` P3-1 · `020ffdb` P3-2 · `1fd17eb` P3-3) on feat/books-phase1
@@ -112,3 +113,4 @@
 - 2026-10-06 | P3-3 | PASS | bank/card paid-from match; link before approve or later; unique bank_txn; unit 7/7
 - 2026-10-07 | Phase 3 | CLOSED | pushed P3-1..3 to origin/feat/books-phase1; ready for Phase 4
 - 2026-10-07 | P4-1 | PASS | Ledger Journals list: Split(n), Expense filter, reversed grey, e2e chrome
+- 2026-10-07 | P4-2 | PASS | SideDrawer line Dr/Cr cards + parent; audit actor/timeline; linked entry nos

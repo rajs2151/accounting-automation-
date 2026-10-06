@@ -26,6 +26,11 @@ import {
   type LedgerFilterState,
 } from "@/components/books/ledger-filters";
 import { LedgerPageChrome, LedgerToolbar } from "@/components/books/ledger-page-chrome";
+import {
+  formatAuditAction,
+  journalLineSide,
+  linkedEntryLabel,
+} from "@/components/books/journal-drawer";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,17 +77,27 @@ type JournalDetail = {
   periodId: string;
   periodLabel?: string;
   periodStatus?: string;
+  createdBy?: string;
+  createdByName?: string | null;
+  createdAt?: string;
+  postedAt?: string | null;
   reversesEntryId?: string | null;
   reversedByEntryId?: string | null;
   correctsEntryId?: string | null;
+  reversesEntryNo?: string | null;
+  reversedByEntryNo?: string | null;
+  correctsEntryNo?: string | null;
   attachments?: Array<{ id: string; originalName: string }>;
   lines: Array<{
     id: string;
     accountId?: string;
     accountCode: string;
     accountName: string;
+    parentCode?: string | null;
+    parentName?: string | null;
     debitMinor: number;
     creditMinor: number;
+    currency?: string;
     lineMemo: string;
     vatTreatment?: string | null;
     vatCode?: string | null;
@@ -96,6 +111,8 @@ type AuditRow = {
   action: string;
   at: string;
   source: string;
+  actor?: string;
+  actorName?: string | null;
   after?: Record<string, unknown> | null;
 };
 type Account = { id: string; code: string; name: string; accountType?: string };
@@ -364,8 +381,28 @@ export default function BooksJournalsPage() {
     },
   ];
 
-  const primaryDebit = detail?.lines.find((l) => l.debitMinor > 0);
-  const primaryCredit = detail?.lines.find((l) => l.creditMinor > 0);
+  const detailCurrency =
+    detail?.lines.find((l) => l.currency)?.currency ||
+    detail?.lines[0]?.currency ||
+    "AED";
+
+  function openLinked(id: string) {
+    void openRow({
+      id,
+      periodId: detail?.periodId || periodId,
+      description: "",
+      memo: "",
+      entryDate: "",
+      status: "",
+      entryType: "manual",
+      amount: 0,
+      debitTotal: 0,
+      creditTotal: 0,
+      debitAccount: null,
+      creditAccount: null,
+      tags: [],
+    });
+  }
 
   return (
     <>
@@ -487,54 +524,13 @@ export default function BooksJournalsPage() {
         onTabChange={setTab}
       >
         {tab === "overview" && detail ? (
-          <div className="space-y-4">
+          <div className="space-y-4" data-testid="journal-drawer-overview">
             {periodLocked ? (
               <div
                 className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
                 data-testid="period-locked-banner"
               >
                 Period locked — unlock to change
-              </div>
-            ) : null}
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3">
-                <div className="text-xs font-medium uppercase text-emerald-800">Debit</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">
-                  {primaryDebit ? `${primaryDebit.accountCode} · ${primaryDebit.accountName}` : "—"}
-                </div>
-                <div className="mt-2 text-lg font-semibold tabular-nums text-emerald-900">
-                  {primaryDebit ? formatMinor(primaryDebit.debitMinor) : "—"}
-                </div>
-              </div>
-              <div className="rounded-lg border border-red-200 bg-red-50/80 p-3">
-                <div className="text-xs font-medium uppercase text-red-800">Credit</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">
-                  {primaryCredit ? `${primaryCredit.accountCode} · ${primaryCredit.accountName}` : "—"}
-                </div>
-                <div className="mt-2 text-lg font-semibold tabular-nums text-red-900">
-                  {primaryCredit ? formatMinor(primaryCredit.creditMinor) : "—"}
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <h3 className="mb-2 text-sm font-medium text-foreground">Details</h3>
-              <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-                <dt className="text-muted-foreground">Date</dt>
-                <dd>{formatDateUae(detail.entryDate)}</dd>
-                <dt className="text-muted-foreground">Period</dt>
-                <dd>{detail.periodLabel || "—"}</dd>
-                <dt className="text-muted-foreground">Voucher</dt>
-                <dd>{detail.voucherType || "Journal"}</dd>
-              </dl>
-            </div>
-
-            {isDraftLike && !periodLocked ? (
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" onClick={() => openDraftEditor()} data-testid="drawer-edit-draft">
-                  Edit entry
-                </Button>
               </div>
             ) : null}
 
@@ -586,38 +582,108 @@ export default function BooksJournalsPage() {
                   Editing amounts creates an automatic reversal and a prefilled correction entry.
                 </p>
               </div>
-            ) : null}
-
-            {!isPostedOpen && !isDraftLike ? (
+            ) : (
               <div>
                 <h3 className="mb-1 text-sm font-medium">Description</h3>
                 <p className="text-sm">{detail.memo || "—"}</p>
+                {isDraftLike && !periodLocked ? (
+                  <Button
+                    className="mt-2"
+                    size="sm"
+                    onClick={() => openDraftEditor()}
+                    data-testid="drawer-edit-draft"
+                  >
+                    Edit entry
+                  </Button>
+                ) : null}
               </div>
-            ) : null}
+            )}
 
             <div>
-              <h3 className="mb-2 text-sm font-medium">All lines</h3>
-              <div className="space-y-2">
-                {detail.lines.map((line) => (
-                  <div key={line.id} className="rounded-md border border-border px-3 py-2 text-sm">
-                    <div className="font-medium">
-                      {line.accountCode} · {line.accountName}
+              <h3 className="mb-2 text-sm font-medium">Journal lines</h3>
+              <div className="space-y-2" data-testid="journal-line-cards">
+                {detail.lines.map((line) => {
+                  const side = journalLineSide(line);
+                  const isDr = side === "debit";
+                  return (
+                    <div
+                      key={line.id}
+                      className={
+                        isDr
+                          ? "rounded-lg border border-emerald-200 bg-emerald-50/80 p-3"
+                          : "rounded-lg border border-red-200 bg-red-50/80 p-3"
+                      }
+                      data-testid={`journal-line-${side}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div
+                            className={
+                              isDr
+                                ? "text-[10px] font-semibold uppercase tracking-wide text-emerald-800"
+                                : "text-[10px] font-semibold uppercase tracking-wide text-red-800"
+                            }
+                          >
+                            {isDr ? "Debit" : "Credit"}
+                          </div>
+                          <div className="mt-0.5 text-sm font-semibold text-foreground">
+                            {line.accountCode} · {line.accountName}
+                          </div>
+                          {line.parentCode ? (
+                            <div className="text-xs text-muted-foreground">
+                              Parent: {line.parentCode} · {line.parentName}
+                            </div>
+                          ) : null}
+                          {line.lineMemo ? (
+                            <div className="mt-1 text-xs text-muted-foreground">{line.lineMemo}</div>
+                          ) : null}
+                        </div>
+                        <div
+                          className={
+                            isDr
+                              ? "shrink-0 text-base font-semibold tabular-nums text-emerald-900"
+                              : "shrink-0 text-base font-semibold tabular-nums text-red-900"
+                          }
+                        >
+                          {formatMinor(isDr ? line.debitMinor : line.creditMinor)}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex justify-between tabular-nums text-muted-foreground">
-                      <span>{line.lineMemo || "—"}</span>
-                      <span>
-                        {line.debitMinor > 0
-                          ? `Dr ${formatMinor(line.debitMinor)}`
-                          : `Cr ${formatMinor(line.creditMinor)}`}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
             <div>
-              <h3 className="mb-1 text-sm font-medium">Attachments</h3>
+              <h3 className="mb-2 text-sm font-medium text-foreground">Details</h3>
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm" data-testid="journal-drawer-details">
+                <dt className="text-muted-foreground">Date</dt>
+                <dd>{formatDateUae(detail.entryDate)}</dd>
+                <dt className="text-muted-foreground">Period</dt>
+                <dd>{detail.periodLabel || "—"}</dd>
+                <dt className="text-muted-foreground">Currency</dt>
+                <dd>{detailCurrency}</dd>
+                <dt className="text-muted-foreground">Voucher</dt>
+                <dd>{detail.voucherType || "Journal"}</dd>
+                <dt className="text-muted-foreground">Created by</dt>
+                <dd>{detail.createdByName || "—"}</dd>
+                <dt className="text-muted-foreground">Created</dt>
+                <dd>
+                  {detail.createdAt
+                    ? `${formatDateUae(detail.createdAt)} · ${new Date(detail.createdAt).toISOString().slice(11, 19)} UTC`
+                    : "—"}
+                </dd>
+                <dt className="text-muted-foreground">Posted</dt>
+                <dd>
+                  {detail.postedAt
+                    ? `${formatDateUae(detail.postedAt)} · ${new Date(detail.postedAt).toISOString().slice(11, 19)} UTC`
+                    : "—"}
+                </dd>
+              </dl>
+            </div>
+
+            <div>
+              <h3 className="mb-1 text-sm font-medium">Linked documents</h3>
               {detail.attachments?.length ? (
                 <ul className="text-sm text-muted-foreground">
                   {detail.attachments.map((a) => (
@@ -638,7 +704,7 @@ export default function BooksJournalsPage() {
           </div>
         ) : null}
         {tab === "audit" ? (
-          <div className="space-y-2" data-testid="journal-audit">
+          <div className="space-y-3" data-testid="journal-audit">
             {detail?.reversesEntryId || detail?.reversedByEntryId || detail?.correctsEntryId ? (
               <div className="rounded-md border border-border bg-muted/30 p-3 text-sm space-y-1">
                 <div className="font-medium">Linked entries</div>
@@ -648,25 +714,10 @@ export default function BooksJournalsPage() {
                     <button
                       type="button"
                       className="text-primary underline"
-                      onClick={() =>
-                        void openRow({
-                          id: detail.reversesEntryId!,
-                          periodId: detail.periodId,
-                          description: "",
-                          memo: "",
-                          entryDate: "",
-                          status: "",
-                          entryType: "manual",
-                          amount: 0,
-                          debitTotal: 0,
-                          creditTotal: 0,
-                          debitAccount: null,
-                          creditAccount: null,
-                          tags: [],
-                        })
-                      }
+                      data-testid="audit-link-reverses"
+                      onClick={() => openLinked(detail.reversesEntryId!)}
                     >
-                      {detail.reversesEntryId.slice(0, 8)}…
+                      {linkedEntryLabel(detail.reversesEntryNo, detail.reversesEntryId)}
                     </button>
                   </div>
                 ) : null}
@@ -676,50 +727,67 @@ export default function BooksJournalsPage() {
                     <button
                       type="button"
                       className="text-primary underline"
-                      onClick={() =>
-                        void openRow({
-                          id: detail.reversedByEntryId!,
-                          periodId: detail.periodId,
-                          description: "",
-                          memo: "",
-                          entryDate: "",
-                          status: "",
-                          entryType: "manual",
-                          amount: 0,
-                          debitTotal: 0,
-                          creditTotal: 0,
-                          debitAccount: null,
-                          creditAccount: null,
-                          tags: [],
-                        })
-                      }
+                      data-testid="audit-link-reversed-by"
+                      onClick={() => openLinked(detail.reversedByEntryId!)}
                     >
-                      {detail.reversedByEntryId.slice(0, 8)}…
+                      {linkedEntryLabel(detail.reversedByEntryNo, detail.reversedByEntryId)}
                     </button>
                   </div>
                 ) : null}
                 {detail.correctsEntryId ? (
-                  <div>Corrects: {detail.correctsEntryId.slice(0, 8)}…</div>
+                  <div>
+                    Corrects:{" "}
+                    <button
+                      type="button"
+                      className="text-primary underline"
+                      onClick={() => openLinked(detail.correctsEntryId!)}
+                    >
+                      {linkedEntryLabel(detail.correctsEntryNo, detail.correctsEntryId)}
+                    </button>
+                  </div>
                 ) : null}
               </div>
             ) : null}
             {audit.length === 0 ? (
               <p className="text-sm text-muted-foreground">No audit events.</p>
             ) : (
-              audit.map((event) => (
-                <div key={event.id} className="border-b border-border py-2 text-sm">
-                  <div className="font-medium capitalize">{event.action.replaceAll("_", " ")}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {formatDateUae(event.at)} · {new Date(event.at).toISOString().slice(11, 19)} UTC ·{" "}
-                    {event.source}
-                  </div>
-                  {event.after && typeof event.after === "object" && "reversalId" in event.after ? (
-                    <div className="text-xs text-muted-foreground">
-                      Reversal id: {String(event.after.reversalId).slice(0, 8)}…
-                    </div>
-                  ) : null}
-                </div>
-              ))
+              <ol className="relative space-y-0 border-l border-border pl-4">
+                {audit.map((event) => {
+                  const amountAfter =
+                    event.after && typeof event.after === "object" && "amount" in event.after
+                      ? Number(event.after.amount)
+                      : event.after && typeof event.after === "object" && "entryNo" in event.after
+                        ? String(event.after.entryNo)
+                        : null;
+                  return (
+                    <li key={event.id} className="relative pb-4 last:pb-0">
+                      <span className="absolute -left-[1.15rem] top-1.5 size-2 rounded-full bg-primary" />
+                      <div className="text-sm font-medium">{formatAuditAction(event.action)}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {formatDateUae(event.at)} · {new Date(event.at).toISOString().slice(11, 19)} UTC
+                        {" · "}
+                        {event.actorName || "Unknown"} · {event.source}
+                      </div>
+                      {amountAfter != null && amountAfter !== "" ? (
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {typeof amountAfter === "number"
+                            ? `Amount ${formatMinor(amountAfter)}`
+                            : `Entry ${amountAfter}`}
+                        </div>
+                      ) : null}
+                      {event.after && typeof event.after === "object" && "reversalId" in event.after ? (
+                        <button
+                          type="button"
+                          className="mt-0.5 text-xs text-primary underline"
+                          onClick={() => openLinked(String(event.after!.reversalId))}
+                        >
+                          Open reversal {String(event.after.reversalId).slice(0, 8)}…
+                        </button>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ol>
             )}
           </div>
         ) : null}

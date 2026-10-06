@@ -36,11 +36,14 @@ export async function listBooksAudit(userId: string, clientId: string, entityId:
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const rows = await db.query(
-      `SELECT id, action, entity, entity_id AS "entityId", before_json AS "before",
-              after_json AS "after", source, at, actor
-       FROM books_audit_events
-       WHERE client_id = $1 AND entity_id = $2
-       ORDER BY at DESC
+      `SELECT a.id, a.action, a.entity, a.entity_id AS "entityId",
+              a.before_json AS "before", a.after_json AS "after",
+              a.source, a.at, a.actor,
+              u.name AS "actorName", u.email AS "actorEmail"
+       FROM books_audit_events a
+       LEFT JOIN users u ON u.id = a.actor
+       WHERE a.client_id = $1 AND a.entity_id = $2
+       ORDER BY a.at DESC
        LIMIT 200`,
       [clientId, entityId],
     );
