@@ -206,6 +206,9 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
 
   const periodTrigger = page.getByTestId("topbar-period");
   await expect(periodTrigger).toBeVisible();
+  // P2A-5: show label, never the raw period UUID.
+  await expect(periodTrigger).toContainText(/\d{4}/);
+  await expect(periodTrigger).not.toContainText(/e2000001-/i);
   await periodTrigger.click();
   await page.keyboard.press("Escape");
 

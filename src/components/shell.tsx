@@ -351,7 +351,11 @@ function ShellInner({ children }: { children: React.ReactNode }) {
                       aria-hidden
                     />
                   ) : null}
-                  <SelectValue placeholder="Period" />
+                  <SelectValue placeholder="Period">
+                    {currentPeriod
+                      ? `${currentPeriod.label} (${currentPeriod.status})`
+                      : null}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {periods.map((p) => (

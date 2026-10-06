@@ -39,9 +39,9 @@ function flagsArray(raw: unknown): string[] {
   return [];
 }
 
+/** Only statements with a passing balance check may materialise bank lines. */
 function statementEligible(status: string, flags: string[]): boolean {
-  if (status === "ready" || status === "confirmed") return true;
-  if (status !== "needs_review") return false;
+  if (status !== "ready" && status !== "confirmed" && status !== "needs_review") return false;
   if (!flags.includes("balance_ok")) return false;
   for (const b of HARD_BLOCK_FLAGS) {
     if (flags.includes(b)) return false;

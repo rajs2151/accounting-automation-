@@ -91,14 +91,18 @@ test("P2A-1: unallocated helper — fee and 1:N", () => {
   );
 });
 
-test("C3-1: statement eligibility helper", () => {
-  assert.equal(__testStatementEligible("ready", []), true);
-  assert.equal(__testStatementEligible("confirmed", ["closing_mismatch"]), true);
+test("C3-1 / P2A-5: statement eligibility requires balance_ok", () => {
+  // ready/confirmed without balance_ok must NOT materialise (balance check failed).
+  assert.equal(__testStatementEligible("ready", []), false);
+  assert.equal(__testStatementEligible("confirmed", ["closing_mismatch"]), false);
+  assert.equal(__testStatementEligible("ready", ["balance_ok"]), true);
+  assert.equal(__testStatementEligible("confirmed", ["balance_ok"]), true);
   assert.equal(__testStatementEligible("needs_review", ["balance_ok"]), true);
   assert.equal(
     __testStatementEligible("needs_review", ["balance_ok", "iban_account_mismatch"]),
     false,
   );
+  assert.equal(__testStatementEligible("ready", ["balance_ok", "closing_mismatch"]), false);
   assert.equal(__testStatementEligible("needs_review", ["closing_mismatch"]), false);
   assert.equal(__testStatementEligible("failed", ["balance_ok"]), false);
 });
@@ -188,6 +192,19 @@ test("C3-1: materialize idempotent; skip ineligible; mark/exclude gates", async 
       flags: '["closing_mismatch"]',
       withLines: true,
       suffix: "bad",
+    });
+    // P2A-5: status=ready alone is not enough when balance check failed (no balance_ok).
+    await insertStmt({
+      status: "ready",
+      flags: '["closing_mismatch"]',
+      withLines: true,
+      suffix: "ready-bad",
+    });
+    await insertStmt({
+      status: "ready",
+      flags: "[]",
+      withLines: true,
+      suffix: "ready-empty",
     });
 
     const first = await materializeBooksBankTransactions(OMAR, clientId);
