@@ -304,7 +304,8 @@ export function ReportTable(props: {
               <tr
                 key={r.id}
                 data-row-index={i}
-                data-testid={`report-row-${r.id}`}
+                data-testid={r.testId || `report-row-${r.id}`}
+                title={r.title}
                 aria-selected={i === focus}
                 onClick={() => activate(i)}
                 className={cn(

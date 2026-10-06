@@ -106,9 +106,22 @@ export default function TrialBalancePage() {
         { key: "closingDebit", label: "Closing Dr" },
         { key: "closingCredit", label: "Closing Cr" },
       ];
+      // Phase-0 note on 2210 for the Desert Falcon demo company (kept from the old TB page).
+      const vatNote = meta.company.includes("Desert Falcon");
       return {
         columns: cols,
-        rows: base.rows,
+        rows: base.rows.map((g) => ({
+          ...g,
+          children: g.children?.map((c) =>
+            c.code === "2210"
+              ? {
+                  ...c,
+                  testId: "tb-vat-note",
+                  title: vatNote ? "VAT output movements. Use Show movements for Dr/Cr sides." : undefined,
+                }
+              : c,
+          ),
+        })),
         footer: [
           {
             id: "grand",
@@ -143,7 +156,7 @@ export default function TrialBalancePage() {
       footer: [{ id: "grand", label: "Grand total (net)", values: valuesFor("__total"), testId: "tb-totals-net" }],
       difference: null,
     };
-  }, [base, current, view, showMovements, needed, prev, periodId, ordered, tbs]);
+  }, [base, current, view, showMovements, needed, prev, periodId, ordered, tbs, meta.company]);
 
   return (
     <div className="space-y-4 pb-10">

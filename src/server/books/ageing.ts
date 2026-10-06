@@ -4,12 +4,15 @@
  * Items: posted sales invoices (AR) / purchase bills (AP) from books_open_items, with the pending amount
  * rebuilt as of the date — original AED less allocations and credit/debit notes dated on or before it —
  * so a back-dated report is right even after later payments.
- * Credits: stream A's on-account / advance amounts (db/38 books_bank_txn_allocations on posted bank lines)
- * shown as their own negative rows. Customer credits are reduced oldest-first by later "Advance allocation"
- * applications dated on or before the as-of date. No VAT logic (VAT on advances: owner decision pending).
+ * Credits: unapplied on-account / advance money shown as its own negative rows — read from posted
+ * receipt / payment journals (customer: credit on 2320 Customer advances; supplier: debit on 1410 Prepaid),
+ * so receipts posted from a bank line (stream A, db/38) and receipts keyed in directly are both covered,
+ * each once. Kind comes from the line memo stream A writes ("On account …" vs advance). Customer credits
+ * are reduced oldest-first by "Advance allocation" applications dated on or before the as-of date;
+ * supplier credits have no apply flow yet. No VAT logic (VAT on advances: owner decision pending).
+ * Due date: the document's, else issue date + the party's payment terms.
  */
 import { withUser } from "@/lib/db";
-import { aedFromOriginal } from "@/lib/fx";
 import { BooksError } from "@/server/books/errors";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
@@ -86,7 +89,8 @@ export async function booksAgeing(
 
     const items = await db.query(
       `SELECT oi.id, oi.party_id, p.name AS party_name, oi.aed_original_minor,
-              d.id AS document_id, d.document_number, d.issue_date, d.due_date, d.journal_entry_id,
+              d.id AS document_id, d.document_number, d.issue_date, d.journal_entry_id,
+              COALESCE(d.due_date, d.issue_date + p.payment_terms_days) AS due_date,
               e.entry_no,
               COALESCE((
                 SELECT SUM(a.allocated_aed_minor) FROM books_allocations a
@@ -129,26 +133,29 @@ export async function booksAgeing(
       });
     }
 
-    // Stream A (db/38) on-account / advance amounts on posted bank lines — read-only.
+    // Unapplied on-account / advance money from posted receipt (AR) / payment (AP) journals.
     const credits = await db.query(
-      `SELECT al.id, al.alloc_kind, al.party_id, p.name AS party_name, al.amount_original_minor,
-              t.txn_date, t.currency, t.journal_entry_id, t.settlement_document_id,
-              s.fx_rate_scaled, e.entry_no
-       FROM books_bank_txn_allocations al
-       JOIN books_bank_transactions t ON t.id = al.bank_txn_id
-       JOIN books_parties p ON p.id = al.party_id
-       LEFT JOIN books_documents s ON s.id = t.settlement_document_id
-       LEFT JOIN books_journal_entries e ON e.id = t.journal_entry_id
-       WHERE al.client_id = $1 AND al.alloc_kind IN ('on_account', 'advance')
-         AND t.review_status = 'posted' AND t.txn_date <= $3::date
-         AND t.txn_type = CASE WHEN $2 = 'AR' THEN 'customer_receipt' ELSE 'supplier_payment' END
-       ORDER BY t.txn_date, al.created_at, al.id`,
+      `SELECT l.id, d.party_id, p.name AS party_name, e.entry_date, e.entry_no, e.id AS journal_entry_id,
+              d.id AS settlement_document_id, l.line_memo,
+              (CASE WHEN $2 = 'AR' THEN l.credit_minor - l.debit_minor
+                    ELSE l.debit_minor - l.credit_minor END)::bigint AS aed
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_accounts a ON a.id = l.account_id
+       JOIN books_documents d ON d.journal_entry_id = e.id AND d.client_id = e.client_id
+       JOIN books_parties p ON p.id = d.party_id
+       WHERE e.client_id = $1 AND e.status = 'posted' AND e.deleted_at IS NULL
+         AND e.entry_date <= $3::date
+         AND d.status = 'posted' AND d.deleted_at IS NULL
+         AND d.doc_type = CASE WHEN $2 = 'AR' THEN 'receipt' ELSE 'payment' END
+         AND COALESCE(d.memo, '') <> 'Advance allocation'
+         AND a.code = CASE WHEN $2 = 'AR' THEN '2320' ELSE '1410' END
+       ORDER BY e.entry_date, e.created_at, l.id`,
       [clientId, side, asOf],
     );
-    const creditRows = credits.rows.map((r) => ({
-      r,
-      aed: aedFromOriginal(Number(r.amount_original_minor), Number(r.fx_rate_scaled || 100000000)),
-    }));
+    const creditRows = credits.rows
+      .map((r) => ({ r, aed: Number(r.aed) }))
+      .filter((c) => c.aed > 0);
 
     if (side === "AR" && creditRows.length) {
       // Customer advances applied to invoices later (allocatePartyAdvance) — consume oldest first.
@@ -174,10 +181,10 @@ export async function booksAgeing(
 
     for (const c of creditRows) {
       if (c.aed <= 0) continue;
-      const date = iso(c.r.txn_date);
+      const date = iso(c.r.entry_date);
       const days = overdueDays(asOf, date);
       rows.push({
-        kind: String(c.r.alloc_kind) as "on_account" | "advance",
+        kind: /^on account/i.test(String(c.r.line_memo || "")) ? "on_account" : "advance",
         date,
         ref: String(c.r.entry_no || String(c.r.id).slice(0, 8)),
         partyId: String(c.r.party_id),

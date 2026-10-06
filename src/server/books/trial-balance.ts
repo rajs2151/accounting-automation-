@@ -190,9 +190,12 @@ export async function booksAccountLedger(
        JOIN books_journal_entries e ON e.id = l.entry_id
        WHERE l.account_id = $1 AND e.client_id = $2
          AND e.status IN ('posted', 'reversed')
+         AND e.entry_date >= $4::date
          AND e.entry_date <= $3::date
        ORDER BY e.entry_date ASC, e.created_at ASC, l.id ASC`,
-      [accountId, clientId, periodEnd],
+      // Lines before the period are already in the opening — start the list at period start
+      // (they were counted twice before; RPT-1 owner fix).
+      [accountId, clientId, periodEnd, period.rows[0].period_start],
     );
 
     const normal = String(acct.rows[0].normalBalance || "debit");

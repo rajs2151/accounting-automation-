@@ -27,7 +27,7 @@ import { createBooksParty } from "@/server/books/parties";
 import { createReceiptOrPayment } from "@/server/books/settlements";
 import { createTestCompany, type TestCompany } from "@/server/books/test-company";
 import { booksEntrySource, booksLedgerReport } from "@/server/books/ledger-report";
-import { booksTrialBalance } from "@/server/books/trial-balance";
+import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
 import { differenceRow, tbToReportTree } from "@/lib/report-table";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
@@ -216,6 +216,12 @@ test("RPT-1: AR ageing as of a date — buckets, notes, partial receipt, on-acco
     });
     // Beta pays 300.00 with no reference — typed On account on the bank line (stream A, db/38).
     await onAccountReceipt(admin, company, b.id, 30000, "2026-05-21");
+    // Alpha prepays 400.00, keyed in directly (no bank line) as an advance.
+    await createReceiptOrPayment(OMAR, LAYLA, clientId, {
+      docType: "receipt", partyId: a.id, issueDate: "2026-05-28", periodId: company.periods["May 2026"],
+      bankAccountId: company.accountIdByCode["1120"], originalAmountMinor: 40000,
+      remainderKind: "advance", remainderOriginalMinor: 40000,
+    });
     // Not in ageing: a draft, and a voided invoice.
     await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice", partyId: a.id, issueDate: "2026-05-02", periodId: company.periods["May 2026"],
@@ -232,6 +238,7 @@ test("RPT-1: AR ageing as of a date — buckets, notes, partial receipt, on-acco
       r.rows.map((x) => [x.partyId === a.id ? "A" : "B", x.kind, x.date, x.pendingMinor, x.overdueDays, x.bucket]),
       [
         ["A", "item", "2026-04-01", 84000, 46, "31-60"],
+        ["A", "advance", "2026-05-28", -40000, 3, "0-30"],
         ["B", "item", "2026-05-01", 110000, 0, "0-30"],
         ["B", "on_account", "2026-05-21", -30000, 10, "0-30"],
         ["B", "item", "2026-05-25", 31500, -24, "not_due"],
@@ -239,12 +246,15 @@ test("RPT-1: AR ageing as of a date — buckets, notes, partial receipt, on-acco
     );
     const pa = r.parties.find((p) => p.partyId === a.id)!;
     const pb = r.parties.find((p) => p.partyId === b.id)!;
-    assert.equal(pa.totals.total, 84000);
+    assert.equal(pa.totals.total, 44000);
     assert.equal(pa.totals["31-60"], 84000);
+    assert.equal(pa.totals["0-30"], -40000);
     assert.deepEqual([pb.totals["0-30"], pb.totals.not_due, pb.totals.total], [80000, 31500, 111500]);
     assert.deepEqual(r.totals, {
-      not_due: 31500, "0-30": 80000, "31-60": 84000, "61-90": 0, "90+": 0, total: 195500,
+      not_due: 31500, "0-30": 40000, "31-60": 84000, "61-90": 0, "90+": 0, total: 155500,
     });
+    // Each credit appears once (the bank-line receipt is not double counted from db/38 + journal).
+    assert.equal(r.rows.filter((x) => x.kind !== "item").length, 2);
 
     // As of 15 May: after the 10 May credit note, before the receipt, the on-account money and the
     // later invoice — amounts are rebuilt for that date, not taken from today's open balance.
@@ -276,10 +286,28 @@ test("RPT-1: AP ageing 90 / 91 day boundary; invalid input rejected", async (t) 
       docType: "purchase_bill", partyId: s.id, issueDate: "2026-04-01", dueDate: "2026-04-01",
       net: 40000, vat: 2000, period: "Apr 2026",
     });
+    // No due date on this one: due = issue + the party's terms (default 30 days) = 31 May.
+    await postDoc(company, {
+      docType: "purchase_bill", partyId: s.id, issueDate: "2026-05-01", net: 10000, vat: 500, period: "May 2026",
+    });
+    // Supplier paid 50.00 on account (keyed in directly) → own negative row from the 1410 line.
+    await createReceiptOrPayment(OMAR, LAYLA, clientId, {
+      docType: "payment", partyId: s.id, issueDate: "2026-04-10", periodId: company.periods["Apr 2026"],
+      bankAccountId: company.accountIdByCode["1120"], originalAmountMinor: 5000,
+      remainderKind: "on_account", remainderOriginalMinor: 5000,
+    });
     const at90 = await booksAgeing(OMAR, clientId, { side: "AP", asOf: "2026-06-30" });
-    assert.deepEqual(at90.rows.map((x) => [x.pendingMinor, x.overdueDays, x.bucket]), [[42000, 90, "61-90"]]);
+    assert.deepEqual(at90.rows.map((x) => [x.kind, x.dueDate, x.pendingMinor, x.overdueDays, x.bucket]), [
+      ["item", "2026-04-01", 42000, 90, "61-90"],
+      ["on_account", null, -5000, 81, "61-90"],
+      ["item", "2026-05-31", 10500, 30, "0-30"],
+    ]);
+    assert.equal(at90.totals.total, 47500);
     const at91 = await booksAgeing(OMAR, clientId, { side: "AP", asOf: "2026-07-01" });
-    assert.deepEqual(at91.rows.map((x) => [x.pendingMinor, x.overdueDays, x.bucket]), [[42000, 91, "90+"]]);
+    assert.deepEqual(at91.rows.filter((x) => x.kind === "item").map((x) => [x.pendingMinor, x.overdueDays, x.bucket]), [
+      [42000, 91, "90+"],
+      [10500, 31, "31-60"],
+    ]);
     // AR side sees nothing of a supplier bill.
     assert.deepEqual((await booksAgeing(OMAR, clientId, { side: "AR", asOf: "2026-07-01" })).rows, []);
     await assert.rejects(booksAgeing(OMAR, clientId, { side: "XX" as "AR", asOf: "2026-07-01" }), /invalid_side/);
@@ -443,6 +471,13 @@ test("RPT-1: Account Ledger report — opening / current / closing equal the TB;
     assert.deepEqual(r.closing, { debitMinor: 175000, creditMinor: 0, balanceMinor: 175000 });
     const tb = await booksTrialBalance(OMAR, clientId, may);
     assert.equal(r.closing.balanceMinor, tb.accounts["1120"].closingDebitMinor - tb.accounts["1120"].closingCreditMinor);
+
+    // Old API (booksAccountLedger) no longer counts April twice: May lines only, ends at the TB figure.
+    const old = await booksAccountLedger(OMAR, clientId, may, bank);
+    assert.deepEqual(old.lines.map((l) => [l.debitMinor, l.balanceMinor]), [
+      [50000, 150000],
+      [25000, 175000],
+    ]);
 
     // Credit-normal account runs positive in its own direction.
     const cap = await booksLedgerReport(OMAR, clientId, { periodId: may, accountId: capital });

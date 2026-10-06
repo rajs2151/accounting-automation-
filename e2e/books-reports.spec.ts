@@ -132,6 +132,8 @@ test("RPT-1: TB → group → ledger → entry → source document; ledger foote
   await page.getByTestId("report-toggle-group:liability").click();
   const apRow = page.locator('[data-testid^="report-row-acct:"]').filter({ hasText: "2110" });
   await expect(apRow).toBeVisible();
+  // Phase-0 VAT note on 2210 survives the move onto ReportTable.
+  await expect(page.getByTestId("tb-vat-note")).toHaveAttribute("title", /VAT output movements/);
 
   // XLSX export of this view carries the same grand total.
   const [download] = await Promise.all([

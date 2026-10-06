@@ -14,6 +14,9 @@ export type ReportRow = {
   children?: ReportRow[];
   /** Opaque payload handed back on drill-down. */
   drill?: unknown;
+  /** Optional hover note and test id for the row. */
+  title?: string;
+  testId?: string;
 };
 
 export type FlatReportRow = ReportRow & { depth: number; hasChildren: boolean; expanded: boolean };

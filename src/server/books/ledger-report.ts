@@ -3,9 +3,8 @@
  *
  * Opening = posted lines before the period start; lines = posted lines inside the period; Closing =
  * Opening + Current total. Same filters as booksTrialBalance (status posted|reversed, not deleted),
- * so Closing equals the TB closing for the account. booksAccountLedger (trial-balance.ts) is left
- * unchanged: it lists every line up to period end on top of the opening, which counts pre-period
- * lines twice in its running balance (reported to the owner, RPT-1).
+ * so Closing equals the TB closing for the account. (booksAccountLedger in trial-balance.ts was fixed
+ * in RPT-1 to stop listing pre-period lines on top of its opening; both now agree.)
  */
 import { withUser } from "@/lib/db";
 import { BooksError } from "@/server/books/errors";
