@@ -138,7 +138,9 @@ import {
 } from "@/server/books/place-of-supply";
 import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
 import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/company-vat-settings";
+import { booksAgeing } from "@/server/books/ageing";
 import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
+import { booksDayBook } from "@/server/books/day-book";
 import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
 import {
   getStatementExtraction,
@@ -354,6 +356,24 @@ export async function GET(request: Request, ctx: Ctx) {
         }
         throw error;
       }
+    }
+    if (path[0] === "reports" && path[1] === "day-book" && path.length === 2) {
+      return NextResponse.json(
+        await booksDayBook(session.userId, session.clientId, {
+          from: url.searchParams.get("from") || "",
+          to: url.searchParams.get("to") || "",
+          type: url.searchParams.get("type") || null,
+        }),
+      );
+    }
+    if (path[0] === "reports" && path[1] === "ageing" && path.length === 2) {
+      const side = (url.searchParams.get("side") || "ar").toUpperCase();
+      return NextResponse.json(
+        await booksAgeing(session.userId, session.clientId, {
+          side: side === "AP" ? "AP" : side === "AR" ? "AR" : (side as "AR"),
+          asOf: url.searchParams.get("asOf") || "",
+        }),
+      );
     }
     if (path[0] === "dashboard" && path.length === 1) {
       return NextResponse.json(
