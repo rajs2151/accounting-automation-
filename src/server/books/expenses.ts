@@ -233,7 +233,7 @@ export async function createBooksExpense(
       throw new BooksError("invalid_paid_from_kind", "invalid");
     }
 
-    let vendorPartyId: string | null = body.vendorPartyId || null;
+    const vendorPartyId: string | null = body.vendorPartyId || null;
     let vendorName = String(body.vendorName || "").trim();
     if (vendorPartyId) {
       const p = await db.query(
@@ -278,7 +278,7 @@ export async function createBooksExpense(
         [raw.accountId, clientId],
       );
       if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
-      let vatCode: string | null = raw.vatCode ? String(raw.vatCode) : null;
+      const vatCode: string | null = raw.vatCode ? String(raw.vatCode) : null;
       if (vatCode) {
         const vc = await db.query(`SELECT code FROM books_vat_codes WHERE code = $1 AND active = true`, [
           vatCode,
@@ -402,7 +402,7 @@ export async function updateBooksExpenseDraft(
     const periodId = body.periodId !== undefined ? body.periodId : String(row.period_id);
     if (!periodId) throw new BooksError("period_required", "invalid");
 
-    let vendorPartyId =
+    const vendorPartyId =
       body.vendorPartyId !== undefined ? body.vendorPartyId : row.vendor_party_id;
     let vendorName =
       body.vendorName !== undefined ? String(body.vendorName).trim() : String(row.vendor_name || "");
@@ -445,7 +445,7 @@ export async function updateBooksExpenseDraft(
           [raw.accountId, clientId],
         );
         if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
-        let vatCode: string | null = raw.vatCode ? String(raw.vatCode) : null;
+        const vatCode: string | null = raw.vatCode ? String(raw.vatCode) : null;
         if (vatCode) {
           const vc = await db.query(
             `SELECT code FROM books_vat_codes WHERE code = $1 AND active = true`,
