@@ -100,3 +100,4 @@
 - 2026-10-06 | P2A-6 | PASS | bulk journal preview+post; /books/rules; auto-link transfers; Phase 2 A close
 - 2026-10-06 | RPT-1 | PASS (cloud: unit 209/202p/7s, e2e reports+journals 3/3 local) | ReportTable; TB+Ledger+Day Book+Ageing; drill to source; XLSX/CSV/print; owner: old booksAccountLedger double-counts pre-period lines
 - 2026-10-06 | RPT-1d | PASS (cloud: unit 210/203p/7s, e2e reports+journals 3/3 local) | fixed old booksAccountLedger double count; ageing credits from receipt/payment journals (direct + bank-line); due = issue + terms; tb-vat-note restored
+- 2026-10-06 | UI-NOTION | PASS (cloud: unit 210/203p/7s; e2e local 6 pass, 3 env-only fails identical on baseline) | Notion-style tables + side peek on every Books table; drawer restyle; no sheet blur
