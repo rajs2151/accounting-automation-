@@ -206,8 +206,9 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
     assert.equal(c.documentsToReview.notes, 0);
     assert.equal(c.documentsToReview.count, 3);
 
-    // 1120 second line + the USD line (C3 materialises any 'ready' statement, even with a flag).
-    assert.equal(c.bankLines.needsReview, 2);
+    // Only the 1120 second line: since P2A-5, statements whose balance check failed (the USD one,
+    // closing_mismatch) no longer materialise bank lines.
+    assert.equal(c.bankLines.needsReview, 1);
     assert.equal(c.bankLines.readyNotPosted, 1);
     assert.equal(c.unassignedInbox.count, unassignedBefore + 1);
 
