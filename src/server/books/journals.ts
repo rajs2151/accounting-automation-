@@ -5,6 +5,7 @@ import type { PoolClient } from "pg";
 import { withUser } from "@/lib/db";
 import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
+import { firstOfNextMonthUtc } from "@/lib/schedule-dates";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
@@ -366,6 +367,22 @@ export async function listBooksJournals(
               e.posted_at AS "postedAt",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.created_at AS "createdAt", e.created_by AS "createdBy",
               e.corrects_entry_id AS "correctsEntryId",
               e.reverses_entry_id AS "reversesEntryId",
@@ -429,6 +446,8 @@ export async function listBooksJournals(
       amount: Number(row.debitTotal),
       debitLineCount: Number(row.debitLineCount || 0),
       creditLineCount: Number(row.creditLineCount || 0),
+      recurringIndex: row.recurringIndex == null ? null : Number(row.recurringIndex),
+      recurringTotal: row.recurringTotal == null ? null : Number(row.recurringTotal),
       tags: Array.isArray(row.tags) ? row.tags : [],
       debitAccount: row.debitAccount ?? null,
       creditAccount: row.creditAccount ?? null,
@@ -449,6 +468,22 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
               e.corrects_entry_id AS "correctsEntryId",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.content_hash AS "contentHash", e.created_by AS "createdBy",
               cu.name AS "createdByName",
               e.posted_at AS "postedAt", e.created_at AS "createdAt",
@@ -492,6 +527,10 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
     return {
       ...entry.rows[0],
       autoReverseNextPeriod: Boolean(entry.rows[0].autoReverseNextPeriod),
+      recurringIndex:
+        entry.rows[0].recurringIndex == null ? null : Number(entry.rows[0].recurringIndex),
+      recurringTotal:
+        entry.rows[0].recurringTotal == null ? null : Number(entry.rows[0].recurringTotal),
       lines: lines.rows.map((line) => ({
         ...line,
         debitMinor: Number(line.debitMinor),
@@ -664,7 +703,7 @@ export async function createBooksJournal(
           clientId,
           "auto_reverse",
           { entryId: id, actorUserId: userId },
-          new Date(),
+          firstOfNextMonthUtc(body.entryDate),
         );
       }
     }
@@ -732,7 +771,13 @@ export async function postBooksJournal(userId: string, clientId: string, entryId
       after: { status: "posted", entryNo },
     });
     if (entry.rows[0].auto_reverse_next_period) {
-      await enqueueBooksJob(db, clientId, "auto_reverse", { entryId }, new Date());
+      await enqueueBooksJob(
+        db,
+        clientId,
+        "auto_reverse",
+        { entryId, actorUserId: userId },
+        firstOfNextMonthUtc(String(entry.rows[0].entry_date).slice(0, 10)),
+      );
     }
     return { id: entryId, status: "posted", entryNo };
   });

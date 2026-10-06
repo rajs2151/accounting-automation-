@@ -62,6 +62,8 @@ type JournalRow = {
   reversedByEntryId?: string | null;
   correctsEntryId?: string | null;
   recurringId?: string | null;
+  recurringIndex?: number | null;
+  recurringTotal?: number | null;
 };
 
 type JournalDetail = {
@@ -329,8 +331,13 @@ export default function BooksJournalsPage() {
         <div className="space-y-0.5">
           <CellReadMore text={r.description || r.memo || ""} max={40} />
           {r.recurringId ? (
-            <span className="inline-flex rounded bg-sky-50 px-1.5 py-0 text-[10px] font-medium text-sky-800 border border-sky-200">
-              Recurring
+            <span
+              className="inline-flex rounded bg-sky-50 px-1.5 py-0 text-[10px] font-medium text-sky-800 border border-sky-200"
+              data-testid="journal-recurring-badge"
+            >
+              {r.recurringIndex != null && r.recurringTotal != null
+                ? `Entry ${r.recurringIndex} of ${r.recurringTotal}`
+                : "Recurring"}
             </span>
           ) : null}
         </div>

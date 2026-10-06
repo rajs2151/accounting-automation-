@@ -942,8 +942,13 @@ export function CreateEntrySheet({
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={schedule} onChange={(e) => setSchedule(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm" data-testid="create-entry-schedule">
+              <input
+                type="checkbox"
+                checked={schedule}
+                onChange={(e) => setSchedule(e.target.checked)}
+                data-testid="create-entry-schedule-checkbox"
+              />
               Schedule for later post
             </label>
             {schedule ? (

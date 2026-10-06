@@ -266,6 +266,11 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await createSheet.getByTestId("create-entry-template-prepayment").click();
   await expect(createSheet.getByTestId("create-entry-template-warning")).toContainText(/1410|asset/i);
   await expect(createSheet.getByTestId("create-entry-auto-reverse-checkbox")).not.toBeChecked();
+
+  // P4-4: schedule for later → Save draft creates scheduled status (excluded from TB until job posts)
+  await createSheet.getByTestId("create-entry-template-blank").click();
+  await createSheet.getByTestId("create-entry-schedule-checkbox").check();
+  await expect(createSheet.getByTestId("create-entry-scheduled-for")).toBeVisible();
   await createSheet.getByRole("button", { name: "Cancel" }).click();
 
   await page.goto("/books/inbox");

@@ -457,6 +457,7 @@ export function LedgerToolbar({
               <li>Posted — locked lines, affects balances</li>
               <li>Reversed — original entry superseded by reversal pair</li>
               <li>Scheduled — will post on scheduled date</li>
+              <li>Blocked — schedule could not post (period locked)</li>
             </ul>
           </PopoverContent>
         </Popover>
