@@ -90,6 +90,7 @@ import {
   listBooksDocuments,
   previewBooksDocumentJournal,
   softDeleteBooksDocumentDraft,
+  voidBooksDocument,
   updateBooksDocumentPrintedFields,
 } from "@/server/books/documents";
 import {
@@ -130,6 +131,15 @@ import {
   createReceiptOrPayment,
   getPartyAdvanceBalance,
 } from "@/server/books/settlements";
+import {
+  listPlaceOfSupplyGaps,
+  reapplyPlaceOfSupplyRule,
+  setDocumentPlaceOfSupply,
+} from "@/server/books/place-of-supply";
+import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
+import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/company-vat-settings";
+import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
+import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -322,6 +332,62 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
+      return NextResponse.json(await getCompanyVatSettings(session.userId, session.clientId));
+    }
+    if (path[0] === "vat201" && path[1] === "draft" && path.length === 2) {
+      try {
+        return NextResponse.json(
+          await generateVat201Draft(session.userId, session.clientId, {
+            from: url.searchParams.get("from") || undefined,
+            to: url.searchParams.get("to") || undefined,
+            monthEnd: url.searchParams.get("monthEnd") || undefined,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof VatReturnBlockedError) {
+          return NextResponse.json(
+            { error: error.message, code: error.code, gaps: error.gaps },
+            { status: 409 },
+          );
+        }
+        throw error;
+      }
+    }
+    if (path[0] === "dashboard" && path.length === 1) {
+      return NextResponse.json(
+        await getBooksMonthChecklist(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || null,
+        }),
+      );
+    }
+    if (path[0] === "dashboard" && path[1] === "issues" && path.length === 2) {
+      return NextResponse.json(
+        await listBooksIssues(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || null,
+        }),
+      );
+    }
+    if (path[0] === "bank-recon" && (path.length === 1 || path.length === 2)) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        path.length === 1
+          ? await listBankReconciliations(session.userId, session.clientId, { periodId })
+          : await getBankReconciliation(session.userId, session.clientId, {
+              accountId: path[1],
+              periodId,
+            }),
+      );
+    }
+    if (path[0] === "place-of-supply" && path[1] === "gaps" && path.length === 2) {
+      return NextResponse.json(
+        await listPlaceOfSupplyGaps(session.userId, session.clientId, {
+          from: url.searchParams.get("from") || undefined,
+          to: url.searchParams.get("to") || undefined,
+        }),
+      );
     }
     if (path[0] === "documents" && path[2] === "journal-preview" && path.length === 3) {
       return NextResponse.json(
@@ -761,6 +827,45 @@ export async function POST(request: Request, ctx: Ctx) {
             applyAdvanceOriginalMinor != null && Number.isFinite(applyAdvanceOriginalMinor)
               ? applyAdvanceOriginalMinor
               : undefined,
+        }),
+      );
+    }
+    if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
+      return NextResponse.json(
+        await setCompanyVatSettings(session.userId, session.clientId, {
+          establishmentEmirate:
+            body.establishmentEmirate === undefined ? undefined : (body.establishmentEmirate as string | null),
+          vatReturnFrequency:
+            body.vatReturnFrequency === undefined
+              ? undefined
+              : body.vatReturnFrequency === "monthly" || body.vatReturnFrequency === "quarterly"
+                ? body.vatReturnFrequency
+                : null,
+          vatPeriodEndMonth:
+            body.vatPeriodEndMonth === undefined
+              ? undefined
+              : body.vatPeriodEndMonth == null
+                ? null
+                : Number(body.vatPeriodEndMonth),
+        }),
+      );
+    }
+    if (path[0] === "place-of-supply" && path[1] === "reapply" && path.length === 2) {
+      return NextResponse.json(await reapplyPlaceOfSupplyRule(session.userId, session.clientId));
+    }
+    if (path[0] === "documents" && path[2] === "place-of-supply" && path.length === 3) {
+      return NextResponse.json(
+        await setDocumentPlaceOfSupply(session.userId, session.clientId, path[1], {
+          placeOfSupply: body.placeOfSupply == null ? null : String(body.placeOfSupply),
+          reason: body.reason == null ? null : String(body.reason),
+        }),
+      );
+    }
+    if (path[0] === "documents" && path[2] === "void" && path.length === 3) {
+      // Actor = signed-in user; reverseBooksJournal enforces approver role + preparer ≠ approver.
+      return NextResponse.json(
+        await voidBooksDocument(session.userId, session.clientId, path[1], {
+          reason: String(body.reason || ""),
         }),
       );
     }

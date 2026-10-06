@@ -34,6 +34,54 @@ type BankRow = {
   statementCount: number;
 };
 
+type Period = { id: string; label: string; periodStart: string; periodEnd: string; status: string };
+
+type ReconRow = {
+  accountId: string;
+  asOf: string;
+  status: "reconciled" | "difference" | "no_statement";
+  ledgerBalanceMinor: number;
+  statementBalanceMinor: number | null;
+  differenceMinor: number | null;
+  statementOnlyCount: number;
+  ledgerOnlyCount: number;
+  unexplainedMinor: number | null;
+};
+
+type ReconItem = {
+  kind: "statement_only" | "ledger_only";
+  state: string;
+  date: string | null;
+  description: string;
+  amountMinor: number;
+  entryNo: string | null;
+};
+
+type ReconDetail = ReconRow & { code: string; name: string; periodLabel: string; items: ReconItem[] };
+
+const RECON_META: Record<ReconRow["status"], { label: string; tone: "success" | "warning" | "neutral" }> = {
+  reconciled: { label: "Reconciled", tone: "success" },
+  difference: { label: "Difference", tone: "warning" },
+  no_statement: { label: "No statement", tone: "neutral" },
+};
+
+const ITEM_STATE_LABEL: Record<string, string> = {
+  not_materialized: "On statement, not in Transactions",
+  needs_review: "On statement, needs review",
+  ready: "On statement, ready to post",
+  excluded: "On statement, excluded",
+  journal: "In ledger, not on statement",
+};
+
+/** Latest period that has ended (else the first one). */
+function defaultPeriodId(periods: Period[]): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const ended = periods
+    .filter((p) => String(p.periodEnd).slice(0, 10) <= today)
+    .sort((a, b) => String(b.periodEnd).localeCompare(String(a.periodEnd)));
+  return ended[0]?.id || periods[0]?.id || "";
+}
+
 const TYPE_LABEL: Record<BankRow["instrumentType"], string> = {
   bank: "Bank",
   card: "Credit card",
@@ -63,6 +111,51 @@ export default function BankingPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const rowFileRef = useRef<HTMLInputElement>(null);
   const [uploadForId, setUploadForId] = useState<string | null>(null);
+  const [periods, setPeriods] = useState<Period[]>([]);
+  const [periodId, setPeriodId] = useState("");
+  const [recon, setRecon] = useState<Record<string, ReconRow>>({});
+  const [detail, setDetail] = useState<ReconDetail | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch("/api/books/periods");
+      const data = await res.json().catch(() => []);
+      if (res.ok && Array.isArray(data)) {
+        setPeriods(data);
+        setPeriodId((cur) => cur || defaultPeriodId(data));
+      }
+    })();
+  }, []);
+
+  const reloadRecon = useCallback(async () => {
+    if (!periodId) return;
+    const res = await fetch(`/api/books/bank-recon?periodId=${encodeURIComponent(periodId)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    if (Array.isArray(data)) {
+      setRecon(Object.fromEntries((data as ReconRow[]).map((r) => [r.accountId, r])));
+    }
+  }, [periodId]);
+
+  useEffect(() => {
+    setDetail(null);
+    void reloadRecon();
+  }, [reloadRecon]);
+
+  async function openRecon(accountId: string) {
+    const res = await fetch(
+      `/api/books/bank-recon/${encodeURIComponent(accountId)}?periodId=${encodeURIComponent(periodId)}`,
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    setDetail(data as ReconDetail);
+  }
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -75,7 +168,8 @@ export default function BankingPage() {
     }
     if (Array.isArray(data)) setRows(data);
     setLoading(false);
-  }, []);
+    void reloadRecon();
+  }, [reloadRecon]);
 
   useEffect(() => {
     void reload();
@@ -133,6 +227,21 @@ export default function BankingPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Reconcile to</span>
+            <select
+              className="h-8 rounded-lg border border-border bg-background px-2 text-sm"
+              value={periodId}
+              onChange={(e) => setPeriodId(e.target.value)}
+              data-testid="banking-recon-period"
+            >
+              {periods.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <a
             href="/samples/bank-statement-sample.csv"
             download="bank-statement-sample.csv"
@@ -214,6 +323,7 @@ export default function BankingPage() {
               <th className="px-3 py-2">Last closing</th>
               <th className="px-3 py-2">Ledger</th>
               <th className="px-3 py-2">Diff</th>
+              <th className="px-3 py-2">Reconciled</th>
               <th className="px-3 py-2">Unreviewed</th>
               <th className="px-3 py-2" />
             </tr>
@@ -263,6 +373,25 @@ export default function BankingPage() {
                     </span>
                   )}
                 </td>
+                <td className="px-3 py-2" data-testid={`banking-recon-${r.code}`}>
+                  {recon[r.id] ? (
+                    <button
+                      type="button"
+                      className="space-y-0.5 text-left"
+                      onClick={() => void openRecon(r.id)}
+                      data-testid={`banking-recon-open-${r.code}`}
+                    >
+                      <StatusBadge meta={RECON_META[recon[r.id].status]} />
+                      {recon[r.id].differenceMinor ? (
+                        <span className="block text-xs tabular-nums text-amber-700">
+                          <CellAmount minor={recon[r.id].differenceMinor!} />
+                        </span>
+                      ) : null}
+                    </button>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td className="px-3 py-2 tabular-nums">{r.unreviewedLineCount}</td>
                 <td className="space-x-2 px-3 py-2 text-right">
                   <Link
@@ -299,14 +428,14 @@ export default function BankingPage() {
             ))}
             {!loading && !rows.length ? (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-muted-foreground">
+                <td colSpan={11} className="px-3 py-6 text-muted-foreground">
                   No bank / card / gateway / cash accounts on the COA.
                 </td>
               </tr>
             ) : null}
             {loading ? (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-muted-foreground">
+                <td colSpan={11} className="px-3 py-6 text-muted-foreground">
                   Loading…
                 </td>
               </tr>
@@ -314,6 +443,72 @@ export default function BankingPage() {
           </tbody>
         </table>
       </div>
+
+      {detail ? (
+        <div className="space-y-3 rounded-lg border border-border p-4" data-testid="banking-recon-detail">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-medium">
+                {detail.code} · {detail.name} — reconciliation to {formatDateUae(detail.asOf)}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Statement{" "}
+                {detail.statementBalanceMinor == null ? (
+                  "— (no statement covers this date)"
+                ) : (
+                  <CellAmount minor={detail.statementBalanceMinor} />
+                )}{" "}
+                · Ledger <CellAmount minor={detail.ledgerBalanceMinor} />
+                {detail.differenceMinor != null ? (
+                  <>
+                    {" "}
+                    · Difference <CellAmount minor={detail.differenceMinor} />
+                  </>
+                ) : null}
+                {detail.unexplainedMinor ? (
+                  <>
+                    {" "}
+                    · <span className="text-red-600">Unexplained </span>
+                    <CellAmount minor={detail.unexplainedMinor} />
+                  </>
+                ) : null}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setDetail(null)}>
+              Close
+            </Button>
+          </div>
+          {detail.items.length ? (
+            <table className="w-full text-sm" data-testid="banking-recon-items">
+              <thead className="text-left text-muted-foreground">
+                <tr>
+                  <th className="py-1 pr-3">Date</th>
+                  <th className="py-1 pr-3">Item</th>
+                  <th className="py-1 pr-3">Why unreconciled</th>
+                  <th className="py-1 pr-3 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.items.map((it, i) => (
+                  <tr key={i} className="border-t border-border">
+                    <td className="py-1 pr-3">{it.date ? formatDateUae(it.date) : "—"}</td>
+                    <td className="py-1 pr-3">
+                      {it.entryNo ? <span className="font-mono text-xs">{it.entryNo} </span> : null}
+                      {it.description || "—"}
+                    </td>
+                    <td className="py-1 pr-3">{ITEM_STATE_LABEL[it.state] || it.state}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums">
+                      <CellAmount minor={it.amountMinor} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-sm text-muted-foreground">Nothing unreconciled.</p>
+          )}
+        </div>
+      ) : null}
 
       <input
         ref={rowFileRef}

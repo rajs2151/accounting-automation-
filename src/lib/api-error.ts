@@ -53,6 +53,29 @@ const MESSAGES: Record<string, string> = {
     "Payment gateway clearing (1310) is missing from the chart of accounts.",
   gateway_payout_not_balanced:
     "This payout group does not net to zero on gateway clearing. Fix the group before posting.",
+  void_reason_required: "Give a reason for voiding this document.",
+  void_requires_posted: "Only posted documents can be voided.",
+  already_void: "This document is already void.",
+  void_has_settlements: "Receipts or payments are allocated to this document. Unallocate them before voiding.",
+  void_has_linked_notes: "A credit or debit note is linked to this document. Void the note first.",
+  void_has_posted_releases: "Deferred revenue has already been released from this invoice.",
+  reverse_requires_approver: "Only an approver or admin can reverse or void a posted entry.",
+  reverse_preparer_cannot_approve: "You prepared this, so someone else must reverse or void it.",
+  original_wrong_type: "A credit note must link to a sales invoice, a debit note to a purchase bill.",
+  original_not_posted: "The original document must be posted first.",
+  original_party_mismatch: "The note's party must match the original document.",
+  original_currency_mismatch: "The note's currency must match the original document.",
+  exceeds_original_balance: "The note is more than the original's open balance.",
+  invalid_place_of_supply: "Choose one of the seven emirates or Outside UAE.",
+  place_of_supply_reason_required: "Give a reason for changing the place of supply.",
+  place_of_supply_not_applicable: "Place of supply applies only to invoices, bills and notes.",
+  vat_stagger_invalid: "Choose monthly, or quarterly with the month a quarter ends.",
+  vat_settings_require_admin: "Only an admin can change the company's VAT settings.",
+  place_of_supply_reapply_requires_admin: "Only an admin can re-apply the place-of-supply rule.",
+  vat_return_blocked_place_of_supply_gaps:
+    "Some posted documents in this VAT period have no place of supply. Fix the gap list first.",
+  vat_stagger_not_set: "Set the company's VAT return period in Settings first.",
+  vat_return_range_required: "Choose a VAT period or a date range.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {
