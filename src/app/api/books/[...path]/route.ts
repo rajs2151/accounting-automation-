@@ -62,6 +62,7 @@ import {
   getBooksDocument,
   listBooksDocuments,
   previewBooksDocumentJournal,
+  softDeleteBooksDocumentDraft,
   updateBooksDocumentPrintedFields,
 } from "@/server/books/documents";
 import {
@@ -914,6 +915,11 @@ export async function DELETE(request: Request, ctx: Ctx) {
     if (path[0] === "journals" && path.length === 2) {
       return NextResponse.json(
         await softDeleteBooksJournalDraft(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "documents" && path.length === 2) {
+      return NextResponse.json(
+        await softDeleteBooksDocumentDraft(session.userId, session.clientId, path[1]),
       );
     }
     return NextResponse.json({ error: "not_found" }, { status: 404 });

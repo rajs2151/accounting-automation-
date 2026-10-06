@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { FileText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FileText, Filter } from "lucide-react";
 import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
@@ -14,12 +14,17 @@ import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
-import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
+import { displayToMinor, MoneyTypeError } from "@/lib/money";
 import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/status-labels";
 
 type Doc = {
@@ -41,16 +46,19 @@ type InboxRow = {
   detectedType: string | null;
 };
 
-type Tab = "bills" | "uploads";
+type Tab = "all" | "needs_review" | "uploads";
 
 export default function PurchasesPage() {
   const { periodId } = useBooksShell();
-  const [tab, setTab] = useState<Tab>("bills");
+  const [tab, setTab] = useState<Tab>("all");
+  const [statusFilter, setStatusFilter] = useState<string | "all">("all");
   const [rows, setRows] = useState<Doc[]>([]);
   const [uploads, setUploads] = useState<InboxRow[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
+  const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
+  const [selectedUploads, setSelectedUploads] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
@@ -72,11 +80,35 @@ export default function PurchasesPage() {
       if (!form.partyId && pts[0]) setForm((f) => ({ ...f, partyId: pts[0].id }));
     }
     if (Array.isArray(inbox)) setUploads(inbox);
+    setSelectedDocs(new Set());
+    setSelectedUploads(new Set());
   }, [form.partyId]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const needsReviewDocs = useMemo(
+    () => rows.filter((r) => r.status === "draft"),
+    [rows],
+  );
+  const needsReviewUploads = useMemo(
+    () => uploads.filter((u) => u.status === "needs_review"),
+    [uploads],
+  );
+  const needsReviewCount = needsReviewDocs.length + needsReviewUploads.length;
+
+  const statusCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.status, (m.get(r.status) || 0) + 1);
+    return m;
+  }, [rows]);
+
+  const visibleDocs = useMemo(() => {
+    const base = tab === "needs_review" ? needsReviewDocs : rows;
+    if (statusFilter === "all") return base;
+    return base.filter((r) => r.status === statusFilter);
+  }, [tab, rows, needsReviewDocs, statusFilter]);
 
   async function onUpload(files: FileList | null) {
     if (!files?.length) return;
@@ -156,6 +188,82 @@ export default function PurchasesPage() {
     void reload();
   }
 
+  function toggleDoc(id: string) {
+    setSelectedDocs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleUpload(id: string) {
+    setSelectedUploads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function bulkChangeType(docType: "purchase_bill" | "sales_invoice") {
+    const ids = [...selectedUploads];
+    if (!ids.length) return;
+    let ok = 0;
+    for (const id of ids) {
+      const res = await fetch(`/api/books/inbox/${id}/type`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ docType }),
+      });
+      if (res.ok) ok += 1;
+    }
+    toast.success(`Changed type on ${ok} of ${ids.length}`);
+    void reload();
+  }
+
+  async function bulkAssign() {
+    const ids = [...selectedUploads];
+    if (!ids.length) return;
+    let ok = 0;
+    for (const id of ids) {
+      const res = await fetch(`/api/books/inbox/${id}/route`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (res.ok) ok += 1;
+    }
+    toast.success(`Assigned ${ok} of ${ids.length} to this company`);
+    void reload();
+  }
+
+  async function bulkRevertDraft() {
+    const ids = [...selectedDocs].filter((id) => {
+      const row = rows.find((r) => r.id === id);
+      return row?.status === "draft";
+    });
+    if (!ids.length) {
+      toast.error("Select draft bills to revert");
+      return;
+    }
+    let ok = 0;
+    for (const id of ids) {
+      const res = await fetch(`/api/books/documents/${id}`, { method: "DELETE" });
+      if (res.ok) ok += 1;
+      else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(apiErrorMessage(data));
+      }
+    }
+    toast.success(`Reverted ${ok} draft(s)`);
+    void reload();
+  }
+
+  const showUploadsBulk = tab === "uploads" && selectedUploads.size > 0;
+  const showDocsBulk =
+    (tab === "all" || tab === "needs_review") && selectedDocs.size > 0;
+
   return (
     <div className="space-y-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -182,20 +290,109 @@ export default function PurchasesPage() {
 
       <OpenItemKpiTiles side="AP" />
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} data-testid="purchase-tabs">
-        <TabsList>
-          <TabsTrigger value="bills">Bills</TabsTrigger>
-          <TabsTrigger value="uploads" data-testid="purchase-uploads-tab">
-            Uploads
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} data-testid="purchase-tabs">
+          <TabsList>
+            <TabsTrigger value="all" data-testid="purchase-tab-all">
+              All ({rows.length})
+            </TabsTrigger>
+            <TabsTrigger value="needs_review" data-testid="purchase-tab-needs-review">
+              Needs Review ({needsReviewCount})
+            </TabsTrigger>
+            <TabsTrigger value="uploads" data-testid="purchase-uploads-tab">
+              Uploads ({uploads.length})
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        {tab !== "uploads" ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="purchase-filter-menu"
+                >
+                  <Filter className="size-3.5" />
+                  Filter
+                  {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                data-testid="filter-status-all"
+                onClick={() => setStatusFilter("all")}
+              >
+                All statuses ({rows.length})
+              </DropdownMenuItem>
+              {[...statusCounts.entries()].map(([status, n]) => (
+                <DropdownMenuItem
+                  key={status}
+                  data-testid={`filter-status-${status}`}
+                  onClick={() => setStatusFilter(status)}
+                >
+                  {documentStatusLabel(status).label} ({n})
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </div>
+
+      {showUploadsBulk || showDocsBulk ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+          data-testid="purchase-bulk-bar"
+        >
+          <span className="text-sm text-muted-foreground">
+            {showUploadsBulk ? selectedUploads.size : selectedDocs.size} selected
+          </span>
+          {showUploadsBulk ? (
+            <>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button size="sm" variant="outline" data-testid="bulk-change-type">
+                      Change type
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => void bulkChangeType("purchase_bill")}>
+                    Purchase bill
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void bulkChangeType("sales_invoice")}>
+                    Sales invoice
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button size="sm" variant="outline" data-testid="bulk-assign" onClick={() => void bulkAssign()}>
+                Assign
+              </Button>
+            </>
+          ) : null}
+          {showDocsBulk ? (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="bulk-revert-draft"
+              onClick={() => void bulkRevertDraft()}
+            >
+              Revert draft
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       {tab === "uploads" ? (
         <table className="w-full text-sm" data-testid="purchase-uploads-table">
           <thead>
             <tr className="text-left text-muted-foreground">
-              <th className="py-2">File</th>
+              <th className="w-8 py-2" />
+              <th>File</th>
               <th>Status</th>
               <th>Type</th>
               <th />
@@ -210,7 +407,16 @@ export default function PurchasesPage() {
                   window.location.href = `/books/inbox/${u.id}`;
                 }}
               >
-                <td className="py-2">
+                <td className="py-2" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedUploads.has(u.id)}
+                    onChange={() => toggleUpload(u.id)}
+                    data-testid={`upload-select-${u.id}`}
+                    aria-label={`Select ${u.filename}`}
+                  />
+                </td>
+                <td>
                   <span className="inline-flex items-center gap-2">
                     <FileText className="size-4 shrink-0 text-muted-foreground" />
                     {u.filename}
@@ -237,7 +443,7 @@ export default function PurchasesPage() {
             ))}
             {!uploads.length ? (
               <tr>
-                <td colSpan={4} className="py-6 text-muted-foreground">
+                <td colSpan={5} className="py-6 text-muted-foreground">
                   No uploads yet — use Upload Invoices.
                 </td>
               </tr>
@@ -320,10 +526,26 @@ export default function PurchasesPage() {
             </div>
           )}
 
-          <table className="w-full text-sm">
+          {tab === "needs_review" && needsReviewUploads.length ? (
+            <div className="rounded-lg border border-border p-3" data-testid="needs-review-uploads">
+              <p className="mb-2 text-sm font-medium">Uploads needing review</p>
+              <ul className="space-y-1 text-sm">
+                {needsReviewUploads.map((u) => (
+                  <li key={u.id}>
+                    <a className="text-primary underline" href={`/books/inbox/${u.id}`}>
+                      {u.filename}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <table className="w-full text-sm" data-testid="purchase-bills-table">
             <thead>
               <tr className="text-left text-muted-foreground">
-                <th className="py-2">Number</th>
+                <th className="w-8 py-2" />
+                <th>Number</th>
                 <th>Supplier</th>
                 <th>Date</th>
                 <th>Gross</th>
@@ -332,9 +554,18 @@ export default function PurchasesPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {visibleDocs.map((r) => (
                 <tr key={r.id} className="border-t border-border">
-                  <td className="py-2">{r.documentNumber || "—"}</td>
+                  <td className="py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedDocs.has(r.id)}
+                      onChange={() => toggleDoc(r.id)}
+                      data-testid={`bill-select-${r.id}`}
+                      aria-label={`Select ${r.documentNumber || r.id}`}
+                    />
+                  </td>
+                  <td>{r.documentNumber || "—"}</td>
                   <td>{r.partyName}</td>
                   <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
                   <td className="text-end tabular-nums">
@@ -355,6 +586,13 @@ export default function PurchasesPage() {
                   </td>
                 </tr>
               ))}
+              {!visibleDocs.length ? (
+                <tr>
+                  <td colSpan={7} className="py-6 text-muted-foreground">
+                    {tab === "needs_review" ? "No bills need review." : "No bills yet."}
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </>

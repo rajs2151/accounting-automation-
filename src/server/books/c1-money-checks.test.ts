@@ -6,6 +6,7 @@ import {
   approveAndPostBooksDocument,
   createBooksDocument,
   previewBooksDocumentJournal,
+  softDeleteBooksDocumentDraft,
 } from "@/server/books/documents";
 import { BooksError } from "@/server/books/errors";
 import { getBooksOpenItemKpis, listBooksOpenItems } from "@/server/books/open-items";
@@ -503,6 +504,80 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     assert.equal(sumDrAed, sumCrAed);
     assert.equal(preview.debitMinor, sumDrAed);
     assert.equal(preview.creditMinor, sumCrAed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C1-3: soft-delete draft document is audited; posted rejected", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "c1-3-del");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    assert.ok(periodId);
+    const partyId = await uniqueSupplier(clientId, `del-${Date.now()}`);
+
+    const draft = await createBooksDocument(OMAR, clientId, {
+      docType: "purchase_bill",
+      partyId,
+      issueDate: "2026-05-16",
+      periodId,
+      documentNumber: `C13-DEL-${Date.now()}`,
+      lines: [
+        {
+          description: "Supplies",
+          lineKind: "expense",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+
+    const deleted = await softDeleteBooksDocumentDraft(OMAR, clientId, String(draft.id));
+    assert.equal(deleted.ok, true);
+
+    const row = await admin.query(
+      `SELECT status, deleted_at IS NOT NULL AS gone FROM books_documents WHERE id = $1`,
+      [draft.id],
+    );
+    assert.equal(row.rows[0].status, "void");
+    assert.equal(row.rows[0].gone, true);
+
+    const audit = await admin.query(
+      `SELECT action FROM books_audit_events
+       WHERE entity_id = $1 AND action = 'soft_delete_draft'`,
+      [draft.id],
+    );
+    assert.ok(audit.rowCount && audit.rowCount >= 1);
+
+    const posted = await createBooksDocument(OMAR, clientId, {
+      docType: "purchase_bill",
+      partyId,
+      issueDate: "2026-05-16",
+      periodId,
+      documentNumber: `C13-POST-${Date.now()}`,
+      lines: [
+        {
+          description: "Supplies",
+          lineKind: "expense",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(posted.id));
+    await assert.rejects(
+      () => softDeleteBooksDocumentDraft(OMAR, clientId, String(posted.id)),
+      (err: unknown) => {
+        assert.ok(err instanceof BooksError);
+        assert.match(String(err.message), /not_draft/);
+        return true;
+      },
+    );
   } finally {
     await admin.end().catch(() => undefined);
   }

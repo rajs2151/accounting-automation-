@@ -28,16 +28,29 @@ export function needsReviewQueue(items: ReviewQueueItem[]): ReviewQueueItem[] {
 export function prevNextInReviewQueue(
   items: ReviewQueueItem[],
   currentId: string,
-): { prevId: string | null; nextId: string | null; index: number } {
+): { prevId: string | null; nextId: string | null; index: number; total: number } {
   const queue = needsReviewQueue(items);
+  const total = queue.length;
   const index = queue.findIndex((i) => i.id === currentId);
   if (index < 0) {
-    return { prevId: null, nextId: null, index: -1 };
+    return { prevId: null, nextId: null, index: -1, total };
   }
   return {
     index,
+    total,
     // Prev = newer (earlier in DESC list); next = older (later in DESC list).
     prevId: index > 0 ? queue[index - 1]!.id : null,
     nextId: index < queue.length - 1 ? queue[index + 1]!.id : null,
   };
+}
+
+/** Human label for queue chrome, e.g. "Bill 2 of 11". */
+export function reviewQueuePositionLabel(
+  kind: "bill" | "invoice",
+  index: number,
+  total: number,
+): string | null {
+  if (index < 0 || total <= 0) return null;
+  const noun = kind === "bill" ? "Bill" : "Invoice";
+  return `${noun} ${index + 1} of ${total}`;
 }

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { needsReviewQueue, prevNextInReviewQueue } from "@/lib/review-queue-nav";
+import {
+  needsReviewQueue,
+  prevNextInReviewQueue,
+  reviewQueuePositionLabel,
+} from "@/lib/review-queue-nav";
 
 const QUEUE = [
   { id: "a", status: "needs_review", createdAt: "2026-05-15T12:00:00Z" },
@@ -40,4 +44,11 @@ test("prevNextInReviewQueue unknown id returns nulls", () => {
   assert.equal(nav.prevId, null);
   assert.equal(nav.nextId, null);
   assert.equal(nav.index, -1);
+  assert.equal(nav.total, 3);
+});
+
+test("reviewQueuePositionLabel", () => {
+  assert.equal(reviewQueuePositionLabel("bill", 0, 11), "Bill 1 of 11");
+  assert.equal(reviewQueuePositionLabel("invoice", 2, 5), "Invoice 3 of 5");
+  assert.equal(reviewQueuePositionLabel("bill", -1, 5), null);
 });

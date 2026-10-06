@@ -34,12 +34,14 @@ import {
   mapWorkerFieldsToDisplay,
   type ReviewFieldState,
 } from "@/lib/review-fields";
-import { prevNextInReviewQueue } from "@/lib/review-queue-nav";
+import { partyMismatchDiffs } from "@/lib/party-mismatch";
+import { prevNextInReviewQueue, reviewQueuePositionLabel } from "@/lib/review-queue-nav";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
 import { docTypeLabel, inboxStatusLabel } from "@/lib/status-labels";
 import { splitValidationFlags } from "@/lib/validation-flag-labels";
 import { vatByCodeSummary } from "@/lib/vat-by-code";
 import { cn } from "@/lib/utils";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const SPLITTER_KEY = "arnibooks.review.previewPct";
 const DEFAULT_PREVIEW_PCT = 55;
@@ -195,8 +197,13 @@ export default function InboxReviewPage() {
   >([]);
   const [activeField, setActiveField] = useState<string | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
-  const [parties, setParties] = useState<Array<{ id: string; name: string }>>([]);
+  const [parties, setParties] = useState<Array<{ id: string; name: string; trn: string | null }>>(
+    [],
+  );
   const [partyId, setPartyId] = useState("");
+  const [lineMode, setLineMode] = useState<"item" | "accounting">("item");
+  const [newSupplier, setNewSupplier] = useState(false);
+  const [mismatchKeep, setMismatchKeep] = useState(false);
   const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>(
     {},
   );
@@ -283,7 +290,13 @@ export default function InboxReviewPage() {
       .then((r) => r.json())
       .then((pts) => {
         if (Array.isArray(pts) && pts.length) {
-          setParties(pts);
+          setParties(
+            pts.map((p: { id: string; name: string; trn?: string | null }) => ({
+              id: p.id,
+              name: p.name,
+              trn: p.trn ?? null,
+            })),
+          );
           setPartyId((prev) => prev || pts[0].id);
         }
       });
@@ -302,6 +315,33 @@ export default function InboxReviewPage() {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
+
+  // New-supplier badge: no fuzzy match on extracted supplier name/TRN.
+  useEffect(() => {
+    const name = fields.supplier_name?.value?.trim();
+    const trn = fields.supplier_trn?.value?.trim() || null;
+    if (!name) {
+      setNewSupplier(false);
+      return;
+    }
+    let cancelled = false;
+    void fetch("/api/books/parties/suggest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ partyType: "supplier", name, trn }),
+    })
+      .then((r) => r.json())
+      .then((suggestions) => {
+        if (cancelled) return;
+        setNewSupplier(Array.isArray(suggestions) && suggestions.length === 0);
+      })
+      .catch(() => {
+        if (!cancelled) setNewSupplier(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fields.supplier_name?.value, fields.supplier_trn?.value]);
 
   // Poll while the worker is still extracting (Queued → Extracting → done).
   useEffect(() => {
@@ -339,6 +379,14 @@ export default function InboxReviewPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [nav.prevId, nav.nextId, router]);
 
+  function resolveConfirmDocType(): "sales_invoice" | "purchase_bill" {
+    const raw = String(review?.detectedType || fields.doc_type?.value || "").toLowerCase();
+    if (raw === "purchase_bill" || raw.includes("purchase") || raw.includes("bill")) {
+      return "purchase_bill";
+    }
+    return "sales_invoice";
+  }
+
   async function confirmFields() {
     if (!partyId || !periodId) {
       toast.error(apiErrorMessage({ error: "party_and_period_required" }));
@@ -355,7 +403,7 @@ export default function InboxReviewPage() {
       body: JSON.stringify({
         partyId,
         periodId,
-        docType: "sales_invoice",
+        docType: resolveConfirmDocType(),
         lines: lineItems.map((l) => ({
           description: l.description,
           vatCode: l.vatCode || null,
@@ -372,6 +420,33 @@ export default function InboxReviewPage() {
     toast.success("Draft document created");
     setDocumentId(String(data.documentId));
     void load();
+  }
+
+  async function updatePartyFromExtraction() {
+    const master = parties.find((p) => p.id === partyId);
+    if (!master) return;
+    const name = fields.supplier_name?.value?.trim() || fields.customer_name?.value?.trim();
+    const trn = fields.supplier_trn?.value?.trim() || fields.customer_trn?.value?.trim() || null;
+    const res = await fetch(`/api/books/parties/${partyId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: name || master.name,
+        trn,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success("Party master updated from extraction");
+    setParties((prev) =>
+      prev.map((p) =>
+        p.id === partyId ? { ...p, name: name || p.name, trn: trn } : p,
+      ),
+    );
+    setMismatchKeep(false);
   }
 
   async function retry() {
@@ -453,6 +528,21 @@ export default function InboxReviewPage() {
     "sales_invoice";
   const statusMeta = inboxStatusLabel(review?.status || "needs_review");
   const typeMeta = docTypeLabel(docType);
+  const queueKind: "bill" | "invoice" =
+    String(docType).toLowerCase().includes("purchase") ||
+    String(docType).toLowerCase().includes("bill")
+      ? "bill"
+      : "invoice";
+  const queueLabel = reviewQueuePositionLabel(queueKind, nav.index, nav.total);
+  const selectedParty = parties.find((p) => p.id === partyId) || null;
+  const extractedParty = {
+    name: fields.supplier_name?.value || fields.customer_name?.value || null,
+    trn: fields.supplier_trn?.value || fields.customer_trn?.value || null,
+  };
+  const mismatchDiffs =
+    !mismatchKeep && !documentId
+      ? partyMismatchDiffs(extractedParty, selectedParty)
+      : [];
 
   if (loading) {
     return (
@@ -555,7 +645,21 @@ export default function InboxReviewPage() {
           </Button>
         </div>
         <h1 className="text-xl font-semibold">{typeMeta.label}</h1>
+        {queueLabel ? (
+          <span
+            className="text-sm text-muted-foreground tabular-nums"
+            data-testid="review-queue-position"
+          >
+            {queueLabel}
+          </span>
+        ) : null}
         <StatusBadge meta={statusMeta} data-testid="review-status-badge" />
+        {newSupplier ? (
+          <StatusBadge
+            meta={{ label: "New supplier", tone: "warning" }}
+            data-testid="new-supplier-badge"
+          />
+        ) : null}
       </div>
       <div className="flex items-center gap-2">
         <DropdownMenu>
@@ -725,11 +829,32 @@ export default function InboxReviewPage() {
             />
 
             <div>
-              <Label className="text-xs font-medium text-muted-foreground">Line items</Label>
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <Label className="text-xs font-medium text-muted-foreground">Line items</Label>
+                <Tabs
+                  value={lineMode}
+                  onValueChange={(v) => setLineMode(v as "item" | "accounting")}
+                  data-testid="line-mode-tabs"
+                >
+                  <TabsList className="h-8">
+                    <TabsTrigger value="item" className="text-xs" data-testid="line-mode-item">
+                      Item mode
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="accounting"
+                      className="text-xs"
+                      data-testid="line-mode-accounting"
+                    >
+                      Accounting mode
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
               <table className="mt-1 w-full text-sm" data-testid="review-line-items">
                 <thead>
                   <tr className="text-left text-muted-foreground">
                     <th className="py-1">Description</th>
+                    {lineMode === "accounting" ? <th>Account</th> : null}
                     <th>VAT</th>
                     <th className="text-right">Net</th>
                     <th className="text-right">VAT amt</th>
@@ -739,6 +864,11 @@ export default function InboxReviewPage() {
                   {lineItems.map((l, idx) => (
                     <tr key={`${l.description}-${idx}`} className="border-t border-border">
                       <td className="py-1">{l.description}</td>
+                      {lineMode === "accounting" ? (
+                        <td className="text-muted-foreground" data-testid={`line-account-${idx}`}>
+                          —
+                        </td>
+                      ) : null}
                       <td>
                         <select
                           className="h-8 rounded-md border border-input bg-background px-1 text-xs"
@@ -814,12 +944,15 @@ export default function InboxReviewPage() {
             </section>
 
             {!documentId ? (
-              <div>
+              <div className="space-y-2">
                 <Label className="text-xs">Party for draft</Label>
                 <select
                   className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
                   value={partyId}
-                  onChange={(e) => setPartyId(e.target.value)}
+                  onChange={(e) => {
+                    setPartyId(e.target.value);
+                    setMismatchKeep(false);
+                  }}
                   data-testid="confirm-party"
                 >
                   {parties.map((p) => (
@@ -828,12 +961,66 @@ export default function InboxReviewPage() {
                     </option>
                   ))}
                 </select>
+                {mismatchDiffs.length ? (
+                  <div
+                    className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"
+                    data-testid="party-mismatch-banner"
+                  >
+                    <p className="text-sm font-semibold text-amber-900">Party mismatch</p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-amber-900/80">
+                          <th className="py-1">Field</th>
+                          <th>Extracted</th>
+                          <th>Master</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mismatchDiffs.map((d) => (
+                          <tr key={d.field} className="border-t border-amber-200">
+                            <td className="py-1 capitalize">{d.field}</td>
+                            <td data-testid={`mismatch-extracted-${d.field}`}>{d.extracted}</td>
+                            <td data-testid={`mismatch-master-${d.field}`}>{d.master}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        data-testid="party-mismatch-update"
+                        onClick={() => void updatePartyFromExtraction()}
+                      >
+                        Update party
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        data-testid="party-mismatch-keep"
+                        onClick={() => setMismatchKeep(true)}
+                      >
+                        Keep master
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
             {documentId ? (
               <div className="border-t border-border pt-3">
-                <DocumentReviewPanels documentId={documentId} onApproved={() => void load()} />
+                <DocumentReviewPanels
+                  documentId={documentId}
+                  onApproved={() => void load()}
+                  onApprovedAndNext={() => {
+                    if (nav.nextId) {
+                      router.push(`/books/inbox/${nav.nextId}`);
+                    } else {
+                      toast.success("Queue complete");
+                      void load();
+                    }
+                  }}
+                />
               </div>
             ) : null}
           </div>

@@ -873,6 +873,49 @@ export async function approveAndPostBooksDocument(
   return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
 }
 
+/**
+ * Soft-delete an unposted draft document (C1-3 bulk "Revert draft").
+ * Posted / paid / void rows are rejected — never hard-delete.
+ */
+export async function softDeleteBooksDocumentDraft(
+  userId: string,
+  clientId: string,
+  documentId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT id, status, document_number, deleted_at
+       FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("document_not_found", "not_found");
+    if (before.rows[0].status !== "draft") {
+      throw new BooksError("not_draft", "conflict");
+    }
+    await db.query(
+      `UPDATE books_documents
+       SET deleted_at = now(), status = 'void', updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [documentId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "soft_delete_draft",
+      entity: "books_document",
+      entityId: documentId,
+      before: {
+        status: before.rows[0].status,
+        document_number: before.rows[0].document_number,
+        deleted_at: null,
+      },
+      after: { status: "void", deleted_at: "set" },
+    });
+    return { ok: true, documentId };
+  });
+}
+
 /** Acknowledge check_vat warning so Approve may proceed (audited). */
 export async function acknowledgeBooksDocumentCheckVat(
   userId: string,

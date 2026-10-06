@@ -43,9 +43,12 @@ function moneyClass(computed: number, printed: number | null) {
 export function DocumentReviewPanels({
   documentId,
   onApproved,
+  onApprovedAndNext,
 }: {
   documentId: string;
   onApproved?: () => void;
+  /** After a successful approve, navigate to the next needs-review item (C1-3). */
+  onApprovedAndNext?: () => void;
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [preview, setPreview] = useState<{
@@ -146,7 +149,7 @@ export function DocumentReviewPanels({
     }
   }
 
-  async function approve() {
+  async function approve(opts?: { andNext?: boolean }) {
     const res = await fetch(`/api/books/documents/${documentId}/approve`, {
       method: "POST",
       body: "{}",
@@ -158,6 +161,10 @@ export function DocumentReviewPanels({
       return;
     }
     toast.success(`Posted ${data.entryNo}`);
+    if (opts?.andNext && onApprovedAndNext) {
+      onApprovedAndNext();
+      return;
+    }
     onApproved?.();
     void load();
   }
@@ -338,14 +345,27 @@ export function DocumentReviewPanels({
       ) : null}
 
       {doc.status === "draft" ? (
-        <Button
-          data-testid="review-approve"
-          disabled={Boolean(blockReason)}
-          title={blockReason || undefined}
-          onClick={() => void approve()}
-        >
-          Approve
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            data-testid="review-approve"
+            disabled={Boolean(blockReason)}
+            title={blockReason || undefined}
+            onClick={() => void approve()}
+          >
+            Approve
+          </Button>
+          {onApprovedAndNext ? (
+            <Button
+              data-testid="review-approve-next"
+              variant="secondary"
+              disabled={Boolean(blockReason)}
+              title={blockReason || undefined}
+              onClick={() => void approve({ andNext: true })}
+            >
+              Approve &amp; Next
+            </Button>
+          ) : null}
+        </div>
       ) : (
         <p className="text-sm text-muted-foreground">Status: {doc.status}</p>
       )}
