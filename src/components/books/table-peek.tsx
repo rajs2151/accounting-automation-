@@ -28,7 +28,35 @@ type Peek = {
   actions: Array<{ label: string; el: HTMLElement }>;
 };
 
-const INTERACTIVE = "button, a, input, select, textarea, label, summary, [role='button'], [role='checkbox'], [contenteditable='true']";
+const INTERACTIVE = "button, a, input, select, textarea, label, summary, [role='button'], [role='checkbox'], [contenteditable='true'], [data-no-row-open]";
+
+/**
+ * Props for a table row that opens its real record (review drawer, detail page …) on click — the same
+ * Notion feel as the generic peek: pointer, hover "Open" chip, and clicks on the row's own controls
+ * (checkboxes, buttons, links, menus) are ignored. Also opens on Enter when the row is focused.
+ */
+export function rowOpenProps(open: () => void) {
+  return {
+    "data-openable": "",
+    tabIndex: 0,
+    onClick: (e: { target: EventTarget | null; currentTarget: EventTarget | null }) => {
+      const t = e.target as Element | null;
+      // React bubbles clicks from portals (menus, dialogs) through the row — only real row clicks count.
+      if (!t || !(e.currentTarget as Element | null)?.contains(t)) return;
+      if (t.closest(INTERACTIVE)) return;
+      if (window.getSelection()?.toString()) return;
+      open();
+    },
+    onKeyDown: (e: { key: string; target: EventTarget | null; currentTarget: EventTarget | null }) => {
+      if (e.key === "Enter" && e.target === e.currentTarget) open();
+    },
+  } as const;
+}
+
+/** Rows with editable fields (other than a selection checkbox) are data entry, never peeked. */
+function isEditableRow(row: Element): boolean {
+  return !!row.querySelector("input:not([type='checkbox']), select, textarea, [contenteditable='true']");
+}
 
 function text(el: Element | null | undefined) {
   return (el?.textContent || "").replace(/\s+/g, " ").trim();
@@ -72,7 +100,7 @@ function headerLabels(table: HTMLTableElement): string[] {
 /** Data rows of the table body that could be peeked (skips group headers / empty-state rows). */
 function peekableRows(table: HTMLTableElement): HTMLTableRowElement[] {
   return Array.from(table.tBodies).flatMap((b) =>
-    Array.from(b.rows).filter((r) => r.cells.length > 1 && !hasOwnClick(r)),
+    Array.from(b.rows).filter((r) => r.cells.length > 1 && !hasOwnClick(r) && !isEditableRow(r)),
   );
 }
 
@@ -140,8 +168,8 @@ export function TablePeekLayer({ children }: { children: ReactNode }) {
       const row = target.closest("tr");
       const table = row?.closest("table");
       if (!row || !table || !root!.contains(table)) return;
-      if (table.closest("[data-no-peek]") || row.parentElement?.tagName !== "TBODY") return;
-      if (row.cells.length < 2 || hasOwnClick(row)) return;
+      if (table.closest("[data-no-peek], [data-own-style]") || row.parentElement?.tagName !== "TBODY") return;
+      if (row.cells.length < 2 || hasOwnClick(row) || isEditableRow(row)) return;
       if (window.getSelection()?.toString()) return; // user is selecting text
       show(table, row as HTMLTableRowElement);
     }
@@ -155,7 +183,7 @@ export function TablePeekLayer({ children }: { children: ReactNode }) {
     if (!root) return;
     const mark = () => {
       root.querySelectorAll("table").forEach((t) => {
-        const want = !t.closest("[data-no-peek]") && peekableRows(t).length > 0;
+        const want = !t.closest("[data-no-peek], [data-own-style]") && peekableRows(t).length > 0;
         if (want) t.setAttribute("data-peekable", "");
         else t.removeAttribute("data-peekable");
       });

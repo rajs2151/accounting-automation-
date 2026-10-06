@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/books/status-badge";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
+import { rowOpenProps } from "@/components/books/table-peek";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
@@ -413,10 +414,10 @@ export default function PurchasesPage() {
             {uploads.map((u) => (
               <tr
                 key={u.id}
-                className="group border-t border-border hover:bg-muted/30"
-                onClick={() => {
+                className="group border-t border-border"
+                {...rowOpenProps(() => {
                   window.location.href = `/books/inbox/${u.id}`;
-                }}
+                })}
               >
                 <td className="py-2" onClick={(e) => e.stopPropagation()}>
                   <input
@@ -566,7 +567,7 @@ export default function PurchasesPage() {
             </thead>
             <tbody>
               {visibleDocs.map((r) => (
-                <tr key={r.id} className="border-t border-border">
+                <tr key={r.id} className="border-t border-border" {...rowOpenProps(() => setReviewId(r.id))}>
                   <td className="py-2">
                     <input
                       type="checkbox"

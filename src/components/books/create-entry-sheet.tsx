@@ -809,7 +809,7 @@ export function CreateEntrySheet({
               </Button>
             </div>
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[1100px] text-sm">
+              <table className="w-full min-w-[1100px] text-sm" data-own-style="">
                 <thead className="bg-muted/50 text-xs text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-2 text-left">#</th>

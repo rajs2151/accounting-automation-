@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { EmptyState } from "@/components/books/empty-state";
 import { StatusBadge } from "@/components/books/status-badge";
+import { rowOpenProps } from "@/components/books/table-peek";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { docTypeLabel, inboxStatusLabel } from "@/lib/status-labels";
@@ -139,10 +140,10 @@ export default function InboxPage() {
             {rows.map((r) => (
               <tr
                 key={r.id}
-                className="group cursor-pointer border-t border-border hover:bg-muted/30"
-                onClick={() => {
+                className="group border-t border-border"
+                {...rowOpenProps(() => {
                   window.location.href = `/books/inbox/${r.id}`;
-                }}
+                })}
               >
                 <td className="px-3 py-2">
                   <span className="text-foreground">{r.filename}</span>

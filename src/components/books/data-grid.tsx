@@ -239,7 +239,7 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
         onKeyDown={onKeyDown}
         data-testid="books-data-grid"
       >
-        <table className="w-full min-w-max border-collapse text-sm" style={{ width: table.getCenterTotalSize() }}>
+        <table data-own-style="" className="w-full min-w-max border-collapse text-sm" style={{ width: table.getCenterTotalSize() }}>
           <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id} className="border-b border-border">

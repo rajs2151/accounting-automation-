@@ -283,7 +283,7 @@ export function ReportTable(props: {
         onScroll={() => save()}
         className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring print:max-h-none print:overflow-visible"
       >
-        <table className="w-full min-w-[640px] text-sm">
+        <table className="w-full min-w-[640px] text-sm" data-own-style="">
           <thead className="sticky top-0 z-10 bg-muted">
             <tr className="text-xs text-muted-foreground">
               <th className="px-3 py-2 text-start font-medium" colSpan={1}>

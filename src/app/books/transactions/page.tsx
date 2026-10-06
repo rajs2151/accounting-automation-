@@ -6,6 +6,7 @@ import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "r
 import { toast } from "sonner";
 
 import { CellAmount } from "@/components/books/cells";
+import { rowOpenProps } from "@/components/books/table-peek";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { StatusBadge } from "@/components/books/status-badge";
 import { Button } from "@/components/ui/button";
@@ -753,9 +754,9 @@ function TransactionsInner() {
                   {items.map((r) => (
                     <tr
                       key={r.id}
-                      className="border-t border-border cursor-pointer"
+                      className="border-t border-border"
                       data-testid={`txn-row-${r.id}`}
-                      onClick={() => void openPeek(r.id)}
+                      {...rowOpenProps(() => void openPeek(r.id))}
                     >
                       <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
                         <input

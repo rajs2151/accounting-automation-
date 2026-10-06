@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/books/status-badge";
+import { rowOpenProps } from "@/components/books/table-peek";
 import { showUploadFeedback } from "@/components/books/upload-feedback";
 import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/api-error";
@@ -47,6 +49,7 @@ function bankLabel(r: Row): string {
 }
 
 export default function StatementsListPage() {
+  const router = useRouter();
   const [rows, setRows] = useState<Row[]>([]);
   const [csvText, setCsvText] = useState(
     "id,Type,Amount,Fee,Net,Currency,Created (UTC),Description\ntxn_1,charge,100.00,3.20,96.80,aed,2026-05-05 10:00:00,Payment\n",
@@ -170,7 +173,12 @@ export default function StatementsListPage() {
                   !isPending && r.rowKind !== "pending" ? `/books/statements/${r.id}` : null;
                 const fileLabel = r.filename || r.bankName || "Statement";
                 return (
-                  <tr key={r.id} className="border-t border-border" data-testid={`statement-row-${r.id}`}>
+                  <tr
+                    key={r.id}
+                    className="border-t border-border"
+                    data-testid={`statement-row-${r.id}`}
+                    {...(href ? rowOpenProps(() => router.push(href)) : {})}
+                  >
                     <td className="px-3 py-2">
                       {href ? (
                         <Link className="text-primary underline" href={href}>

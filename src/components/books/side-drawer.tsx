@@ -40,7 +40,7 @@ export function BooksSideDrawer({
         side="right"
         showCloseButton={false}
         className={cn(
-          "flex w-full flex-col gap-0 p-0 shadow-2xl transition-[max-width] duration-200 ease-out",
+          "books-notion flex w-full flex-col gap-0 p-0 shadow-2xl transition-[max-width] duration-200 ease-out",
           wide ? "sm:max-w-4xl" : "sm:max-w-[560px]",
         )}
         data-testid="books-side-drawer"
