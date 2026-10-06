@@ -10,6 +10,9 @@ param([switch]$Py, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Fi
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $R = $Repo.Replace('\', '/')
 if (-not $Files) { Write-Host "Give one or more test files."; exit 2 }
+. (Join-Path $PSScriptRoot "gate-lock.ps1")
+$lock = Enter-GateLock ("test-files " + ($Files -join ","))   # shared test DB: one run at a time across agents
+try {
 if ($Py) {
   docker compose up -d postgres minio | Out-Null
   # pytest-inner.sh runs the whole suite; for a subset, reuse its venv and run pytest on the given files.
@@ -24,4 +27,8 @@ if ($Py) {
   docker run --rm --network accountingautomation_default -v "${R}:/src:ro" -v arnibooks_ai_node_modules:/work/node_modules `
     -w /work node:22 bash /src/scripts/ai/unit-inner.sh test @Files
 }
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+} finally {
+  Exit-GateLock $lock
+}
+exit $code

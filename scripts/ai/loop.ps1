@@ -132,6 +132,8 @@ while ($true) {
 
   # ---------- 3. gates (re-run by the orchestrator, not trusted from Cursor) ----------
   $gateSummary = @()
+  . (Join-Path $PSScriptRoot "gate-lock.ps1")
+  $gateLock = Enter-GateLock "loop $taskId i$iter"   # shared test DBs: wait for any other agent's test run
   # Gates marked "parallel" (no DB, e.g. typecheck) start now and run alongside the others. Not when
   # package-lock.json changed: unit and typecheck share the node_modules volume and both would run npm ci.
   $bg = @{}
@@ -170,6 +172,7 @@ while ($true) {
     $gateSummary += "$($g.name) [$req]: $res"
     Log "Gate $($g.name): $res"
   }
+  Exit-GateLock $gateLock
   $St.tests = ($gateSummary -join "; "); Save "reviewing"
 
   # ---------- 4. review package ----------
