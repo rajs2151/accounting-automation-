@@ -181,12 +181,47 @@ export async function uploadBooksInboxFiles(
   userId: string,
   clientId: string | null,
   files: Array<{ filename: string; contentType: string; bytes: Buffer }>,
-  opts?: { intendedType?: InboxIntendedType | null; userDocType?: string | null },
+  opts?: {
+    intendedType?: InboxIntendedType | null;
+    userDocType?: string | null;
+    /** C2-2: Banking row Upload — COA account the file is meant for. */
+    accountId?: string | null;
+  },
 ) {
   return withUser(userId, async (db) => {
     if (clientId) await assertSyntheticTenant(db, clientId);
     const intendedType = opts?.intendedType || null;
     const userDocType = opts?.userDocType || null;
+    const intendedAccountId: string | null = opts?.accountId ? String(opts.accountId) : null;
+    if (intendedAccountId) {
+      if (!clientId) throw new BooksError("account_requires_client", "invalid");
+      const acc = await db.query(
+        `SELECT id, bank_name, iban, iban_last4, is_bank, is_card, is_gateway, sub_type
+         FROM books_accounts WHERE id = $1 AND client_id = $2 AND active = true`,
+        [intendedAccountId, clientId],
+      );
+      if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
+      const { bankInstrumentType, isBankAccountSetUp } = await import(
+        "@/lib/statement-coverage"
+      );
+      const row = acc.rows[0];
+      const instrumentType = bankInstrumentType({
+        isBank: Boolean(row.is_bank),
+        isCard: Boolean(row.is_card),
+        isGateway: Boolean(row.is_gateway),
+        subType: row.sub_type as string | null,
+      });
+      if (
+        !isBankAccountSetUp({
+          instrumentType,
+          bankName: row.bank_name as string | null,
+          iban: row.iban as string | null,
+          ibanLast4: row.iban_last4 as string | null,
+        })
+      ) {
+        throw new BooksError("bank_account_not_set_up", "invalid");
+      }
+    }
     const results: Array<{
       inboxItemId: string;
       fileId: string;
@@ -258,9 +293,9 @@ export async function uploadBooksInboxFiles(
 
       const inboxId = randomUUID();
       await db.query(
-        `INSERT INTO books_inbox_items (id, client_id, file_id, status, intended_type)
-         VALUES ($1,$2,$3,'queued',$4)`,
-        [inboxId, clientId, fileId, intendedType],
+        `INSERT INTO books_inbox_items (id, client_id, file_id, status, intended_type, intended_account_id)
+         VALUES ($1,$2,$3,'queued',$4,$5)`,
+        [inboxId, clientId, fileId, intendedType, intendedAccountId],
       );
 
       // Store + enqueue only — field extraction is the worker's job (no TS sync extract).
@@ -273,6 +308,7 @@ export async function uploadBooksInboxFiles(
         };
         // Statements page (and manual picks) pass userDocType so the worker skips auto-classify.
         if (userDocType) payload.userDocType = userDocType;
+        if (intendedAccountId) payload.accountId = intendedAccountId;
         await enqueueBooksJob(db, clientId, "extract_document", payload);
         await writeBooksAudit(db, {
           clientId,
@@ -286,6 +322,7 @@ export async function uploadBooksInboxFiles(
             status: "queued",
             intendedType,
             userDocType,
+            intendedAccountId,
           },
         });
       }
@@ -310,7 +347,8 @@ export async function retryBooksInboxExtract(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const item = await db.query(
-      `SELECT i.id, i.file_id, i.intended_type, f.storage_key, f.filename, f.content_type
+      `SELECT i.id, i.file_id, i.intended_type, i.intended_account_id,
+              f.storage_key, f.filename, f.content_type
        FROM books_inbox_items i
        JOIN books_files f ON f.id = i.file_id
        WHERE i.id = $1 AND (i.client_id = $2 OR i.client_id IS NULL)`,
@@ -333,6 +371,7 @@ export async function retryBooksInboxExtract(
       filename: String(row.filename),
     };
     if (row.intended_type) retryPayload.userDocType = String(row.intended_type);
+    if (row.intended_account_id) retryPayload.accountId = String(row.intended_account_id);
     await enqueueBooksJob(db, clientId, "extract_document", retryPayload);
     await writeBooksAudit(db, {
       clientId,

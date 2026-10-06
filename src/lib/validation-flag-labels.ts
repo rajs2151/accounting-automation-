@@ -17,6 +17,8 @@ const READABLE: Record<string, string> = {
   vat_code_missing: "VAT code missing",
   line_sum_mismatch: "Line sum mismatch",
   account_attribution_ambiguous: "Account attribution ambiguous",
+  iban_account_mismatch: "Statement IBAN ≠ selected account",
+  iban_missing_for_selected_account: "No IBAN on statement for selected account",
 };
 
 /**

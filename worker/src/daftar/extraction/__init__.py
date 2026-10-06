@@ -478,6 +478,45 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 }
             ]
         if accounts:
+            from daftar.extraction.statement_account_link import (
+                normalize_iban,
+                resolve_statement_account_link,
+            )
+
+            # C2-2: intended account from Banking row upload (payload or inbox column).
+            intended_account_id = payload.get("accountId") or payload.get("account_id")
+            if not intended_account_id:
+                irow = conn.execute(
+                    "SELECT intended_account_id FROM books_inbox_items WHERE id = %s",
+                    (inbox_id,),
+                ).fetchone()
+                if irow and irow.get("intended_account_id"):
+                    intended_account_id = str(irow["intended_account_id"])
+            intended_account_iban: str | None = None
+            account_id_by_iban: dict[str, str] = {}
+            if client_id:
+                for arow in conn.execute(
+                    """
+                    SELECT id, iban FROM books_accounts
+                    WHERE client_id = %s AND active = true
+                      AND (
+                        is_bank = true OR is_card = true OR is_gateway = true
+                        OR COALESCE(sub_type, '') IN ('bank','cash','card','gateway','clearing')
+                      )
+                    """,
+                    (client_id,),
+                ).fetchall():
+                    nib = normalize_iban(arow.get("iban"))
+                    if nib and nib not in account_id_by_iban:
+                        account_id_by_iban[nib] = str(arow["id"])
+                if intended_account_id:
+                    aiban = conn.execute(
+                        "SELECT iban FROM books_accounts WHERE id = %s AND client_id = %s",
+                        (intended_account_id, client_id),
+                    ).fetchone()
+                    if aiban:
+                        intended_account_iban = aiban.get("iban")
+
             flags.append(f"statement_count:{len(accounts)}")
             for acct in accounts:
                 stmt_id = str(uuid4())
@@ -498,6 +537,21 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 attribution_ambiguous = bool(acct.get("account_attribution_ambiguous"))
                 if attribution_ambiguous:
                     stmt_flags.append("account_attribution_ambiguous")
+
+                link = resolve_statement_account_link(
+                    extracted_iban=acct.get("iban"),
+                    intended_account_id=str(intended_account_id) if intended_account_id else None,
+                    intended_account_iban=intended_account_iban,
+                    account_id_by_iban=account_id_by_iban,
+                )
+                linked_account_id = link.get("account_id")
+                for lf in link.get("flags") or []:
+                    if lf not in stmt_flags:
+                        stmt_flags.append(str(lf))
+                if link.get("force_needs_review"):
+                    stmt_status = "needs_review"
+                    if "balance_ok" in stmt_flags:
+                        stmt_flags.remove("balance_ok")
 
                 if not balances_found or opening is None or closing is None:
                     stmt_flags.append("balances_not_found")
@@ -543,19 +597,26 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     if "balance_ok" in stmt_flags:
                         stmt_flags.remove("balance_ok")
 
+                # force_needs_review from IBAN mismatch wins over balance_ok → ready.
+                if link.get("force_needs_review"):
+                    stmt_status = "needs_review"
+                    if "balance_ok" in stmt_flags:
+                        stmt_flags.remove("balance_ok")
+
                 conn.execute(
                     """
                     INSERT INTO books_statement_extractions (
-                      id, client_id, file_id, inbox_item_id, account_label, iban, bank_name, currency,
+                      id, client_id, file_id, inbox_item_id, account_id, account_label, iban, bank_name, currency,
                       period_from, period_to, opening_balance_minor, closing_balance_minor,
                       status, validation_flags
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                     """,
                     (
                         stmt_id,
                         client_id,
                         file_id,
                         inbox_id,
+                        linked_account_id,
                         acct.get("bank_name"),
                         acct.get("iban"),
                         acct.get("bank_name"),

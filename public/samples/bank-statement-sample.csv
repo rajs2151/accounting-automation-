@@ -1,0 +1,6 @@
+Date,Description,Debit,Credit,Balance
+2026-05-01,Opening balance,,,10000.00
+2026-05-05,Customer receipt ACME,,1500.00,11500.00
+2026-05-08,Supplier payment office rent,2000.00,,9500.00
+2026-05-12,Bank fee,25.00,,9475.00
+2026-05-20,Owner drawings,500.00,,8975.00

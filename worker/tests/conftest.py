@@ -48,34 +48,10 @@ def migrated_database():
     )
     for database in ("daftar_test",):
         _psql(database, "-c", "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
-        for name in (
-            "01-schema.sql",
-            "02-seed.sql",
-            "03-profile-key.sql",
-            "04-ledger.sql",
-            "05-ledger-seed.sql",
-            "06-release-packs.sql",
-            "07-recon.sql",
-            "08-close.sql",
-            "09-close-seed.sql",
-            "10-statements.sql",
-            "11-ct.sql",
-            "12-security.sql",
-            "13-pipeline.sql",
-            "14-pipeline-seed.sql",
-            "15-pipeline-demo.sql",
-            "16-books.sql",
-            "17-books-seed.sql",
-            "18-books-phase0.sql",
-            "19-books-demo-journals.sql",
-            "20-books-coa-v2.sql",
-            "21-books-phase0-fixes.sql",
-            "22-books-alignment.sql",
-            "23-books-phase1.sql",
-            "24-books-phase1-seed.sql",
-            "30-pytest0-force-rls-reference.sql",
-        ):
-            _psql(database, "-f", str(ROOT / "db" / name))
+        # Apply every numbered migration (same set as unit-inner / e2e), sorted.
+        db_dir = ROOT / "db"
+        for path in sorted(db_dir.glob("*.sql")):
+            _psql(database, "-f", str(path))
     from daftar.bootstrap import bootstrap
 
     bootstrap()

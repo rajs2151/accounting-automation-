@@ -112,6 +112,7 @@ import {
   ingestCsvToStatement,
   listCsvProfiles,
   listStatementExtractions,
+  listStatementLogs,
   saveCsvProfile,
   updateStatementLines,
 } from "@/server/books/statement-extractions";
@@ -344,6 +345,11 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "statements" && path.length === 1) {
       return NextResponse.json(await listStatementExtractions(session.userId, session.clientId));
     }
+    if (path[0] === "statements" && path[2] === "logs" && path.length === 3) {
+      return NextResponse.json(
+        await listStatementLogs(session.userId, session.clientId, path[1]),
+      );
+    }
     if (path[0] === "statements" && path.length === 2) {
       return NextResponse.json(
         await getStatementExtraction(session.userId, session.clientId, path[1]),
@@ -423,12 +429,17 @@ export async function POST(request: Request, ctx: Ctx) {
         });
       }
       if (!uploaded.length) return NextResponse.json({ error: "file_required" }, { status: 400 });
+      const accountIdRaw = String(form.get("accountId") || "").trim();
       return NextResponse.json(
         await uploadBooksInboxFiles(
           session.userId,
           unassigned ? null : session.clientId,
           uploaded,
-          { intendedType, userDocType },
+          {
+            intendedType,
+            userDocType,
+            accountId: accountIdRaw || null,
+          },
         ),
       );
     }

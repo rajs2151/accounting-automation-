@@ -115,20 +115,30 @@ export default function StatementsListPage() {
             Phase 1 review only — Phase 2 bank matching consumes these rows.
           </p>
         </div>
-        <label
-          className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
-          data-testid="statement-upload"
-        >
-          Upload statement
-          <input
-            ref={fileRef}
-            type="file"
-            multiple
-            accept=".pdf,.csv,application/pdf,text/csv"
-            className="hidden"
-            onChange={(e) => void onUpload(e.target.files)}
-          />
-        </label>
+        <div className="flex flex-wrap gap-2">
+          <a
+            href="/samples/bank-statement-sample.csv"
+            download="bank-statement-sample.csv"
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
+            data-testid="statement-sample-csv"
+          >
+            Download sample sheet
+          </a>
+          <label
+            className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
+            data-testid="statement-upload"
+          >
+            Upload statement
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              accept=".pdf,.csv,application/pdf,text/csv"
+              className="hidden"
+              onChange={(e) => void onUpload(e.target.files)}
+            />
+          </label>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-border">

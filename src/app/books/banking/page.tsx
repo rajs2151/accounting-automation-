@@ -133,6 +133,14 @@ export default function BankingPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <a
+            href="/samples/bank-statement-sample.csv"
+            download="bank-statement-sample.csv"
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
+            data-testid="banking-sample-csv"
+          >
+            Download sample sheet
+          </a>
           <label className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground">
             Upload statement
             <input

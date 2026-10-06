@@ -96,6 +96,49 @@ test("bank_statement upload stores intended_type and passes userDocType in job",
   assert.equal(jobs.rowCount, 1);
   assert.equal(jobs.rows[0].payload.userDocType, "bank_statement");
 
+  // C2-2: row upload persists intended_account_id + job accountId when account is set up.
+  const bank = (
+    await admin.query(
+      `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1120'`,
+      [clientId],
+    )
+  ).rows[0];
+  if (bank) {
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'Test Bank', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank.id],
+    );
+    const bytes2 = Buffer.concat([
+      fs.readFileSync(pdfPath),
+      Buffer.from(`\n%stmt-acc-${Date.now()}-${Math.random()}\n`),
+    ]);
+    const withAcc = await uploadBooksInboxFiles(
+      OMAR,
+      clientId,
+      [{ filename: "bank_a_acc.pdf", contentType: "application/pdf", bytes: bytes2 }],
+      {
+        intendedType: "bank_statement",
+        userDocType: "bank_statement",
+        accountId: String(bank.id),
+      },
+    );
+    const inbox2 = withAcc.results[0]?.inboxItemId;
+    assert.ok(inbox2);
+    const row = await admin.query(
+      `SELECT intended_account_id FROM books_inbox_items WHERE id = $1`,
+      [inbox2],
+    );
+    assert.equal(String(row.rows[0].intended_account_id), String(bank.id));
+    const job2 = await admin.query(
+      `SELECT payload FROM books_jobs
+       WHERE client_id = $1 AND kind = 'extract_document'
+         AND payload->>'inboxItemId' = $2`,
+      [clientId, inbox2],
+    );
+    assert.equal(String(job2.rows[0].payload.accountId), String(bank.id));
+  }
+
   const list = await listStatementExtractions(OMAR, clientId);
   const pending = list.find((r: { id: string }) => r.id === inboxId) as
     | {

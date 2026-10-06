@@ -279,6 +279,17 @@ export default function StatementReviewPage() {
   const [sections, setSections] = useState<Record<string, SectionState>>({});
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [currencyFilter, setCurrencyFilter] = useState<string>("all");
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logs, setLogs] = useState<{
+    filename: string | null;
+    uploadedBy: string | null;
+    uploadedAt: string | null;
+    extractorVersion: string | null;
+    status: string;
+    validationFlags: unknown;
+    error: string | null;
+    events: Array<{ id: string; actor: string | null; action: string; at: string }>;
+  } | null>(null);
 
   const reloadList = useCallback(async () => {
     const rows = await fetch("/api/books/statements").then((r) => r.json());
@@ -437,9 +448,67 @@ export default function StatementReviewPage() {
 
   const pickerRows = list.filter((r) => r.rowKind !== "pending");
 
+  async function loadLogs() {
+    const nextOpen = !logsOpen;
+    setLogsOpen(nextOpen);
+    if (!nextOpen) return;
+    const res = await fetch(`/api/books/statements/${params.id}/logs`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(data.error || "logs_failed");
+      return;
+    }
+    setLogs(data);
+  }
+
   return (
     <div className="space-y-4 py-4" data-testid="statement-review">
-      <h1 className="text-2xl font-semibold">Statement review</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold">Statement review</h1>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          data-testid="statement-logs-toggle"
+          onClick={() => void loadLogs()}
+        >
+          {logsOpen ? "Hide statement logs" : "Statement logs"}
+        </Button>
+      </div>
+
+      {logsOpen && logs ? (
+        <div
+          className="space-y-2 rounded-lg border border-border p-3 text-sm"
+          data-testid="statement-logs"
+        >
+          <p>
+            <span className="text-muted-foreground">File</span> {logs.filename || "—"}
+            {" · "}
+            <span className="text-muted-foreground">Extractor</span>{" "}
+            {logs.extractorVersion || "—"}
+            {" · "}
+            <span className="text-muted-foreground">Status</span> {logs.status}
+          </p>
+          {logs.error ? <p className="text-red-600">{logs.error}</p> : null}
+          {Array.isArray(logs.validationFlags) && logs.validationFlags.length ? (
+            <p className="text-xs text-muted-foreground">
+              Flags: {(logs.validationFlags as string[]).join(", ")}
+            </p>
+          ) : null}
+          <ul className="space-y-1 font-mono text-xs">
+            {logs.events.length === 0 ? (
+              <li className="text-muted-foreground">No audit events yet.</li>
+            ) : (
+              logs.events.map((e) => (
+                <li key={e.id}>
+                  {e.at ? String(e.at).replace("T", " ").slice(0, 19) : "—"} UTC · {e.action}
+                  {e.actor ? ` · ${e.actor.slice(0, 8)}…` : ""}
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">

@@ -114,12 +114,14 @@ export async function getStatementExtraction(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const header = await db.query(
-      `SELECT id, file_id AS "fileId", account_label AS "accountLabel", iban,
+      `SELECT id, file_id AS "fileId", inbox_item_id AS "inboxItemId",
+              account_id AS "accountId", account_label AS "accountLabel", iban,
               bank_name AS "bankName", currency, period_from AS "periodFrom",
               period_to AS "periodTo",
               opening_balance_minor AS "openingBalanceMinor",
               closing_balance_minor AS "closingBalanceMinor",
-              status, validation_flags AS "validationFlags"
+              status, validation_flags AS "validationFlags",
+              extractor_version AS "extractorVersion"
        FROM books_statement_extractions WHERE id = $1 AND client_id = $2`,
       [statementId, clientId],
     );
@@ -135,6 +137,64 @@ export async function getStatementExtraction(
       [statementId],
     );
     return { ...header.rows[0], lines: lines.rows };
+  });
+}
+
+/** C2-2: who uploaded, when, extractor version, errors / audit trail. */
+export async function listStatementLogs(
+  userId: string,
+  clientId: string,
+  statementId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const stmt = await db.query(
+      `SELECT s.id, s.inbox_item_id AS "inboxItemId", s.file_id AS "fileId",
+              s.extractor_version AS "extractorVersion", s.status,
+              s.validation_flags AS "validationFlags",
+              f.filename, f.uploaded_by AS "uploadedBy", f.created_at AS "uploadedAt",
+              i.error AS "inboxError"
+       FROM books_statement_extractions s
+       LEFT JOIN books_files f ON f.id = s.file_id
+       LEFT JOIN books_inbox_items i ON i.id = s.inbox_item_id
+       WHERE s.id = $1 AND s.client_id = $2`,
+      [statementId, clientId],
+    );
+    if (!stmt.rowCount) throw new BooksError("statement_not_found", "not_found");
+    const row = stmt.rows[0];
+    const entityIds = [statementId, row.inboxItemId, row.fileId].filter(Boolean).map(String);
+    const events =
+      entityIds.length === 0
+        ? { rows: [] as Array<Record<string, unknown>> }
+        : await db.query(
+            `SELECT id, actor, action, entity, entity_id AS "entityId",
+                    at, before_json AS "before", after_json AS "after", source
+             FROM books_audit_events
+             WHERE client_id = $1 AND entity_id = ANY($2::uuid[])
+             ORDER BY at ASC`,
+            [clientId, entityIds],
+          );
+    return {
+      statementId,
+      filename: row.filename || null,
+      uploadedBy: row.uploadedBy ? String(row.uploadedBy) : null,
+      uploadedAt: row.uploadedAt || null,
+      extractorVersion: row.extractorVersion || null,
+      status: String(row.status),
+      validationFlags: row.validationFlags || [],
+      error: row.inboxError || null,
+      events: events.rows.map((e) => ({
+        id: String(e.id),
+        actor: e.actor ? String(e.actor) : null,
+        action: String(e.action),
+        entity: String(e.entity),
+        entityId: String(e.entityId),
+        at: e.at,
+        before: e.before,
+        after: e.after,
+        source: e.source || null,
+      })),
+    };
   });
 }
 

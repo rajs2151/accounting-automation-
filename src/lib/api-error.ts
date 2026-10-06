@@ -16,6 +16,9 @@ const MESSAGES: Record<string, string> = {
   post_requires_approver: "Only an approver or admin can approve and post.",
   post_preparer_cannot_approve: "You prepared this document, so someone else must approve it.",
   party_and_period_required: "Choose a party and a period first.",
+  bank_account_not_set_up: "Set up bank name / IBAN before uploading to this account.",
+  account_not_found: "That bank account was not found.",
+  account_requires_client: "Choose a company before uploading to a bank account.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {
