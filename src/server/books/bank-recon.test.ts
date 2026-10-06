@@ -234,7 +234,7 @@ test("P2B-3: AED account — difference explained by statement-only and ledger-o
     assert.equal(apr.ledgerBalanceMinor, 100000);
 
     // Reversing the cheque: reversed original + reversal both count (ledger back to 152,500).
-    await reverseBooksJournal(LAYLA, clientId, chequeId, "2026-05-25");
+    await reverseBooksJournal(LAYLA, clientId, chequeId, "2026-05-25", "bank recon reverse");
     const afterRev = await getBankReconciliation(OMAR, clientId, { accountId: bank, periodId: may });
     assert.equal(afterRev.ledgerBalanceMinor, 152500);
     assert.equal(afterRev.differenceMinor, 7500);

@@ -2,7 +2,9 @@
 
 ## Now
 - Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
-- Current task: P4-4 PASS — next P4-5 reverse/e2e
+- Current task: Phase 4 CLOSED — next Phase 5 close/TB (or backlog)
+- 2026-10-07: Phase 4 CLOSED (P4-1..P4-5)
+- 2026-10-07: P4-5 PASS — reverse reason+date; drawer Reverse; immutability e2e
 - 2026-10-07: P4-4 PASS — schedule/recurring/auto-reverse (1st next month); Entry n of N badge
 - 2026-10-07: P4-3 PASS — Create Entry templates (accrual auto-reverse, prepayment asset warning, payroll)
 - 2026-10-07: P4-2 PASS — SideDrawer Dr/Cr line cards, parent account, audit timeline + actor
@@ -51,7 +53,7 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 · … · P2A-1..6 · P3-1..3
-2. Phase 4: P4-1 Journals list → P4-2 SideDrawer polish → P4-3 Create Entry templates → P4-4 schedule/recurring → P4-5 reverse/e2e
+2. Phase 4 CLOSED (P4-1..P4-5). Next: Phase 5 close + TB
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Phase 3 backlog (non-blocking): receipt upload UI, golden v3 expenses, SideDrawer polish
 5. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
@@ -122,3 +124,5 @@
 - 2026-10-07 | P4-3 | PASS | Create Entry templates; accrual auto-reverse; prepayment 1410 warning; payroll; Expense voucher option
 - 2026-10-06 | HOME-1 | PASS (cloud: unit 222/215p/7s) | dashboard: money row (AR/AP/cash), linked doc counts, unassigned uploads -> inbox?unassigned=1, Reports shortcuts replace stray Ledger/TB buttons
 - 2026-10-07 | P4-4 | PASS | auto-reverse run_at = 1st next month; recurring Entry n of N; schedule UI e2e; blocked legend
+- 2026-10-07 | P4-5 | PASS | reverse reason+date required; drawer Reverse; dual-control; e2e
+- 2026-10-07 | Phase 4 | CLOSED | P4-1..P4-5 on feat/books-phase1

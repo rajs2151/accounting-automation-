@@ -805,11 +805,12 @@ export async function bulkReverseBooksJournals(
   clientId: string,
   entryIds: string[],
   entryDate: string,
+  reason: string,
 ) {
   const results: Array<{ id: string; ok: boolean; reversalId?: string; error?: string }> = [];
   for (const entryId of entryIds) {
     try {
-      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate, reason);
       results.push({ id: entryId, ok: true, reversalId: rev.reversalId });
     } catch (error) {
       results.push({
@@ -1046,7 +1047,11 @@ export async function reverseBooksJournal(
   clientId: string,
   entryId: string,
   entryDate: string,
+  reason: string,
 ) {
+  const reasonTrim = String(reason || "").trim();
+  if (!reasonTrim) throw new BooksError("reversal_reason_required", "invalid");
+
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const original = await db.query(
@@ -1058,7 +1063,19 @@ export async function reverseBooksJournal(
     if (!original.rowCount) throw new BooksError("journal_not_found", "not_found");
     if (original.rows[0].status !== "posted") throw new BooksError("not_posted", "conflict");
     await requireDualControlActor(db, userId, String(original.rows[0].created_by), "reverse");
-    await requireWritablePeriod(db, clientId, String(original.rows[0].period_id));
+
+    const periodRow = await db.query(
+      `SELECT id FROM books_periods
+       WHERE client_id = $1
+         AND period_start <= $2::date
+         AND period_end >= $2::date
+       ORDER BY period_start DESC
+       LIMIT 1`,
+      [clientId, entryDate],
+    );
+    if (!periodRow.rowCount) throw new BooksError("period_not_found", "not_found");
+    const periodId = String(periodRow.rows[0].id);
+    await requireWritablePeriod(db, clientId, periodId);
 
     const lines = await db.query(
       `SELECT account_id, debit_minor, credit_minor, currency, line_memo, vat_treatment, vat_code, tags
@@ -1087,7 +1104,7 @@ export async function reverseBooksJournal(
       [
         reversalId,
         clientId,
-        original.rows[0].period_id,
+        periodId,
         memo,
         entryDate,
         entryId,
@@ -1117,6 +1134,8 @@ export async function reverseBooksJournal(
         reversesEntryId: entryId,
         status: "reversed",
         reversalNo,
+        reason: reasonTrim,
+        reversalDate: entryDate,
       },
     });
     return {
@@ -1274,7 +1293,13 @@ export async function beginBooksJournalCorrection(
   if (String(original.periodStatus) === "LOCKED") {
     throw new BooksError("period_locked", "period_closed");
   }
-  const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+  const rev = await reverseBooksJournal(
+    userId,
+    clientId,
+    entryId,
+    entryDate,
+    "Correction: reverse original before new entry",
+  );
   const prefillLines = (original.lines as Array<Record<string, unknown>>).map((line) => ({
     accountId: String(line.accountId),
     debitMinor: Number(line.debitMinor),

@@ -15,6 +15,7 @@ import {
   CellTypePill,
   type AccountCell,
 } from "@/components/books/cells";
+import { BooksDateInput } from "@/components/books/date-input";
 import {
   CreateEntrySheet,
   type CreateEntryPrefill,
@@ -33,6 +34,13 @@ import {
 } from "@/components/books/journal-drawer";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateUae } from "@/lib/date";
@@ -150,6 +158,10 @@ export default function BooksJournalsPage() {
   const [editNote, setEditNote] = useState("");
   const [editTags, setEditTags] = useState("");
   const [savingMeta, setSavingMeta] = useState(false);
+  const [reverseOpen, setReverseOpen] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseDate, setReverseDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reversing, setReversing] = useState(false);
 
   const searchQuery = toolbarSearch || globalSearch;
 
@@ -251,6 +263,34 @@ export default function BooksJournalsPage() {
       void reload();
     } finally {
       setSavingMeta(false);
+    }
+  }
+
+  async function confirmDrawerReverse() {
+    if (!detail || !reverseReason.trim()) return;
+    setReversing(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/books/journals/${detail.id}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entryDate: reverseDate,
+          reason: reverseReason.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(String(data.error || "reverse_failed"));
+        return;
+      }
+      setReverseOpen(false);
+      setReverseReason("");
+      const origId = detail.id;
+      await reload();
+      await openRow({ id: origId } as JournalRow);
+    } finally {
+      setReversing(false);
     }
   }
 
@@ -584,6 +624,20 @@ export default function BooksJournalsPage() {
                   >
                     Edit date / accounts / amounts
                   </Button>
+                  {isAdmin ? (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => {
+                        setReverseDate(detail.entryDate?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+                        setReverseReason("");
+                        setReverseOpen(true);
+                      }}
+                      data-testid="drawer-reverse"
+                    >
+                      Reverse
+                    </Button>
+                  ) : null}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Editing amounts creates an automatic reversal and a prefilled correction entry.
@@ -799,6 +853,44 @@ export default function BooksJournalsPage() {
           </div>
         ) : null}
       </BooksSideDrawer>
+
+      <Dialog open={reverseOpen} onOpenChange={setReverseOpen}>
+        <DialogContent data-testid="drawer-reverse-dialog">
+          <DialogHeader>
+            <DialogTitle>Reverse journal entry</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Posts a linked opposite entry. The original stays on the books as reversed (immutable).
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Reversal date</label>
+            <BooksDateInput
+              data-testid="drawer-reverse-date"
+              value={reverseDate}
+              onChange={setReverseDate}
+            />
+          </div>
+          <Textarea
+            value={reverseReason}
+            onChange={(e) => setReverseReason(e.target.value)}
+            placeholder="Reason for reversal (required)"
+            data-testid="drawer-reverse-reason"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReverseOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={reversing || !reverseReason.trim() || !reverseDate}
+              data-testid="drawer-reverse-confirm"
+              onClick={() => void confirmDrawerReverse()}
+            >
+              {reversing ? "Reversing…" : "Reverse"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

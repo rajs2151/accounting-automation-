@@ -137,7 +137,7 @@ test("2 reversal sets reversed_by_entry_id and reverses_entry_id with opposite l
         { accountId: revenue, creditMinor: 777 },
       ],
     });
-    const rev = await reverseBooksJournal(LAYLA, clientId, created.id, "2026-09-04");
+    const rev = await reverseBooksJournal(LAYLA, clientId, created.id, "2026-09-04", "phase0 reverse");
     assert.equal(rev.reversedByEntryId, rev.reversalId);
     assert.equal(rev.reversesEntryId, created.id);
 
@@ -339,7 +339,7 @@ test("5 audit one assertion per action", async (t) => {
     await updateBooksJournalMemo(OMAR, clientId, draft.id, "audit-desc-edited");
     await updateBooksJournalNote(OMAR, clientId, draft.id, "cashier note");
     await updateBooksJournalTags(OMAR, clientId, draft.id, ["ops", "q3", "posted-tag"]);
-    await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-09-07");
+    await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-09-07", "phase0 reverse");
 
     const periodAuditId = periodId;
     await lockBooksPeriod(LAYLA, clientId, periodAuditId);

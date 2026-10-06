@@ -753,12 +753,17 @@ export async function POST(request: Request, ctx: Ctx) {
     }
     if (path[0] === "journals" && path[1] === "bulk" && path[2] === "reverse") {
       const entryIds = Array.isArray(body.entryIds) ? body.entryIds.map(String) : [];
+      const reason = String(body.reason || "").trim();
+      if (!reason) {
+        return NextResponse.json({ error: "reversal_reason_required" }, { status: 400 });
+      }
       return NextResponse.json(
         await bulkReverseBooksJournals(
           session.userId,
           session.clientId,
           entryIds,
           String(body.entryDate || new Date().toISOString().slice(0, 10)),
+          reason,
         ),
       );
     }
@@ -835,12 +840,17 @@ export async function POST(request: Request, ctx: Ctx) {
       return NextResponse.json(await postBooksJournal(session.userId, session.clientId, path[1]));
     }
     if (path[0] === "journals" && path[2] === "reverse" && path.length === 3) {
+      const reason = String(body.reason || "").trim();
+      if (!reason) {
+        return NextResponse.json({ error: "reversal_reason_required" }, { status: 400 });
+      }
       return NextResponse.json(
         await reverseBooksJournal(
           session.userId,
           session.clientId,
           path[1],
           String(body.entryDate || new Date().toISOString().slice(0, 10)),
+          reason,
         ),
       );
     }
