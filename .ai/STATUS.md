@@ -1,8 +1,10 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: **3 CLOSED** → ready for Phase 4 (Ledger / Journals)
-- Current task: await "go" on Phase 4 plan
+- Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
+- Current task: P4-1 PASS — next P4-2 SideDrawer Overview/Audit polish
+- 2026-10-07: P4-1 PASS — Split(n), Expense voucher filter, reversed grey, Rules link, e2e chrome
+- 2026-10-07: Phase 3 CLOSED + pushed; Phase 4 started
 - 2026-10-07: Phase 3 pushed (`11d21bb` P3-1 · `020ffdb` P3-2 · `1fd17eb` P3-3) on feat/books-phase1
 - 2026-10-06: P3-3 PASS — paid-from bank/card match (link before approve or later); no double journal
 - 2026-10-06: P3-2 PASS — submit/approve/reject dual-control EXP journal
@@ -46,7 +48,7 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 · … · P2A-1..6 · P3-1..3
-2. **Phase 4** Ledger / Journals (CrossVal) — plan below; start on "go"
+2. Phase 4: P4-1 Journals list → P4-2 SideDrawer polish → P4-3 Create Entry templates → P4-4 schedule/recurring → P4-5 reverse/e2e
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Phase 3 backlog (non-blocking): receipt upload UI, golden v3 expenses, SideDrawer polish
 5. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
@@ -109,3 +111,4 @@
 - 2026-10-06 | P3-2 | PASS | submit/approve/reject/resubmit; dual-control EXP journal; VAT-in-cost without TRN
 - 2026-10-06 | P3-3 | PASS | bank/card paid-from match; link before approve or later; unique bank_txn; unit 7/7
 - 2026-10-07 | Phase 3 | CLOSED | pushed P3-1..3 to origin/feat/books-phase1; ready for Phase 4
+- 2026-10-07 | P4-1 | PASS | Ledger Journals list: Split(n), Expense filter, reversed grey, e2e chrome

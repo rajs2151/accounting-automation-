@@ -249,6 +249,13 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByTestId("txn-tab-needs-review")).toBeVisible();
   await expect(page.getByTestId("txn-table")).toBeVisible();
 
+  await page.goto("/books/journals");
+  await expect(page.getByTestId("ledger-page-chrome")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ledger" })).toBeVisible();
+  await expect(page.getByText("Beta")).toBeVisible();
+  await expect(page.getByTestId("create-journal-open")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Journals" })).toBeVisible();
+
   await page.goto("/books/inbox");
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();
 });

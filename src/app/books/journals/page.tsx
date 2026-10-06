@@ -50,10 +50,13 @@ type JournalRow = {
   creditTotal: number;
   debitAccount: AccountCell | null;
   creditAccount: AccountCell | null;
+  debitLineCount?: number;
+  creditLineCount?: number;
   tags: string[];
   reversesEntryId?: string | null;
   reversedByEntryId?: string | null;
   correctsEntryId?: string | null;
+  recurringId?: string | null;
 };
 
 type JournalDetail = {
@@ -303,23 +306,32 @@ export default function BooksJournalsPage() {
     {
       id: "description",
       header: "Description",
-      size: 160,
+      size: 180,
       accessor: (r) => r.description || r.memo,
-      cell: (r) => <CellReadMore text={r.description || r.memo || ""} max={40} />,
+      cell: (r) => (
+        <div className="space-y-0.5">
+          <CellReadMore text={r.description || r.memo || ""} max={40} />
+          {r.recurringId ? (
+            <span className="inline-flex rounded bg-sky-50 px-1.5 py-0 text-[10px] font-medium text-sky-800 border border-sky-200">
+              Recurring
+            </span>
+          ) : null}
+        </div>
+      ),
     },
     {
       id: "debitAccount",
       header: "Debit account",
       size: 150,
       enableSorting: false,
-      cell: (r) => <CellAccount account={r.debitAccount} />,
+      cell: (r) => <CellAccount account={r.debitAccount} lineCount={r.debitLineCount} />,
     },
     {
       id: "creditAccount",
       header: "Credit account",
       size: 150,
       enableSorting: false,
-      cell: (r) => <CellAccount account={r.creditAccount} />,
+      cell: (r) => <CellAccount account={r.creditAccount} lineCount={r.creditLineCount} />,
     },
     {
       id: "amount",
@@ -364,7 +376,7 @@ export default function BooksJournalsPage() {
         rightActions={
           <>
             <Link
-              href="/rules"
+              href="/books/rules"
               className="inline-flex h-7 items-center rounded-lg border border-border bg-background px-2.5 text-sm font-medium hover:bg-muted"
             >
               Rules
@@ -413,6 +425,11 @@ export default function BooksJournalsPage() {
           emptyLabel="No journals in this period."
           enableRowSelection={selectionMode}
           onSelectionChange={setSelectedIds}
+          getRowClassName={(r) =>
+            r.status === "reversed" || r.reversedByEntryId
+              ? "opacity-55 text-muted-foreground"
+              : undefined
+          }
         />
       </LedgerPageChrome>
 

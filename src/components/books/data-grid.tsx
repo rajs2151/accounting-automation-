@@ -48,6 +48,8 @@ export type BooksDataGridProps<T extends { id: string; entryDate?: string }> = {
   enableRowSelection?: boolean;
   onSelectionChange?: (ids: string[]) => void;
   showGridMeta?: boolean;
+  /** Extra classes per data row (e.g. grey reversed entries). */
+  getRowClassName?: (row: T) => string | undefined;
 };
 
 function monthKey(dateStr?: string) {
@@ -75,6 +77,7 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
   enableRowSelection = false,
   onSelectionChange,
   showGridMeta = false,
+  getRowClassName,
 }: BooksDataGridProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({});
@@ -329,6 +332,7 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
                     onRowClick && "cursor-pointer",
                     isSelected && "bg-primary-subtle/60",
                     row.getIsSelected() && "ring-1 ring-inset ring-primary/20",
+                    getRowClassName?.(row.original),
                   )}
                   onClick={() => onRowClick?.(row.original)}
                 >

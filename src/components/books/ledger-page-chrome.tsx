@@ -973,10 +973,16 @@ export function LedgerPageChrome({
 
       {transactionsEmpty ? (
         <div className="rounded-lg border border-dashed border-border bg-card px-6 py-16 text-center">
-          <p className="text-sm font-medium text-foreground">Coming in Phase 2</p>
+          <p className="text-sm font-medium text-foreground">Bank transactions live next door</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Bank and card transaction matching will live here. Use the Journals tab for the live ledger.
+            Matching and posting are on the Transactions screen. Journals here stay the posted ledger.
           </p>
+          <Link
+            href="/books/transactions"
+            className="mt-4 inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm hover:bg-muted"
+          >
+            Open Transactions
+          </Link>
         </div>
       ) : (
         children

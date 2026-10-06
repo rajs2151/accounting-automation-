@@ -393,6 +393,14 @@ export async function listBooksJournals(
                 LIMIT 1
               ) AS "creditAccount",
               (
+                SELECT count(*)::int FROM books_journal_lines dlc
+                WHERE dlc.entry_id = e.id AND dlc.debit_minor > 0
+              ) AS "debitLineCount",
+              (
+                SELECT count(*)::int FROM books_journal_lines clc
+                WHERE clc.entry_id = e.id AND clc.credit_minor > 0
+              ) AS "creditLineCount",
+              (
                 SELECT ARRAY(
                   SELECT DISTINCT t FROM (
                     SELECT unnest(e.tags) AS t
@@ -419,6 +427,8 @@ export async function listBooksJournals(
       debitTotal: Number(row.debitTotal),
       creditTotal: Number(row.creditTotal),
       amount: Number(row.debitTotal),
+      debitLineCount: Number(row.debitLineCount || 0),
+      creditLineCount: Number(row.creditLineCount || 0),
       tags: Array.isArray(row.tags) ? row.tags : [],
       debitAccount: row.debitAccount ?? null,
       creditAccount: row.creditAccount ?? null,

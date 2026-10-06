@@ -35,6 +35,7 @@ export const VOUCHER_TYPE_FILTERS = [
   "Debit Note",
   "Opening",
   "Closing",
+  "Expense",
 ] as const;
 
 export type SavedViewConfig = {
