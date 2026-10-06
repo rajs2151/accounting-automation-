@@ -141,6 +141,8 @@ import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/com
 import { booksAgeing } from "@/server/books/ageing";
 import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
 import { booksDayBook } from "@/server/books/day-book";
+import { booksEntrySource, booksLedgerReport } from "@/server/books/ledger-report";
+import { buildXlsx } from "@/server/books/xlsx";
 import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
 import {
   getStatementExtraction,
@@ -356,6 +358,17 @@ export async function GET(request: Request, ctx: Ctx) {
         }
         throw error;
       }
+    }
+    if (path[0] === "reports" && path[1] === "ledger" && path.length === 2) {
+      return NextResponse.json(
+        await booksLedgerReport(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || "",
+          accountId: url.searchParams.get("accountId") || "",
+        }),
+      );
+    }
+    if (path[0] === "reports" && path[1] === "entry-source" && path.length === 3) {
+      return NextResponse.json(await booksEntrySource(session.userId, session.clientId, path[2]));
     }
     if (path[0] === "reports" && path[1] === "day-book" && path.length === 2) {
       return NextResponse.json(
@@ -849,6 +862,25 @@ export async function POST(request: Request, ctx: Ctx) {
               : undefined,
         }),
       );
+    }
+    if (path[0] === "reports" && path[1] === "export-xlsx" && path.length === 2) {
+      // Read-only: turns the on-screen report rows into a workbook; touches no data.
+      const rows = body.rows;
+      if (
+        !Array.isArray(rows) ||
+        rows.length > 50000 ||
+        !rows.every((r: unknown) => Array.isArray(r) && r.length <= 64 && r.every((c) => typeof c === "string" && c.length <= 2000))
+      ) {
+        throw new BooksError("invalid_export", "invalid");
+      }
+      const name = String(body.fileName || "report").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "report";
+      const xlsx = buildXlsx(rows as string[][], String(body.title || "Report"));
+      return new NextResponse(new Uint8Array(xlsx), {
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "Content-Disposition": `attachment; filename="${name}.xlsx"`,
+        },
+      });
     }
     if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
       return NextResponse.json(

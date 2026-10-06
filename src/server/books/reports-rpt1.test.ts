@@ -26,6 +26,9 @@ import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createBooksParty } from "@/server/books/parties";
 import { createReceiptOrPayment } from "@/server/books/settlements";
 import { createTestCompany, type TestCompany } from "@/server/books/test-company";
+import { booksEntrySource, booksLedgerReport } from "@/server/books/ledger-report";
+import { booksTrialBalance } from "@/server/books/trial-balance";
+import { differenceRow, tbToReportTree } from "@/lib/report-table";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
@@ -359,6 +362,109 @@ test("RPT-1: Day Book lists posted vouchers with type, particulars, side; filter
       booksDayBook(OMAR, clientId, { from: "2026-05-01", to: "2026-05-31", type: "Bogus" }),
       /invalid_day_book_type/,
     );
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("RPT-1: ReportTable tree from booksTrialBalance keeps every number (accounts, groups, totals)", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "rpt1-tb");
+    const clientId = company.clientId;
+    const c = await party(company, "customer", "Zeta", "100000000000086");
+    await postDoc(company, {
+      docType: "sales_invoice", partyId: c.id, issueDate: "2026-04-20", net: 100000, vat: 5000, period: "Apr 2026",
+    });
+    await postDoc(company, {
+      docType: "sales_invoice", partyId: c.id, issueDate: "2026-05-20", net: 40000, vat: 2000, period: "May 2026",
+    });
+    const tb = await booksTrialBalance(OMAR, clientId, company.periods["May 2026"]);
+    const { rows, totals } = tbToReportTree(tb);
+    for (const g of tb.groups) {
+      const r = rows.find((x) => x.id === `group:${g.key}`)!;
+      assert.equal(r.values.closingDebit, g.subtotalClosingDebitMinor, g.key);
+      assert.equal(r.values.closingCredit, g.subtotalClosingCreditMinor, g.key);
+      for (const a of g.accounts) {
+        const leaf = r.children!.find((x) => x.code === a.code)!;
+        assert.equal(leaf.values.openingDebit, a.openingDebitMinor);
+        assert.equal(leaf.values.periodDebit, a.periodDebitMinor);
+        assert.equal(leaf.values.closingDebit, a.closingDebitMinor);
+        assert.equal(leaf.values.closingCredit, a.closingCreditMinor);
+      }
+    }
+    assert.equal(totals.closingDebit, tb.totalClosingDebit);
+    assert.equal(totals.closingCredit, tb.totalClosingCredit);
+    // Exact figures for this company: 1210 = 1,050 + 420 debit; 4100 = 1,400 credit; 2210 = 70 credit.
+    assert.equal(tb.accounts["1210"].closingDebitMinor, 147000);
+    assert.equal(tb.accounts["4100"].closingCreditMinor, 140000);
+    assert.equal(tb.accounts["2210"].closingCreditMinor, 7000);
+    assert.equal(totals.closingDebit, 147000);
+    assert.equal(differenceRow(totals.closingDebit, totals.closingCredit), null, "balanced → no Difference row");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("RPT-1: Account Ledger report — opening / current / closing equal the TB; entry → source document", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "rpt1-ledger");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const capital = company.accountIdByCode["3100"];
+    const jv = async (period: string, date: string, amt: number) => {
+      const j = await createBooksJournal(OMAR, clientId, {
+        periodId: company.periods[period], entryDate: date, memo: `Capital ${date}`,
+        lines: [{ accountId: bank, debitMinor: amt }, { accountId: capital, creditMinor: amt }],
+      });
+      await postBooksJournal(LAYLA, clientId, j.id);
+      return j.id;
+    };
+    const aprJv = await jv("Apr 2026", "2026-04-10", 100000);
+    await jv("May 2026", "2026-05-10", 50000);
+    await jv("May 2026", "2026-05-20", 25000);
+    await jv("Jun 2026", "2026-06-01", 7000);
+
+    const may = company.periods["May 2026"];
+    const r = await booksLedgerReport(OMAR, clientId, { periodId: may, accountId: bank });
+    assert.deepEqual(r.opening, { debitMinor: 100000, creditMinor: 0, balanceMinor: 100000 });
+    assert.deepEqual(
+      r.lines.map((l) => [l.date, l.debitMinor, l.creditMinor, l.balanceMinor]),
+      [
+        ["2026-05-10", 50000, 0, 150000],
+        ["2026-05-20", 25000, 0, 175000],
+      ],
+      "only May lines; April sits in the opening once",
+    );
+    assert.deepEqual(r.currentTotal, { debitMinor: 75000, creditMinor: 0 });
+    assert.deepEqual(r.closing, { debitMinor: 175000, creditMinor: 0, balanceMinor: 175000 });
+    const tb = await booksTrialBalance(OMAR, clientId, may);
+    assert.equal(r.closing.balanceMinor, tb.accounts["1120"].closingDebitMinor - tb.accounts["1120"].closingCreditMinor);
+
+    // Credit-normal account runs positive in its own direction.
+    const cap = await booksLedgerReport(OMAR, clientId, { periodId: may, accountId: capital });
+    assert.equal(cap.account.normalBalance, "credit");
+    assert.deepEqual(cap.lines.map((l) => l.balanceMinor), [150000, 175000]);
+    assert.equal(cap.closing.balanceMinor, tb.accounts["3100"].closingCreditMinor);
+
+    await assert.rejects(booksLedgerReport(OMAR, clientId, { periodId: may, accountId: may }), /account_not_found/);
+
+    // Entry → source: manual JV has none; an invoice and its void reversal both resolve to the invoice.
+    assert.equal((await booksEntrySource(OMAR, clientId, aprJv)).source, null);
+    const c = await party(company, "customer", "Eta", "100000000000087");
+    const inv = await postDoc(company, {
+      docType: "sales_invoice", partyId: c.id, issueDate: "2026-05-12", net: 10000, vat: 500, period: "May 2026",
+    });
+    const src = await booksEntrySource(OMAR, clientId, inv.journalEntryId);
+    assert.equal(src.source?.documentId, inv.id);
+    assert.equal(src.source?.docType, "sales_invoice");
+    assert.equal(src.source?.grossMinor, 10500);
+    assert.equal(src.source?.inboxItemId, null, "typed in, not uploaded");
+    const v = await voidBooksDocument(LAYLA, clientId, inv.id, { reason: "Test" });
+    assert.equal((await booksEntrySource(OMAR, clientId, v.reversalJournalId)).source?.documentId, inv.id);
   } finally {
     await admin.end().catch(() => undefined);
   }
