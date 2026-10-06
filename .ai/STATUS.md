@@ -2,9 +2,10 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: next is E1d (no invent SR on confirm) then C1-3
+- Current task: next is C1-3
+- 2026-10-06: E1d PASS (71cde5b) — confirm/UI never invent SR; block until VAT picked.
 - 2026-10-06: E1c PASS (24a77ca) + UI-3-fix1 scroll/flags PASS (8e9b4f9). Queue:
-  **E1d → C1-3**
+  **C1-3**
 - 2026-10-05: E4 + E5 + UI-1..UI-4 PASS on feat/books-phase1 (pushed).
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
@@ -26,11 +27,10 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1
-2. E1d - no invent SR on confirm/UI (.ai/NEXT_TASK_E1d.md)
-3. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d
+2. C1-3 - Item/Accounting mode, Approve & Next, party mismatch banner (UI)
    plus: filter menu with counts, bulk bar (Change type, Assign, Revert to draft audited), "New supplier" badge
-4. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
+3. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -69,4 +69,5 @@
 - 2026-10-05 18:35 | E3 | i2 | PASS | .ai/runs/20261005-181636-E3-i2
 - 2026-10-05 22:19 | E4 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261005-215737-E4-i1
 - 2026-10-05 | E4 | PASS (c7b68ea, 3cd37f3) | E5 PASS (103d7b4) | pushed feat/books-phase1
-- 2026-10-06 | E1c | PASS (24a77ca) | UI-3-fix1 | PASS (8e9b4f9) | local only (not pushed)
+- 2026-10-06 | E1c | PASS (24a77ca) | UI-3-fix1 | PASS (8e9b4f9)
+- 2026-10-06 | E1d | PASS (71cde5b) | confirm blocks null vatCode; never invents SR
