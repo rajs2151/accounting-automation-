@@ -38,6 +38,19 @@ const MESSAGES: Record<string, string> = {
   transfer_direction_mismatch: "Link an outgoing transfer to an incoming one.",
   transfer_already_linked: "That transfer is already linked.",
   transfer_type_required: "Both sides must be typed as Transfer.",
+  void_reason_required: "Give a reason for voiding this document.",
+  void_requires_posted: "Only posted documents can be voided.",
+  already_void: "This document is already void.",
+  void_has_settlements: "Receipts or payments are allocated to this document. Unallocate them before voiding.",
+  void_has_linked_notes: "A credit or debit note is linked to this document. Void the note first.",
+  void_has_posted_releases: "Deferred revenue has already been released from this invoice.",
+  reverse_requires_approver: "Only an approver or admin can reverse or void a posted entry.",
+  reverse_preparer_cannot_approve: "You prepared this, so someone else must reverse or void it.",
+  original_wrong_type: "A credit note must link to a sales invoice, a debit note to a purchase bill.",
+  original_not_posted: "The original document must be posted first.",
+  original_party_mismatch: "The note's party must match the original document.",
+  original_currency_mismatch: "The note's currency must match the original document.",
+  exceeds_original_balance: "The note is more than the original's open balance.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

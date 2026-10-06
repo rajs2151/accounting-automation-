@@ -8,7 +8,7 @@ import { assertMinor } from "@/lib/money";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
-import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
+import { createBooksJournal, postBooksJournal, reverseBooksJournal } from "@/server/books/journals";
 import { upsertOpenItemFromDocument } from "@/server/books/open-items";
 import { enqueueBooksJob } from "@/server/books/jobs";
 import { vatMinorForNet } from "@/server/books/vat-codes";
@@ -229,6 +229,22 @@ export async function getBooksDocument(userId: string, clientId: string, documen
   });
 }
 
+/** P2B-1: a credit note must point at a posted sales invoice, a debit note at a posted purchase bill. */
+function assertNoteMatchesOriginal(
+  docType: string,
+  partyId: string,
+  currency: string,
+  orig: { doc_type: unknown; party_id: unknown; status: unknown; currency: unknown },
+) {
+  const want = docType === "credit_note" ? "sales_invoice" : "purchase_bill";
+  if (String(orig.doc_type) !== want) throw new BooksError("original_wrong_type", "invalid");
+  if (String(orig.status) !== "posted") throw new BooksError("original_not_posted", "conflict");
+  if (String(orig.party_id) !== partyId) throw new BooksError("original_party_mismatch", "invalid");
+  if (String(orig.currency || "AED").toUpperCase() !== currency) {
+    throw new BooksError("original_currency_mismatch", "invalid");
+  }
+}
+
 export async function createBooksDocument(userId: string, clientId: string, body: DocumentInput) {
   if (!body.lines?.length) throw new BooksError("lines_required", "invalid");
   if (!body.partyId?.trim()) throw new BooksError("party_required", "invalid");
@@ -304,11 +320,12 @@ export async function createBooksDocument(userId: string, clientId: string, body
     if (body.docType === "credit_note" || body.docType === "debit_note") {
       if (!body.originalDocumentId) throw new BooksError("original_required", "invalid");
       const orig = await db.query(
-        `SELECT id, doc_type, party_id, status, gross_minor, aed_total_minor
+        `SELECT id, doc_type, party_id, status, gross_minor, aed_total_minor, currency
          FROM books_documents WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
         [body.originalDocumentId, clientId],
       );
       if (!orig.rowCount) throw new BooksError("original_not_found", "not_found");
+      assertNoteMatchesOriginal(body.docType, body.partyId, currency, orig.rows[0]);
       const oi = await db.query(
         `SELECT open_aed_minor, open_original_minor FROM books_open_items
          WHERE document_id = $1 AND client_id = $2`,
@@ -799,6 +816,29 @@ export async function approveAndPostBooksDocument(
       [documentId],
     );
     assertDocumentApproveMoneyGates(doc, linesRes.rows);
+    if ((doc.doc_type === "credit_note" || doc.doc_type === "debit_note") && doc.original_document_id) {
+      // Re-check at approve: the original may have been paid or voided since the draft was made.
+      // Without this the journal would post before the open-item reduction fails.
+      const orig = await db.query(
+        `SELECT doc_type, party_id, status, currency FROM books_documents
+         WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+        [doc.original_document_id, clientId],
+      );
+      if (!orig.rowCount) throw new BooksError("original_not_found", "not_found");
+      assertNoteMatchesOriginal(
+        String(doc.doc_type),
+        String(doc.party_id),
+        String(doc.currency || "AED").toUpperCase(),
+        orig.rows[0],
+      );
+      const oi = await db.query(
+        `SELECT open_original_minor FROM books_open_items WHERE document_id = $1 AND client_id = $2`,
+        [doc.original_document_id, clientId],
+      );
+      if (oi.rowCount && Number(doc.original_total_minor) > Number(oi.rows[0].open_original_minor)) {
+        throw new BooksError("exceeds_original_balance", "invalid");
+      }
+    }
     const period = await db.query(
       `SELECT id, status FROM books_periods
        WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date`,
@@ -1009,6 +1049,150 @@ export async function softDeleteBooksDocumentDraft(
     });
     return { ok: true, documentId };
   });
+}
+
+/**
+ * P2B-1: void a posted sales invoice / purchase bill / credit note / debit note.
+ * Void = reversal: a linked reversal journal is posted (never edits the original). Dual control is
+ * enforced by reverseBooksJournal (actor must be approver/admin and not the document's preparer).
+ * Blocked while anything settles the document (receipts/payments/advances or notes against it) or a
+ * deferred-revenue release has posted — unwind those first. Reversal lands in the original period
+ * (locked period → rejected).
+ */
+export async function voidBooksDocument(
+  userId: string,
+  clientId: string,
+  documentId: string,
+  body: { reason: string },
+) {
+  const reason = String(body.reason || "").trim();
+  if (!reason) throw new BooksError("void_reason_required", "invalid");
+
+  const doc = await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const res = await db.query(
+      `SELECT d.*, e.status AS journal_status
+       FROM books_documents d
+       LEFT JOIN books_journal_entries e ON e.id = d.journal_entry_id
+       WHERE d.id = $1 AND d.client_id = $2 AND d.deleted_at IS NULL`,
+      [documentId, clientId],
+    );
+    if (!res.rowCount) throw new BooksError("document_not_found", "not_found");
+    const d = res.rows[0];
+    if (!["sales_invoice", "purchase_bill", "credit_note", "debit_note"].includes(String(d.doc_type))) {
+      throw new BooksError("void_not_supported", "invalid");
+    }
+    if (d.status === "void") throw new BooksError("already_void", "conflict");
+    if (d.status !== "posted" || !d.journal_entry_id || d.journal_status !== "posted") {
+      throw new BooksError("void_requires_posted", "conflict");
+    }
+    await requireDualControlActor(db, userId, String(d.created_by), "reverse");
+
+    if (d.doc_type === "sales_invoice" || d.doc_type === "purchase_bill") {
+      const oi = await db.query(
+        `SELECT id, original_minor, open_original_minor FROM books_open_items
+         WHERE document_id = $1 AND client_id = $2`,
+        [documentId, clientId],
+      );
+      const alloc = await db.query(
+        `SELECT 1 FROM books_allocations a JOIN books_open_items oi ON oi.id = a.open_item_id
+         WHERE oi.document_id = $1 AND a.client_id = $2 LIMIT 1`,
+        [documentId, clientId],
+      );
+      if (
+        alloc.rowCount ||
+        (oi.rowCount && Number(oi.rows[0].open_original_minor) !== Number(oi.rows[0].original_minor))
+      ) {
+        throw new BooksError("void_has_settlements", "conflict");
+      }
+      const notes = await db.query(
+        `SELECT 1 FROM books_documents
+         WHERE original_document_id = $1 AND client_id = $2 AND deleted_at IS NULL AND status <> 'void'
+         LIMIT 1`,
+        [documentId, clientId],
+      );
+      if (notes.rowCount) throw new BooksError("void_has_linked_notes", "conflict");
+      const released = await db.query(
+        `SELECT 1 FROM books_deferred_schedules
+         WHERE document_id = $1 AND client_id = $2 AND status = 'posted' LIMIT 1`,
+        [documentId, clientId],
+      );
+      if (released.rowCount) throw new BooksError("void_has_posted_releases", "conflict");
+    }
+    return d;
+  });
+
+  const reversal = await reverseBooksJournal(
+    userId,
+    clientId,
+    String(doc.journal_entry_id),
+    String(doc.issue_date instanceof Date ? doc.issue_date.toISOString() : doc.issue_date).slice(0, 10),
+  );
+
+  await withUser(userId, async (db) => {
+    await db.query(
+      `UPDATE books_documents SET
+         status = 'void', voided_at = now(), voided_by = $3, void_reason = $4,
+         void_journal_id = $5, updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [documentId, clientId, userId, reason, reversal.reversalId],
+    );
+
+    if (doc.doc_type === "sales_invoice" || doc.doc_type === "purchase_bill") {
+      await db.query(
+        `UPDATE books_open_items SET open_original_minor = 0, open_aed_minor = 0,
+           status = 'closed', updated_at = now()
+         WHERE document_id = $1 AND client_id = $2`,
+        [documentId, clientId],
+      );
+      await db.query(
+        `UPDATE books_deferred_schedules SET status = 'cancelled'
+         WHERE document_id = $1 AND client_id = $2 AND status IN ('pending', 'blocked')`,
+        [documentId, clientId],
+      );
+    } else if (doc.original_document_id) {
+      // Voided note gives its reduction back to the original's open item.
+      await db.query(
+        `UPDATE books_open_items SET
+           open_original_minor = LEAST(original_minor, open_original_minor + $3::bigint),
+           open_aed_minor = LEAST(aed_original_minor, open_aed_minor + $4::bigint),
+           status = CASE
+             WHEN LEAST(original_minor, open_original_minor + $3::bigint) = original_minor THEN 'open'
+             ELSE 'partial'
+           END,
+           updated_at = now()
+         WHERE document_id = $1 AND client_id = $2`,
+        [
+          doc.original_document_id,
+          clientId,
+          Number(doc.original_total_minor),
+          Number(doc.aed_total_minor),
+        ],
+      );
+    }
+
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "void_document",
+      entity: "books_document",
+      entityId: documentId,
+      before: { status: "posted", journalEntryId: doc.journal_entry_id },
+      after: {
+        status: "void",
+        reason,
+        reversalId: reversal.reversalId,
+        reversalEntryNo: reversal.entryNo,
+      },
+    });
+  });
+
+  return {
+    documentId,
+    status: "void" as const,
+    reversalJournalId: reversal.reversalId,
+    reversalEntryNo: reversal.entryNo,
+  };
 }
 
 /** Acknowledge check_vat warning so Approve may proceed (audited). */

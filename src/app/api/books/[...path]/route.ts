@@ -80,6 +80,7 @@ import {
   listBooksDocuments,
   previewBooksDocumentJournal,
   softDeleteBooksDocumentDraft,
+  voidBooksDocument,
   updateBooksDocumentPrintedFields,
 } from "@/server/books/documents";
 import {
@@ -737,6 +738,14 @@ export async function POST(request: Request, ctx: Ctx) {
             applyAdvanceOriginalMinor != null && Number.isFinite(applyAdvanceOriginalMinor)
               ? applyAdvanceOriginalMinor
               : undefined,
+        }),
+      );
+    }
+    if (path[0] === "documents" && path[2] === "void" && path.length === 3) {
+      // Actor = signed-in user; reverseBooksJournal enforces approver role + preparer ≠ approver.
+      return NextResponse.json(
+        await voidBooksDocument(session.userId, session.clientId, path[1], {
+          reason: String(body.reason || ""),
         }),
       );
     }
