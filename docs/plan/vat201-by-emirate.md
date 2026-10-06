@@ -98,7 +98,6 @@ GROUP BY d.place_of_supply;
    via `books_free_zone_emirate`. Add a `free_zone` column to parties?
 4. **Designated zones:** goods supplies between designated zones may be outside scope. The report needs a rule
    (likely via VAT code, not emirate).
-5. **VAT code → box map:** `books_vat_codes.vat201_box` (db/23) maps ZR → `6` and EX → `8`. On the current VAT 201
-   form, zero-rated is Box 4 and exempt is Box 5. Confirm before the report uses this column.
+5. ~~VAT code → box map~~ — fixed in db/54 (`vat201_output_box` / `vat201_input_box`); `vat201_box` is deprecated.
 6. VAT on customer advances is still undecided (see TALLY-1). If advances become taxable, their emirate comes from
    the receipt's party, and receipts would need the same columns.
