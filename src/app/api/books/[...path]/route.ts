@@ -124,6 +124,11 @@ import {
 import { listPlaceOfSupplyGaps, setDocumentPlaceOfSupply } from "@/server/books/place-of-supply";
 import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
 import {
+  getBooksMonthChecklist,
+  listBooksIssues,
+  setClientVatStagger,
+} from "@/server/books/dashboard";
+import {
   getStatementExtraction,
   ingestCsvToStatement,
   listCsvProfiles,
@@ -315,6 +320,20 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "dashboard" && path.length === 1) {
+      return NextResponse.json(
+        await getBooksMonthChecklist(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || null,
+        }),
+      );
+    }
+    if (path[0] === "dashboard" && path[1] === "issues" && path.length === 2) {
+      return NextResponse.json(
+        await listBooksIssues(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || null,
+        }),
+      );
     }
     if (path[0] === "bank-recon" && (path.length === 1 || path.length === 2)) {
       const periodId = url.searchParams.get("periodId") || "";
@@ -760,6 +779,15 @@ export async function POST(request: Request, ctx: Ctx) {
             applyAdvanceOriginalMinor != null && Number.isFinite(applyAdvanceOriginalMinor)
               ? applyAdvanceOriginalMinor
               : undefined,
+        }),
+      );
+    }
+    if (path[0] === "company" && path[1] === "vat-stagger" && path.length === 2) {
+      return NextResponse.json(
+        await setClientVatStagger(session.userId, session.clientId, {
+          frequency:
+            body.frequency === "monthly" || body.frequency === "quarterly" ? body.frequency : null,
+          periodEndMonth: body.periodEndMonth == null ? null : Number(body.periodEndMonth),
         }),
       );
     }

@@ -21,6 +21,7 @@ import {
 
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
 import { CompanySwitcher } from "@/components/books/company-switcher";
+import { BooksIssuesBadge } from "@/components/books/issues-badge";
 import { SecurityBannerChip } from "@/components/security-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -396,6 +397,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
                 <DropdownMenuItem onClick={() => setLanguage("AR")}>Arabic (AR)</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {isBooks ? <BooksIssuesBadge /> : null}
             <div className="ms-auto shrink-0">
               <SecurityBannerChip />
             </div>

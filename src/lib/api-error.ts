@@ -54,6 +54,8 @@ const MESSAGES: Record<string, string> = {
   invalid_place_of_supply: "Choose one of the seven emirates or Outside UAE.",
   place_of_supply_reason_required: "Give a reason for changing the place of supply.",
   place_of_supply_not_applicable: "Place of supply applies only to invoices, bills and notes.",
+  vat_stagger_invalid: "Choose monthly, or quarterly with the month a quarter ends.",
+  vat_stagger_requires_admin: "Only an admin can change the VAT return period.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

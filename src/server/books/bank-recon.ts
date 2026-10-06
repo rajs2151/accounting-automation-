@@ -75,8 +75,9 @@ function iso(v: unknown): string | null {
   return s.length >= 10 ? s.slice(0, 10) : null;
 }
 
-const BANKISH = `(a.is_bank = true OR a.is_card = true OR a.is_gateway = true
-  OR COALESCE(a.sub_type, '') IN ('bank','cash','card','gateway','clearing'))`;
+/** Same account set as the Banking page (balance-sheet money instruments only). */
+const BANKISH = `(a.account_type IN ('asset', 'liability') AND (a.is_bank = true OR a.is_card = true
+  OR a.is_gateway = true OR COALESCE(a.sub_type, '') IN ('bank','cash','card','gateway','clearing')))`;
 
 async function loadPeriod(db: PoolClient, clientId: string, periodId: string) {
   const p = await db.query(

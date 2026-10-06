@@ -76,6 +76,9 @@ export async function listBooksBankAccounts(userId: string, clientId: string) {
               ), 0)::bigint AS "ledgerBalanceMinor"
        FROM books_accounts a
        WHERE a.client_id = $1 AND a.active = true AND a.is_postable = true
+         -- 6900 Bank charges / 6910 gateway fees carry sub_type 'bank' (db/33 flagged them is_bank):
+         -- money instruments are balance-sheet accounts only.
+         AND a.account_type IN ('asset', 'liability')
          AND (
            a.is_bank = true OR a.is_card = true OR a.is_gateway = true
            OR COALESCE(a.sub_type, '') IN ('bank','cash','card','gateway','clearing')
