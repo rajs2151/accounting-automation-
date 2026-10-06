@@ -14,6 +14,10 @@ import {
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  previewBooksBankTransactionPost,
+  previewBooksBankTransactionsBulk,
+  bulkPostBooksBankTransactions,
+  autoLinkTransferPairs,
   rejectBooksBankTxnMatchSuggestion,
   setBooksBankTxnAllocations,
   updateBooksBankTransaction,
@@ -977,6 +981,150 @@ test("P2A-4: card repayment + gateway payout group net-zero", async (t) => {
     );
     assert.equal(gwBy["1120"]?.dr, 9700);
     assert.equal(gwBy["1310"]?.cr, 9700);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("P2A-6: bulk journal preview balances; bulk post dual-control; auto-link transfers", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  try {
+    const company = await createTestCompany(admin, "p2a6-bulk");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const cash = company.accountIdByCode["1110"];
+    const fee = company.accountIdByCode["6900"];
+    assert.ok(bank && cash && fee);
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'Bulk', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank],
+    );
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'Cash', iban = NULL, iban_last4 = NULL WHERE id = $1`,
+      [cash],
+    );
+
+    async function line(opts: {
+      accountId: string;
+      iban: string | null;
+      debit: number;
+      credit: number;
+      desc: string;
+    }) {
+      const fileId = randomUUID();
+      const stmtId = randomUUID();
+      const lineId = randomUUID();
+      await admin.query(
+        `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,'application/pdf',10,$6)`,
+        [fileId, clientId, `b6-${randomUUID()}`, `books/${clientId}/${fileId}/x.pdf`, `${opts.desc}.pdf`, OMAR],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_extractions (
+           id, client_id, file_id, account_id, iban, period_from, period_to,
+           opening_balance_minor, closing_balance_minor, status, validation_flags
+         ) VALUES (
+           $1,$2,$3,$4,$5,'2026-05-01','2026-05-31',
+           0,$6,'ready','["balance_ok"]'::jsonb
+         )`,
+        [stmtId, clientId, fileId, opts.accountId, opts.iban, opts.credit - opts.debit],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_lines (
+           id, statement_id, client_id, line_date, description,
+           debit_minor, credit_minor, currency, sort_index
+         ) VALUES ($1,$2,$3,'2026-05-16',$4,$5,$6,'AED',0)`,
+        [lineId, stmtId, clientId, opts.desc, opts.debit, opts.credit],
+      );
+    }
+
+    await line({
+      accountId: bank,
+      iban: "AE070331234567890123456",
+      debit: 0,
+      credit: 8800,
+      desc: "Fee categorise in",
+    });
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const listed = await listBooksBankTransactions(OMAR, clientId, {
+      materialize: false,
+      status: "needs_review",
+    });
+    const feeTxn = listed.find((r) => r.description === "Fee categorise in");
+    assert.ok(feeTxn);
+    await updateBooksBankTransaction(OMAR, clientId, feeTxn!.id, {
+      txnType: "other_income",
+      categoryAccountId: fee,
+    });
+    await markBooksBankTransactionReviewed(OMAR, clientId, feeTxn!.id);
+
+    const preview = await previewBooksBankTransactionPost(OMAR, clientId, feeTxn!.id);
+    assert.equal(preview.balanced, true);
+    assert.equal(preview.error, undefined);
+    assert.equal(preview.lines.length, 2);
+    const bankLine = preview.lines.find((l) => l.accountCode === "1120");
+    const feeLine = preview.lines.find((l) => l.accountCode === "6900");
+    assert.equal(bankLine?.debitMinor, 8800);
+    assert.equal(feeLine?.creditMinor, 8800);
+
+    // Negative: needs_review cannot preview as balanced ready post
+    await line({
+      accountId: bank,
+      iban: "AE070331234567890123456",
+      debit: 1200,
+      credit: 0,
+      desc: "Not ready yet",
+    });
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const notReady = (
+      await listBooksBankTransactions(OMAR, clientId, { materialize: false, status: "needs_review" })
+    ).find((r) => r.description === "Not ready yet");
+    assert.ok(notReady);
+    const bad = await previewBooksBankTransactionPost(OMAR, clientId, notReady!.id);
+    assert.equal(bad.balanced, false);
+    assert.equal(bad.error, "bank_txn_not_ready");
+
+    const bulk = await previewBooksBankTransactionsBulk(OMAR, clientId, [feeTxn!.id]);
+    assert.equal(bulk.allBalanced, true);
+
+    // Omar cannot bulk-post (dual control — he marked reviewed)
+    const blocked = await bulkPostBooksBankTransactions(OMAR, clientId, [feeTxn!.id]);
+    assert.equal(blocked.posted, 0);
+    assert.equal(blocked.failed, 1);
+
+    const posted = await bulkPostBooksBankTransactions(LAYLA, clientId, [feeTxn!.id]);
+    assert.equal(posted.posted, 1);
+    assert.equal(posted.failed, 0);
+    assert.match(String(posted.results[0]?.entryNo), /^JV-/);
+
+    // Auto-link unique transfer pair
+    await line({
+      accountId: bank,
+      iban: "AE070331234567890123456",
+      debit: 3333,
+      credit: 0,
+      desc: "Xfer out auto",
+    });
+    await line({
+      accountId: cash,
+      iban: null,
+      debit: 0,
+      credit: 3333,
+      desc: "Xfer in auto",
+    });
+    await materializeBooksBankTransactions(OMAR, clientId);
+    const auto = await autoLinkTransferPairs(OMAR, clientId);
+    assert.ok(auto.linked >= 1);
+    const linked = await listBooksBankTransactions(OMAR, clientId, { materialize: false });
+    const out = linked.find((r) => r.description === "Xfer out auto");
+    const inn = linked.find((r) => r.description === "Xfer in auto");
+    assert.ok(out && inn);
+    assert.equal(out!.linkedTxnId, inn!.id);
+    assert.equal(inn!.linkedTxnId, out!.id);
+    assert.equal(out!.txnType, "transfer");
   } finally {
     await admin.end().catch(() => undefined);
   }

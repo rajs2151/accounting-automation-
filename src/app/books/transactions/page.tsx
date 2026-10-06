@@ -123,7 +123,11 @@ function TransactionsInner() {
       setLoading(false);
       return;
     }
-    if (Array.isArray(txnData)) setRows(txnData);
+    if (Array.isArray(txnData)) {
+      setRows(txnData);
+      setSelected({});
+      setBulkPreview(null);
+    }
     if (Array.isArray(bankData)) {
       setBanks(
         bankData.map((b: { id: string; code: string; name: string }) => ({
@@ -166,6 +170,28 @@ function TransactionsInner() {
   const [peekId, setPeekId] = useState<string | null>(null);
   const [allocDraft, setAllocDraft] = useState<AllocDraft[]>([]);
   const [feeAccountId, setFeeAccountId] = useState("");
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [bulkPreview, setBulkPreview] = useState<{
+    previews: Array<{
+      txnId: string;
+      description: string;
+      voucherType: string;
+      amountMinor: number;
+      balanced: boolean;
+      error?: string;
+      lines: Array<{
+        accountCode: string;
+        debitMinor: number;
+        creditMinor: number;
+      }>;
+    }>;
+    allBalanced: boolean;
+  } | null>(null);
+
+  const selectedIds = useMemo(
+    () => Object.entries(selected).filter(([, v]) => v).map(([id]) => id),
+    [selected],
+  );
 
   useEffect(() => {
     async function loadCounts() {
@@ -406,6 +432,72 @@ function TransactionsInner() {
     void reload();
   }
 
+  async function bulkMarkReviewed() {
+    if (selectedIds.length === 0) return;
+    const res = await fetch("/api/books/bank-transactions/bulk-mark-reviewed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: selectedIds }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(`Marked reviewed · ${data.marked ?? 0}` + (data.failed ? ` · ${data.failed} failed` : ""));
+    void reload();
+  }
+
+  async function runBulkPreview() {
+    if (selectedIds.length === 0) return;
+    const res = await fetch("/api/books/bank-transactions/bulk-preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: selectedIds }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    setBulkPreview({
+      previews: Array.isArray(data.previews) ? data.previews : [],
+      allBalanced: Boolean(data.allBalanced),
+    });
+  }
+
+  async function confirmBulkPost() {
+    if (selectedIds.length === 0) return;
+    const res = await fetch("/api/books/bank-transactions/bulk-post", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: selectedIds }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(`Posted ${data.posted ?? 0}` + (data.failed ? ` · ${data.failed} failed` : ""));
+    setBulkPreview(null);
+    void reload();
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function toggleSelectAllVisible() {
+    const allOn = rows.length > 0 && rows.every((r) => selected[r.id]);
+    if (allOn) {
+      setSelected({});
+      return;
+    }
+    const next: Record<string, boolean> = {};
+    for (const r of rows) next[r.id] = true;
+    setSelected(next);
+  }
+
   const grouped = useMemo(() => {
     const map = new Map<string, TxnRow[]>();
     for (const r of rows) {
@@ -426,6 +518,13 @@ function TransactionsInner() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Link
+            href="/books/rules"
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
+            data-testid="txn-rules-link"
+          >
+            Rules
+          </Link>
           <Button
             variant="outline"
             data-testid="txn-materialize"
@@ -543,10 +642,82 @@ function TransactionsInner() {
         </div>
       ) : null}
 
+      {selectedIds.length > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 p-3"
+          data-testid="txn-bulk-bar"
+        >
+          <span className="text-sm">{selectedIds.length} selected</span>
+          {tab === "needs_review" ? (
+            <Button size="sm" data-testid="txn-bulk-mark" onClick={() => void bulkMarkReviewed()}>
+              Mark reviewed
+            </Button>
+          ) : null}
+          {tab === "ready" ? (
+            <>
+              <Button size="sm" data-testid="txn-bulk-preview" onClick={() => void runBulkPreview()}>
+                Preview journals
+              </Button>
+              <Button
+                size="sm"
+                data-testid="txn-bulk-post"
+                disabled={bulkPreview != null && !bulkPreview.allBalanced}
+                onClick={() => void confirmBulkPost()}
+              >
+                Post selected
+              </Button>
+            </>
+          ) : null}
+          <Button size="sm" variant="outline" onClick={() => setSelected({})}>
+            Clear
+          </Button>
+        </div>
+      ) : null}
+
+      {bulkPreview ? (
+        <div
+          className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-border p-3"
+          data-testid="txn-bulk-preview-panel"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">
+              Journal preview · {bulkPreview.allBalanced ? "All balanced" : "Fix unbalanced rows"}
+            </p>
+            <Button size="sm" variant="outline" onClick={() => setBulkPreview(null)}>
+              Close
+            </Button>
+          </div>
+          {bulkPreview.previews.map((p) => (
+            <div key={p.txnId} className="rounded border border-border p-2 text-xs" data-testid={`txn-preview-${p.txnId}`}>
+              <div className="font-medium">
+                {p.voucherType} · {p.description || p.txnId.slice(0, 8)}
+                {p.error ? ` · ${p.error}` : p.balanced ? " · balanced" : " · unbalanced"}
+              </div>
+              <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                {p.lines.map((l, i) => (
+                  <li key={`${p.txnId}-${i}`}>
+                    {l.accountCode}: Dr {l.debitMinor} / Cr {l.creditMinor}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-sm" data-testid="txn-table">
           <thead className="bg-muted/40 text-left">
             <tr>
+              <th className="w-8 px-2 py-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select all"
+                  data-testid="txn-select-all"
+                  checked={rows.length > 0 && rows.every((r) => selected[r.id])}
+                  onChange={() => toggleSelectAllVisible()}
+                />
+              </th>
               <th className="px-3 py-2">Date</th>
               <th className="px-3 py-2">Description</th>
               <th className="px-3 py-2">Type</th>
@@ -560,13 +731,13 @@ function TransactionsInner() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
                   Loading…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
                   No transactions in this tab
                   {counts.current === 0 ? " — upload a balanced statement from Banking" : ""}.
                 </td>
@@ -575,7 +746,7 @@ function TransactionsInner() {
               grouped.map(([month, items]) => (
                 <Fragment key={`m-${month}`}>
                   <tr className="border-t border-border bg-muted/20">
-                    <td colSpan={8} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                    <td colSpan={9} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
                       {month}
                     </td>
                   </tr>
@@ -586,6 +757,15 @@ function TransactionsInner() {
                       data-testid={`txn-row-${r.id}`}
                       onClick={() => void openPeek(r.id)}
                     >
+                      <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${r.description || r.id}`}
+                          data-testid={`txn-select-${r.id}`}
+                          checked={Boolean(selected[r.id])}
+                          onChange={() => toggleSelect(r.id)}
+                        />
+                      </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         {r.txnDate ? formatDateUae(r.txnDate) : "—"}
                       </td>
