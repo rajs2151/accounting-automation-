@@ -7,6 +7,7 @@ import pg from "pg";
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
 const DESERT = "e1000001-0000-4000-8000-000000000001";
+const CUSTOMER = "e9000001-0000-4000-8000-000000000001";
 const SUPPLIER = "e9000001-0000-4000-8000-000000000002";
 const STMT_BALANCED = "e7000001-0000-4000-8000-000000000098";
 const STMT_DROPPED = "e7000001-0000-4000-8000-000000000088";
@@ -792,4 +793,174 @@ test("phase1: upload bill → approve → journal visible", async ({ page, conte
     journalRows.some((r) => r.entryNo === entryHint),
     `posted ${entryHint} missing from May journals`,
   ).toBeTruthy();
+});
+
+test("P2A-4: Unmatched → pick invoice → post → journal link back", async ({ page, context }) => {
+  const periods = await page.request.get("/api/books/periods");
+  const periodRows = (await periods.json()) as Array<{ id: string; label: string }>;
+  const may = periodRows.find((p) => /May 2026/i.test(p.label));
+  expect(may?.id, "May 2026 period required").toBeTruthy();
+
+  const banksRes = await page.request.get("/api/books/bank-accounts");
+  const banks = (await banksRes.json()) as Array<{ id: string; code: string; iban?: string | null }>;
+  expect(banksRes.ok()).toBeTruthy();
+  const bank = banks.find((b) => b.code === "1120") || banks[0];
+  expect(bank?.id, "bank account required").toBeTruthy();
+
+  const docNo = `E2E-RV-${Date.now()}`;
+  const create = await page.request.post("/api/books/documents", {
+    data: {
+      docType: "sales_invoice",
+      partyId: CUSTOMER,
+      issueDate: "2026-05-14",
+      periodId: may!.id,
+      documentNumber: docNo,
+      lines: [
+        {
+          description: "E2E consulting",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 20000,
+          vatMinor: 1000,
+        },
+      ],
+    },
+  });
+  const created = await create.json();
+  expect(create.ok(), `create invoice: ${JSON.stringify(created)}`).toBeTruthy();
+
+  await setSession(context, LAYLA);
+  const approve = await page.request.post(`/api/books/documents/${created.id}/approve`, {
+    data: {},
+  });
+  const approved = await approve.json();
+  expect(approve.ok(), `approve: ${JSON.stringify(approved)}`).toBeTruthy();
+  await setSession(context, OMAR);
+
+  const admin = new pg.Client({
+    connectionString:
+      process.env.DATABASE_URL_SUPER ||
+      "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+  });
+  await admin.connect();
+  let txnId = "";
+  try {
+    const oi = await admin.query(
+      `SELECT id FROM books_open_items WHERE document_id = $1 AND client_id = $2`,
+      [created.id, DESERT],
+    );
+    expect(oi.rowCount).toBeTruthy();
+    const openItemId = String(oi.rows[0].id);
+
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = COALESCE(bank_name, 'E2E Bank'),
+         iban = COALESCE(iban, 'AE070331234567890123456'),
+         iban_last4 = COALESCE(iban_last4, '3456')
+       WHERE id = $1`,
+      [bank!.id],
+    );
+
+    const fileId = randomUUID();
+    const stmtId = randomUUID();
+    const lineId = randomUUID();
+    const desc = `E2E receipt ${docNo}`;
+    await admin.query(
+      `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,'e2e-txn.pdf','application/pdf',10,$5)`,
+      [fileId, DESERT, `e2e-txn-${randomUUID()}`, `books/${DESERT}/${fileId}/e2e.pdf`, OMAR],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_extractions (
+         id, client_id, file_id, account_id, iban, period_from, period_to,
+         opening_balance_minor, closing_balance_minor, status, validation_flags
+       ) VALUES (
+         $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+         0,21000,'ready','["balance_ok"]'::jsonb
+       )`,
+      [stmtId, DESERT, fileId, bank!.id],
+    );
+    await admin.query(
+      `INSERT INTO books_statement_lines (
+         id, statement_id, client_id, line_date, description, reference,
+         debit_minor, credit_minor, currency, sort_index
+       ) VALUES ($1,$2,$3,'2026-05-15',$4,$5,0,21000,'AED',0)`,
+      [lineId, stmtId, DESERT, desc, docNo],
+    );
+
+    const mat = await page.request.post("/api/books/bank-transactions/materialize", { data: {} });
+    expect(mat.ok(), `materialize: ${await mat.text()}`).toBeTruthy();
+
+    const list = await page.request.get(
+      "/api/books/bank-transactions?status=needs_review&unmatched=1",
+    );
+    const rows = (await list.json()) as Array<{ id: string; description: string }>;
+    expect(list.ok()).toBeTruthy();
+    const txn = rows.find((r) => r.description === desc);
+    expect(txn?.id, `txn missing: ${JSON.stringify(rows)}`).toBeTruthy();
+    txnId = txn!.id;
+
+    const typed = await page.request.patch(`/api/books/bank-transactions/${txnId}`, {
+      data: { txnType: "customer_receipt" },
+    });
+    expect(typed.ok(), `type: ${await typed.text()}`).toBeTruthy();
+
+    await page.goto("/books/transactions");
+    await expect(page.getByTestId("txn-filter-unmatched")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("txn-filter-unmatched").click();
+    await expect(page.getByTestId(`txn-row-${txnId}`)).toBeVisible({ timeout: 15000 });
+
+    // Pick invoice in the Unmatched grid
+    await page.getByTestId(`txn-match-${txnId}`).click();
+    await page.getByRole("option", { name: new RegExp(docNo) }).click();
+    await expect
+      .poll(async () => {
+        const res = await page.request.get("/api/books/bank-transactions?status=needs_review");
+        const rows2 = (await res.json()) as Array<{ id: string; openItemId?: string | null }>;
+        return rows2.find((r) => r.id === txnId)?.openItemId || null;
+      })
+      .toBe(openItemId);
+
+    // Matched rows leave the Unmatched chip — clear it so Mark reviewed is visible.
+    await page.getByTestId("txn-filter-unmatched").click();
+    await expect(page.getByTestId(`txn-mark-${txnId}`)).toBeVisible({ timeout: 15000 });
+    await page.getByTestId(`txn-mark-${txnId}`).click();
+    await expect
+      .poll(async () => {
+        const res = await page.request.get("/api/books/bank-transactions?status=ready");
+        const rows2 = (await res.json()) as Array<{ id: string }>;
+        return rows2.some((r) => r.id === txnId);
+      })
+      .toBeTruthy();
+
+    // Approver posts (dual control) — API keeps the assert tight; UI verifies link-back.
+    await setSession(context, LAYLA);
+    const postedRes = await page.request.post(`/api/books/bank-transactions/${txnId}/post`, {
+      data: {},
+    });
+    const postedBody = await postedRes.json();
+    expect(postedRes.ok(), `post: ${JSON.stringify(postedBody)}`).toBeTruthy();
+    expect(String(postedBody.entryNo || "")).toMatch(/^RV-/);
+    expect(postedBody.journalEntryId).toBeTruthy();
+
+    await page.goto("/books/transactions");
+    await page.getByTestId("txn-tab-posted").click();
+    await expect(page.getByTestId(`txn-journal-link-${txnId}`)).toBeVisible({ timeout: 15000 });
+    const link = page.getByTestId(`txn-journal-link-${txnId}`);
+    await expect(link).toContainText(String(postedBody.entryNo));
+    const href = await link.getAttribute("href");
+    expect(href).toContain(`highlight=${encodeURIComponent(String(postedBody.journalEntryId))}`);
+
+    const journals = await page.request.get(
+      `/api/books/journals?periodId=${encodeURIComponent(may!.id)}`,
+    );
+    const journalRows = (await journals.json()) as Array<{ id?: string; entryNo?: string }>;
+    expect(
+      journalRows.some(
+        (r) => r.id === postedBody.journalEntryId || r.entryNo === postedBody.entryNo,
+      ),
+      `journal ${postedBody.entryNo} missing`,
+    ).toBeTruthy();
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
 });

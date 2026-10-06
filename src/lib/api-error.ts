@@ -48,6 +48,11 @@ const MESSAGES: Record<string, string> = {
   rule_name_required: "Give the rule a name.",
   invalid_narration_regex: "That narration pattern is not a valid regular expression.",
   bank_rule_not_found: "That bank rule was not found.",
+  card_payable_account_missing: "Credit card payable (2150) is missing from the chart of accounts.",
+  gateway_clearing_account_missing:
+    "Payment gateway clearing (1310) is missing from the chart of accounts.",
+  gateway_payout_not_balanced:
+    "This payout group does not net to zero on gateway clearing. Fix the group before posting.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

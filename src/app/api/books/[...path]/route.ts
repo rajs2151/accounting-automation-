@@ -371,6 +371,7 @@ export async function GET(request: Request, ctx: Ctx) {
           accountId: url.searchParams.get("accountId") || undefined,
           status: url.searchParams.get("status") || undefined,
           q: url.searchParams.get("q") || undefined,
+          unmatchedOnly: url.searchParams.get("unmatched") === "1",
         }),
       );
     }
@@ -1144,6 +1145,12 @@ export async function PATCH(request: Request, ctx: Ctx) {
                 ? String(body.categoryAccountId)
                 : null,
           note: body.note === undefined ? undefined : String(body.note),
+          payoutGroupKey:
+            body.payoutGroupKey === undefined
+              ? undefined
+              : body.payoutGroupKey
+                ? String(body.payoutGroupKey)
+                : null,
         }),
       );
     }

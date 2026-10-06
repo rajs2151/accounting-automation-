@@ -87,7 +87,58 @@ export type BooksBankTransactionRow = {
   journalEntryId: string | null;
   entryNo: string | null;
   suggestionSource: string | null;
+  payoutGroupKey: string | null;
 };
+
+const GATEWAY_CLEARING_CODES = ["1310", "1320", "1330"] as const;
+const CARD_PAYABLE_CODE = "2150";
+const DEFAULT_GATEWAY_CLEARING_CODE = "1310";
+
+async function accountIdByCode(
+  db: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null; rows: Array<{ id: string }> }> },
+  clientId: string,
+  code: string,
+): Promise<string | null> {
+  const r = await db.query(
+    `SELECT id FROM books_accounts
+     WHERE client_id = $1 AND code = $2 AND active = true AND is_postable = true`,
+    [clientId, code],
+  );
+  return r.rowCount ? String(r.rows[0].id) : null;
+}
+
+async function hasPayoutGroupColumn(db: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null }>;
+}) {
+  const col = await db.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'books_bank_transactions' AND column_name = 'payout_group_key'`,
+  );
+  return Boolean(col.rowCount);
+}
+
+/**
+ * Clearing impact for a payout group line (fils): gateway_payout credits clearing;
+ * money-out lines categorised to a gateway clearing COA debit clearing.
+ * When the group is complete (no needs_review left), net must be 0.
+ */
+function clearingImpactMinor(row: {
+  txn_type?: unknown;
+  debit_minor?: unknown;
+  credit_minor?: unknown;
+  category_code?: unknown;
+}): number {
+  const type = String(row.txn_type || "");
+  const debit = Number(row.debit_minor || 0);
+  const credit = Number(row.credit_minor || 0);
+  const cat = row.category_code != null ? String(row.category_code) : "";
+  if (type === "gateway_payout") return credit; // Cr clearing
+  if (GATEWAY_CLEARING_CODES.includes(cat as (typeof GATEWAY_CLEARING_CODES)[number])) {
+    // Dr clearing (money out vs clearing) − Cr clearing (money in vs clearing)
+    return credit - debit;
+  }
+  return 0;
+}
 
 async function hasLinkedTxnColumn(db: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null }> }) {
   const col = await db.query(
@@ -260,7 +311,13 @@ export async function materializeBooksBankTransactions(
 export async function listBooksBankTransactions(
   userId: string,
   clientId: string,
-  opts?: { accountId?: string; status?: string; q?: string; materialize?: boolean },
+  opts?: {
+    accountId?: string;
+    status?: string;
+    q?: string;
+    unmatchedOnly?: boolean;
+    materialize?: boolean;
+  },
 ) {
   if (opts?.materialize !== false) {
     await materializeBooksBankTransactions(userId, clientId, {
@@ -279,7 +336,9 @@ export async function listBooksBankTransactions(
     await assertSyntheticTenant(db, clientId);
     const status = opts?.status && opts.status !== "all" ? opts.status : null;
     const q = opts?.q?.trim() || null;
+    const unmatchedOnly = Boolean(opts?.unmatchedOnly);
     const hasLink = await hasLinkedTxnColumn(db);
+    const hasPayout = await hasPayoutGroupColumn(db);
     const sugCol = await db.query(
       `SELECT 1 FROM information_schema.columns
        WHERE table_name = 'books_bank_transactions' AND column_name = 'suggestion_source'`,
@@ -294,6 +353,9 @@ export async function listBooksBankTransactions(
     const sugSelect = hasSug
       ? `t.suggestion_source AS "suggestionSource",`
       : `NULL::text AS "suggestionSource",`;
+    const payoutSelect = hasPayout
+      ? `t.payout_group_key AS "payoutGroupKey",`
+      : `NULL::text AS "payoutGroupKey",`;
     const linkJoin = hasLink
       ? `LEFT JOIN books_bank_transactions lt ON lt.id = t.linked_txn_id
        LEFT JOIN books_accounts la ON la.id = lt.account_id`
@@ -313,6 +375,7 @@ export async function listBooksBankTransactions(
               t.open_item_id AS "openItemId",
               ${linkSelect}
               ${sugSelect}
+              ${payoutSelect}
               t.journal_entry_id AS "journalEntryId",
               je.entry_no AS "entryNo",
               CASE WHEN oi.id IS NULL THEN NULL
@@ -335,8 +398,12 @@ export async function listBooksBankTransactions(
            OR t.description ILIKE '%' || $4 || '%'
            OR COALESCE(t.reference,'') ILIKE '%' || $4 || '%'
          )
+         AND (
+           NOT $5::boolean
+           OR (t.review_status = 'needs_review' AND t.open_item_id IS NULL)
+         )
        ORDER BY t.txn_date DESC NULLS LAST, t.created_at DESC`,
-      [clientId, opts?.accountId || null, status, q],
+      [clientId, opts?.accountId || null, status, q, unmatchedOnly],
     );
 
     return rows.rows.map((r): BooksBankTransactionRow => {
@@ -373,6 +440,7 @@ export async function listBooksBankTransactions(
         journalEntryId: r.journalEntryId ? String(r.journalEntryId) : null,
         entryNo: r.entryNo != null ? String(r.entryNo) : null,
         suggestionSource: r.suggestionSource ? String(r.suggestionSource) : null,
+        payoutGroupKey: r.payoutGroupKey ? String(r.payoutGroupKey) : null,
       };
     });
   });
@@ -386,6 +454,7 @@ export async function updateBooksBankTransaction(
     txnType?: string | null;
     categoryAccountId?: string | null;
     note?: string;
+    payoutGroupKey?: string | null;
   },
 ) {
   return withUser(userId, async (db) => {
@@ -428,9 +497,22 @@ export async function updateBooksBankTransaction(
 
     const note = body.note !== undefined ? String(body.note) : String(row.note || "");
 
+    const hasPayout = await hasPayoutGroupColumn(db);
+    let payoutGroupKey =
+      hasPayout && row.payout_group_key != null ? String(row.payout_group_key) : null;
+    if (hasPayout && body.payoutGroupKey !== undefined) {
+      const raw = body.payoutGroupKey == null ? "" : String(body.payoutGroupKey).trim();
+      payoutGroupKey = raw || null;
+    }
+
     // Editing a Ready row after category change drops back to Needs Review.
     let reviewStatus = String(row.review_status);
-    if (reviewStatus === "ready" && (body.txnType !== undefined || body.categoryAccountId !== undefined)) {
+    if (
+      reviewStatus === "ready" &&
+      (body.txnType !== undefined ||
+        body.categoryAccountId !== undefined ||
+        body.payoutGroupKey !== undefined)
+    ) {
       reviewStatus = "needs_review";
     }
 
@@ -444,18 +526,34 @@ export async function updateBooksBankTransaction(
       );
     }
 
-    await db.query(
-      `UPDATE books_bank_transactions SET
-         txn_type = $3,
-         category_account_id = $4,
-         note = $5,
-         review_status = $6,
-         reviewed_by = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_by END,
-         reviewed_at = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_at END,
-         updated_at = now()
-       WHERE id = $1 AND client_id = $2`,
-      [id, clientId, txnType, categoryAccountId, note, reviewStatus],
-    );
+    if (hasPayout) {
+      await db.query(
+        `UPDATE books_bank_transactions SET
+           txn_type = $3,
+           category_account_id = $4,
+           note = $5,
+           review_status = $6,
+           payout_group_key = $7,
+           reviewed_by = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_by END,
+           reviewed_at = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_at END,
+           updated_at = now()
+         WHERE id = $1 AND client_id = $2`,
+        [id, clientId, txnType, categoryAccountId, note, reviewStatus, payoutGroupKey],
+      );
+    } else {
+      await db.query(
+        `UPDATE books_bank_transactions SET
+           txn_type = $3,
+           category_account_id = $4,
+           note = $5,
+           review_status = $6,
+           reviewed_by = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_by END,
+           reviewed_at = CASE WHEN $6 = 'needs_review' THEN NULL ELSE reviewed_at END,
+           updated_at = now()
+         WHERE id = $1 AND client_id = $2`,
+        [id, clientId, txnType, categoryAccountId, note, reviewStatus],
+      );
+    }
 
     await writeBooksAudit(db, {
       clientId,
@@ -468,16 +566,18 @@ export async function updateBooksBankTransaction(
         category_account_id: row.category_account_id,
         note: row.note,
         review_status: row.review_status,
+        payout_group_key: hasPayout ? row.payout_group_key : undefined,
       },
       after: {
         txn_type: txnType,
         category_account_id: categoryAccountId,
         note,
         review_status: reviewStatus,
+        payout_group_key: hasPayout ? payoutGroupKey : undefined,
       },
     });
 
-    return { id, txnType, categoryAccountId, note, reviewStatus };
+    return { id, txnType, categoryAccountId, note, reviewStatus, payoutGroupKey };
   });
 }
 
@@ -502,8 +602,14 @@ export async function markBooksBankTransactionReviewed(
     }
     if (!row.txn_type) throw new BooksError("txn_type_required", "invalid");
     const txnType = String(row.txn_type);
-    // Transfers need a counterpart link at post time; category COA is for non-transfer types.
-    if (txnType !== "transfer" && txnType !== "customer_receipt" && txnType !== "supplier_payment") {
+    // Transfers / card / gateway resolve counterpart at post (COA 2150 / 1310 defaults).
+    if (
+      txnType !== "transfer" &&
+      txnType !== "customer_receipt" &&
+      txnType !== "supplier_payment" &&
+      txnType !== "card_repayment" &&
+      txnType !== "gateway_payout"
+    ) {
       if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
     }
     if (txnType === "customer_receipt" || txnType === "supplier_payment") {
@@ -1443,6 +1549,78 @@ export async function postBooksBankTransaction(
       journalEntryId = created.id;
       entryNo = String(posted.entryNo);
     }
+  } else if (txnType === "card_repayment") {
+    // Dr Card Payable (2150) / Cr Bank — money out only.
+    if (debit <= 0 || credit > 0) throw new BooksError("match_amount_direction", "invalid");
+    const payableId =
+      (row.category_account_id && String(row.category_account_id)) ||
+      (await withUser(approverId, async (db) =>
+        accountIdByCode(db, clientId, CARD_PAYABLE_CODE),
+      ));
+    if (!payableId) throw new BooksError("card_payable_account_missing", "invalid");
+    const created = await createBooksJournal(preparerId, clientId, {
+      periodId,
+      entryDate: txnDate,
+      memo: memo || "Card repayment",
+      voucherType: "Journal",
+      lines: [
+        { accountId: payableId, debitMinor: debit, aedMinor: debit, currency },
+        { accountId: bankAccountId, creditMinor: debit, aedMinor: debit, currency },
+      ],
+      post: false,
+    });
+    const posted = await postBooksJournal(approverId, clientId, created.id);
+    journalEntryId = created.id;
+    entryNo = String(posted.entryNo);
+  } else if (txnType === "gateway_payout") {
+    // Dr Bank / Cr Gateway Clearing (1310 default) — money in; never book as sales.
+    if (credit <= 0 || debit > 0) throw new BooksError("match_amount_direction", "invalid");
+    const clearingId =
+      (row.category_account_id && String(row.category_account_id)) ||
+      (await withUser(approverId, async (db) =>
+        accountIdByCode(db, clientId, DEFAULT_GATEWAY_CLEARING_CODE),
+      ));
+    if (!clearingId) throw new BooksError("gateway_clearing_account_missing", "invalid");
+
+    await withUser(approverId, async (db) => {
+      if (!(await hasPayoutGroupColumn(db))) return;
+      const groupKey = row.payout_group_key != null ? String(row.payout_group_key).trim() : "";
+      if (!groupKey) return;
+      const peers = await db.query(
+        `SELECT t.id, t.txn_type, t.debit_minor, t.credit_minor, t.review_status,
+                ca.code AS category_code
+         FROM books_bank_transactions t
+         LEFT JOIN books_accounts ca ON ca.id = t.category_account_id
+         WHERE t.client_id = $1 AND t.payout_group_key = $2
+           AND t.review_status <> 'excluded'`,
+        [clientId, groupKey],
+      );
+      if ((peers.rowCount ?? 0) < 2) return; // singleton / incomplete — charges may be off-bank
+      const pending = peers.rows.filter(
+        (r) => String(r.review_status) === "needs_review" && String(r.id) !== txnId,
+      );
+      if (pending.length > 0) return; // wait until group is fully reviewed
+      let net = 0;
+      for (const r of peers.rows) {
+        net += clearingImpactMinor(r);
+      }
+      if (net !== 0) throw new BooksError("gateway_payout_not_balanced", "conflict");
+    });
+
+    const created = await createBooksJournal(preparerId, clientId, {
+      periodId,
+      entryDate: txnDate,
+      memo: memo || "Gateway payout",
+      voucherType: "Journal",
+      lines: [
+        { accountId: bankAccountId, debitMinor: credit, aedMinor: credit, currency },
+        { accountId: clearingId, creditMinor: credit, aedMinor: credit, currency },
+      ],
+      post: false,
+    });
+    const posted = await postBooksJournal(approverId, clientId, created.id);
+    journalEntryId = created.id;
+    entryNo = String(posted.entryNo);
   } else {
     if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
     if (debit <= 0 && credit <= 0) throw new BooksError("zero_amount", "invalid_money");

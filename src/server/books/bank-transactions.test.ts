@@ -783,3 +783,184 @@ test("P2A-2: scored candidates; reject remembered", async (t) => {
     await admin.end().catch(() => undefined);
   }
 });
+
+test("P2A-4: card repayment + gateway payout group net-zero", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  const payoutCol = await admin.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'books_bank_transactions' AND column_name = 'payout_group_key'`,
+  );
+  if (!payoutCol.rowCount) {
+    t.skip("db/41 gateway/card not migrated");
+    await admin.end();
+    return;
+  }
+  try {
+    const company = await createTestCompany(admin, "p2a4-gw");
+    const clientId = company.clientId;
+    const bank = company.accountIdByCode["1120"];
+    const cardPayable = company.accountIdByCode["2150"];
+    const clearing = company.accountIdByCode["1310"];
+    assert.ok(bank && cardPayable && clearing);
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'P2A4', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank],
+    );
+
+    async function materializeLine(opts: {
+      debit: number;
+      credit: number;
+      desc: string;
+    }) {
+      const fileId = randomUUID();
+      const stmtId = randomUUID();
+      const lineId = randomUUID();
+      await admin.query(
+        `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,'application/pdf',10,$6)`,
+        [
+          fileId,
+          clientId,
+          `p4-${randomUUID()}`,
+          `books/${clientId}/${fileId}/x.pdf`,
+          `${opts.desc}.pdf`,
+          OMAR,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_extractions (
+           id, client_id, file_id, account_id, iban, period_from, period_to,
+           opening_balance_minor, closing_balance_minor, status, validation_flags
+         ) VALUES (
+           $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+           0,$5,'ready','["balance_ok"]'::jsonb
+         )`,
+        [stmtId, clientId, fileId, bank, opts.credit - opts.debit],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_lines (
+           id, statement_id, client_id, line_date, description,
+           debit_minor, credit_minor, currency, sort_index
+         ) VALUES ($1,$2,$3,'2026-05-18',$4,$5,$6,'AED',0)`,
+        [lineId, stmtId, clientId, opts.desc, opts.debit, opts.credit],
+      );
+      await materializeBooksBankTransactions(OMAR, clientId);
+      const listed = await listBooksBankTransactions(OMAR, clientId, {
+        materialize: false,
+        status: "needs_review",
+      });
+      const row = listed.find(
+        (r) =>
+          r.description === opts.desc &&
+          r.debitMinor === opts.debit &&
+          r.creditMinor === opts.credit,
+      );
+      assert.ok(row, `missing line ${opts.desc}`);
+      return row.id;
+    }
+
+    // Card repayment: Dr 2150 / Cr Bank
+    const cardTxn = await materializeLine({
+      debit: 4500,
+      credit: 0,
+      desc: "VISA repayment",
+    });
+    await updateBooksBankTransaction(OMAR, clientId, cardTxn, {
+      txnType: "card_repayment",
+    });
+    await markBooksBankTransactionReviewed(OMAR, clientId, cardTxn);
+    const cardPosted = await postBooksBankTransaction(LAYLA, clientId, cardTxn);
+    assert.ok(cardPosted.journalEntryId);
+    const cardLines = await admin.query(
+      `SELECT a.code, l.debit_minor, l.credit_minor
+       FROM books_journal_lines l
+       JOIN books_accounts a ON a.id = l.account_id
+       WHERE l.entry_id = $1
+       ORDER BY a.code`,
+      [cardPosted.journalEntryId],
+    );
+    assert.equal(cardLines.rowCount, 2);
+    const byCode = Object.fromEntries(
+      cardLines.rows.map((r) => [
+        String(r.code),
+        { dr: Number(r.debit_minor), cr: Number(r.credit_minor) },
+      ]),
+    );
+    assert.equal(byCode["2150"]?.dr, 4500);
+    assert.equal(byCode["1120"]?.cr, 4500);
+
+    // Unbalanced payout group (≥2 ready) → exception
+    const group = `stripe-${Date.now()}`;
+    const payOut = await materializeLine({
+      debit: 0,
+      credit: 10000,
+      desc: "Stripe payout",
+    });
+    const feeClear = await materializeLine({
+      debit: 300,
+      credit: 0,
+      desc: "Stripe fee clearing adj",
+    });
+    await updateBooksBankTransaction(OMAR, clientId, payOut, {
+      txnType: "gateway_payout",
+      payoutGroupKey: group,
+    });
+    await updateBooksBankTransaction(OMAR, clientId, feeClear, {
+      txnType: "other_expense",
+      categoryAccountId: clearing,
+      payoutGroupKey: group,
+    });
+    await markBooksBankTransactionReviewed(OMAR, clientId, payOut);
+    await markBooksBankTransactionReviewed(OMAR, clientId, feeClear);
+    await assert.rejects(
+      () => postBooksBankTransaction(LAYLA, clientId, payOut),
+      (e: unknown) => e instanceof BooksError && e.message === "gateway_payout_not_balanced",
+    );
+
+    // Balanced group: payout 9700 Cr clearing + money-out 9700 Dr clearing
+    const group2 = `stripe-ok-${Date.now()}`;
+    const payOk = await materializeLine({
+      debit: 0,
+      credit: 9700,
+      desc: "Stripe payout ok",
+    });
+    const clearAdj = await materializeLine({
+      debit: 9700,
+      credit: 0,
+      desc: "Clearing release",
+    });
+    await updateBooksBankTransaction(OMAR, clientId, payOk, {
+      txnType: "gateway_payout",
+      payoutGroupKey: group2,
+    });
+    await updateBooksBankTransaction(OMAR, clientId, clearAdj, {
+      txnType: "other_expense",
+      categoryAccountId: clearing,
+      payoutGroupKey: group2,
+    });
+    await markBooksBankTransactionReviewed(OMAR, clientId, payOk);
+    await markBooksBankTransactionReviewed(OMAR, clientId, clearAdj);
+    const gwPosted = await postBooksBankTransaction(LAYLA, clientId, payOk);
+    assert.ok(gwPosted.journalEntryId);
+    const gwLines = await admin.query(
+      `SELECT a.code, l.debit_minor, l.credit_minor
+       FROM books_journal_lines l
+       JOIN books_accounts a ON a.id = l.account_id
+       WHERE l.entry_id = $1`,
+      [gwPosted.journalEntryId],
+    );
+    const gwBy = Object.fromEntries(
+      gwLines.rows.map((r) => [
+        String(r.code),
+        { dr: Number(r.debit_minor), cr: Number(r.credit_minor) },
+      ]),
+    );
+    assert.equal(gwBy["1120"]?.dr, 9700);
+    assert.equal(gwBy["1310"]?.cr, 9700);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});

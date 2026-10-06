@@ -94,6 +94,7 @@ function TransactionsInner() {
   const initialAccount = search.get("accountId") || "all";
   const [accountId, setAccountId] = useState(initialAccount);
   const [tab, setTab] = useState<Tab>("needs_review");
+  const [unmatchedOnly, setUnmatchedOnly] = useState(false);
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<TxnRow[]>([]);
   const [banks, setBanks] = useState<BankAccountOpt[]>([]);
@@ -108,6 +109,7 @@ function TransactionsInner() {
     if (accountId && accountId !== "all") params.set("accountId", accountId);
     if (tab) params.set("status", tab);
     if (q.trim()) params.set("q", q.trim());
+    if (unmatchedOnly) params.set("unmatched", "1");
     const [txnRes, bankRes, coaRes] = await Promise.all([
       fetch(`/api/books/bank-transactions?${params}`),
       fetch("/api/books/bank-accounts"),
@@ -141,7 +143,7 @@ function TransactionsInner() {
       );
     }
     setLoading(false);
-  }, [accountId, tab, q]);
+  }, [accountId, tab, q, unmatchedOnly]);
 
   useEffect(() => {
     void reload();
@@ -484,7 +486,14 @@ function TransactionsInner() {
         </div>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} data-testid="txn-tabs">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as Tab);
+          if (v !== "needs_review") setUnmatchedOnly(false);
+        }}
+        data-testid="txn-tabs"
+      >
         <TabsList>
           <TabsTrigger value="needs_review" data-testid="txn-tab-needs-review">
             Needs Review ({tabCounts.needs_review})
@@ -500,6 +509,20 @@ function TransactionsInner() {
           </TabsTrigger>
         </TabsList>
       </Tabs>
+
+      {tab === "needs_review" ? (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={unmatchedOnly ? "default" : "outline"}
+            data-testid="txn-filter-unmatched"
+            onClick={() => setUnmatchedOnly((v) => !v)}
+          >
+            Unmatched
+          </Button>
+        </div>
+      ) : null}
 
       {excludeFor ? (
         <div className="max-w-lg space-y-2 rounded-lg border border-border p-3" data-testid="txn-exclude-form">
@@ -719,7 +742,16 @@ function TransactionsInner() {
                       </td>
                       <td className="px-3 py-2">
                         <StatusBadge meta={bankTxnReviewStatusLabel(r.reviewStatus)} />
-                        {r.entryNo ? (
+                        {r.entryNo && r.journalEntryId ? (
+                          <Link
+                            href={`/books/journals?highlight=${encodeURIComponent(r.journalEntryId)}`}
+                            className="text-xs text-primary underline-offset-2 hover:underline"
+                            data-testid={`txn-journal-link-${r.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.entryNo}
+                          </Link>
+                        ) : r.entryNo ? (
                           <div className="text-xs text-muted-foreground">{r.entryNo}</div>
                         ) : null}
                         {r.excludeReason ? (
