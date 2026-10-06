@@ -73,7 +73,8 @@ export async function createTestCompany(
      SELECT $1, v.voucher_type, 2026, books_voucher_prefix(v.voucher_type), 0
      FROM (VALUES
        ('Sales'), ('Purchase'), ('Receipt'), ('Payment'), ('Contra'),
-       ('Journal'), ('Credit Note'), ('Debit Note'), ('Opening'), ('Closing')
+       ('Journal'), ('Credit Note'), ('Debit Note'), ('Opening'), ('Closing'),
+       ('Expense')
      ) AS v(voucher_type)
      ON CONFLICT DO NOTHING`,
     [clientId],

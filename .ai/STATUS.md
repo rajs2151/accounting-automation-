@@ -1,9 +1,9 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: P2A stream A — Phase 2 bank side closed (A1–A6); B5 goldens still Stream B
-- 2026-10-06: P2A-6 PASS — bulk preview/post, Rules page, transfer auto-link
+- Phase: 3 (Expenses) on feat/books-phase1 — Stream A
+- Current task: P3-1 PASS — next P3-2 approve/reject (+ dual control)
+- 2026-10-06: P2A-6 PASS — bulk preview/post, Rules page, transfer auto-link; Phase 2 Stream A closed
 - 2026-10-06: P2A-5 PASS — materialize requires balance_ok; top-bar period shows label
 - 2026-10-06: P2A-4 PASS — card repayment / gateway payout + group net-zero; Unmatched→post e2e
 - 2026-10-06: P2A-3 PASS — bank rules (conditions→actions), preview, Rule: chip, create-from-txn
@@ -41,14 +41,16 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b · C2-1 · C1b-2 · C2-2 · C3-1 · C3-2 · C3-3
-2. C3 follow-ups: N:1 splits, bulk post, rules (transfer pairs done in C3-3)
-3. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b · C2-1 · C1b-2 · C2-2 · C3-1 · C3-2 · C3-3 · P2A-1..6
+2. P3-1 draft expenses → P3-2 approve/reject → P3-3 paid-from match
+3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
+4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
 - Company A month-1 golden is PROVISIONAL - owner to supply hand-computed values (Claude offered to prepare).
 - VAT on customer advances: policy TBD (not implemented).
+- Expense receipt threshold: NULL until owner sets (do not invent default).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
 - Pending inputs: brand hex + font; B/C opening balances.
 - UI polish backlog (not in UI-1..4): Review later status, paid/unpaid types, non-UAE VAT->cost, knowledge cards,
@@ -98,3 +100,4 @@
 - 2026-10-06 | P2A-4 | PASS | db/41 payout_group; card 2150 / gateway 1310; e2e Unmatched→RV link; unit 178p/1s e2e 5/5
 - 2026-10-06 | P2A-5 | PASS | ready≠eligible without balance_ok; period picker label; unit+e2e green
 - 2026-10-06 | P2A-6 | PASS | bulk journal preview+post; /books/rules; auto-link transfers; Phase 2 A close
+- 2026-10-06 | P3-1 | PASS | db/55 expenses draft + EXP voucher + /books/expenses UI; unit 2/2

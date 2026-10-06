@@ -67,6 +67,15 @@ import {
   updateBooksBankRule,
 } from "@/server/books/bank-rules";
 import {
+  createBooksExpense,
+  getBooksExpense,
+  listBooksExpenses,
+  softDeleteBooksExpenseDraft,
+  updateBooksExpenseDraft,
+  type ExpenseLineInput,
+  type PaidFromKind,
+} from "@/server/books/expenses";
+import {
   excludeBooksBankTransaction,
   linkBooksBankTransferPair,
   listBooksBankTxnAllocations,
@@ -449,6 +458,17 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "bank-rules" && path.length === 1) {
       return NextResponse.json(await listBooksBankRules(session.userId, session.clientId));
     }
+    if (path[0] === "expenses" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksExpenses(session.userId, session.clientId, {
+          status: url.searchParams.get("status") || undefined,
+          q: url.searchParams.get("q") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "expenses" && path.length === 2) {
+      return NextResponse.json(await getBooksExpense(session.userId, session.clientId, path[1]));
+    }
     if (path[0] === "bank-rules" && path[2] === "preview" && path.length === 3) {
       return NextResponse.json(
         await previewBooksBankRule(session.userId, session.clientId, path[1]),
@@ -825,6 +845,41 @@ export async function POST(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 1) {
       return NextResponse.json(await createBooksDocument(session.userId, session.clientId, body));
+    }
+    if (path[0] === "expenses" && path.length === 1) {
+      const linesRaw = Array.isArray(body.lines) ? body.lines : [];
+      const lines: ExpenseLineInput[] = linesRaw.map((l: Record<string, unknown>) => ({
+        description: l.description != null ? String(l.description) : undefined,
+        accountId: String(l.accountId || ""),
+        vatCode: l.vatCode == null || l.vatCode === "" ? null : String(l.vatCode),
+        netMinor: Number(l.netMinor),
+        vatMinor: l.vatMinor == null ? undefined : Number(l.vatMinor),
+      }));
+      return NextResponse.json(
+        await createBooksExpense(session.userId, session.clientId, {
+          expenseDate: String(body.expenseDate || ""),
+          periodId: String(body.periodId || ""),
+          description: body.description != null ? String(body.description) : undefined,
+          vendorPartyId:
+            body.vendorPartyId === undefined
+              ? undefined
+              : body.vendorPartyId == null || body.vendorPartyId === ""
+                ? null
+                : String(body.vendorPartyId),
+          vendorName: body.vendorName != null ? String(body.vendorName) : undefined,
+          currency: body.currency != null ? String(body.currency) : undefined,
+          paidFromKind:
+            body.paidFromKind === undefined || body.paidFromKind === ""
+              ? null
+              : (String(body.paidFromKind) as PaidFromKind),
+          paidFromAccountId:
+            body.paidFromAccountId === undefined || body.paidFromAccountId === ""
+              ? null
+              : String(body.paidFromAccountId),
+          note: body.note != null ? String(body.note) : undefined,
+          lines,
+        }),
+      );
     }
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
       const applyAdvanceOriginalMinor =
@@ -1245,6 +1300,46 @@ export async function PATCH(request: Request, ctx: Ctx) {
     if (path[0] === "parties" && path.length === 2) {
       return NextResponse.json(await updateBooksParty(session.userId, session.clientId, path[1], body));
     }
+    if (path[0] === "expenses" && path.length === 2) {
+      const linesRaw = Array.isArray(body.lines) ? body.lines : undefined;
+      const lines: ExpenseLineInput[] | undefined = linesRaw
+        ? linesRaw.map((l: Record<string, unknown>) => ({
+            description: l.description != null ? String(l.description) : undefined,
+            accountId: String(l.accountId || ""),
+            vatCode: l.vatCode == null || l.vatCode === "" ? null : String(l.vatCode),
+            netMinor: Number(l.netMinor),
+            vatMinor: l.vatMinor == null ? undefined : Number(l.vatMinor),
+          }))
+        : undefined;
+      return NextResponse.json(
+        await updateBooksExpenseDraft(session.userId, session.clientId, path[1], {
+          expenseDate: body.expenseDate != null ? String(body.expenseDate) : undefined,
+          periodId: body.periodId != null ? String(body.periodId) : undefined,
+          description: body.description != null ? String(body.description) : undefined,
+          vendorPartyId:
+            body.vendorPartyId === undefined
+              ? undefined
+              : body.vendorPartyId == null || body.vendorPartyId === ""
+                ? null
+                : String(body.vendorPartyId),
+          vendorName: body.vendorName != null ? String(body.vendorName) : undefined,
+          paidFromKind:
+            body.paidFromKind === undefined
+              ? undefined
+              : body.paidFromKind === "" || body.paidFromKind == null
+                ? null
+                : (String(body.paidFromKind) as PaidFromKind),
+          paidFromAccountId:
+            body.paidFromAccountId === undefined
+              ? undefined
+              : body.paidFromAccountId === "" || body.paidFromAccountId == null
+                ? null
+                : String(body.paidFromAccountId),
+          note: body.note != null ? String(body.note) : undefined,
+          lines,
+        }),
+      );
+    }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(
         await updateBooksDocumentPrintedFields(session.userId, session.clientId, path[1], {
@@ -1351,6 +1446,11 @@ export async function DELETE(request: Request, ctx: Ctx) {
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(
         await softDeleteBooksDocumentDraft(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "expenses" && path.length === 2) {
+      return NextResponse.json(
+        await softDeleteBooksExpenseDraft(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "bank-transactions" && path[2] === "transfer-link" && path.length === 3) {

@@ -236,7 +236,8 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByTestId("purchase-issue-date")).toBeVisible();
 
   await page.goto("/books/expenses");
-  await expect(page.getByText(/Coming in Phase 3/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Expenses" })).toBeVisible();
+  await expect(page.getByTestId("expenses-new")).toBeVisible();
   await expect(page.getByText("(Phase 3)")).toHaveCount(0);
 
   await page.goto("/books/banking");
@@ -556,7 +557,8 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await savePhase1("settings-profile-periods.png", await page.screenshot({ fullPage: true }));
 
   await page.goto("/books/expenses");
-  await expect(page.getByText(/Coming in Phase 3/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Expenses" })).toBeVisible();
+  await expect(page.getByTestId("expenses-table")).toBeVisible();
   await savePhase1("expenses-phase3.png", await page.screenshot({ fullPage: true }));
 
   await page.goto("/books/sales");

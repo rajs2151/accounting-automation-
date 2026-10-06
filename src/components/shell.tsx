@@ -67,7 +67,7 @@ const NAV: NavItem[] = [
   { href: "/books/banking", label: "Banking", icon: Landmark },
   { href: "/books/transactions", label: "Transactions", icon: ArrowLeftRight },
   { href: "/books/rules", label: "Rules", icon: Settings },
-  { href: "/books/expenses", label: "Expenses", icon: Receipt, soon: true },
+  { href: "/books/expenses", label: "Expenses", icon: Receipt },
   { href: "/books/journals", label: "Ledger", icon: Landmark },
   { href: "/books/reports/trial-balance", label: "Reports", icon: FileSpreadsheet },
   { href: "/books/health", label: "Company Health", icon: Activity },
