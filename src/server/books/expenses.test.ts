@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 
@@ -6,7 +7,10 @@ import {
   approveAndPostBooksExpense,
   createBooksExpense,
   getBooksExpense,
+  linkBooksExpenseBankTxn,
+  listBooksExpenseBankCandidates,
   listBooksExpenses,
+  matchApprovedExpenseToBankTxn,
   rejectBooksExpense,
   resubmitBooksExpense,
   softDeleteBooksExpenseDraft,
@@ -294,6 +298,185 @@ test("P3-2: VAT without supplier TRN stays in cost", async (t) => {
     assert.equal(byCode["6600"]?.dr, 10500);
     assert.equal(byCode["1120"]?.cr, 10500);
     assert.ok(!byCode["1430"] || byCode["1430"].dr === 0);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+async function seedBankOutflow(
+  admin: pg.Client,
+  opts: {
+    clientId: string;
+    accountId: string;
+    userId: string;
+    debitMinor: number;
+    txnDate: string;
+    description: string;
+  },
+) {
+  const fileId = randomUUID();
+  const stmtId = randomUUID();
+  const lineId = randomUUID();
+  await admin.query(
+    `UPDATE books_accounts SET bank_name = 'Test Bank', iban = 'AE070331234567890123456',
+       iban_last4 = '3456' WHERE id = $1`,
+    [opts.accountId],
+  );
+  await admin.query(
+    `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+     VALUES ($1,$2,$3,$4,'e.pdf','application/pdf',10,$5)`,
+    [
+      fileId,
+      opts.clientId,
+      `exp-${randomUUID()}`,
+      `books/${opts.clientId}/${fileId}/e.pdf`,
+      opts.userId,
+    ],
+  );
+  await admin.query(
+    `INSERT INTO books_statement_extractions (
+       id, client_id, file_id, account_id, iban, period_from, period_to,
+       opening_balance_minor, closing_balance_minor, status, validation_flags
+     ) VALUES (
+       $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+       0,$5,'ready','["balance_ok"]'::jsonb
+     )`,
+    [stmtId, opts.clientId, fileId, opts.accountId, -opts.debitMinor],
+  );
+  await admin.query(
+    `INSERT INTO books_statement_lines (
+       id, statement_id, client_id, line_date, description,
+       debit_minor, credit_minor, currency, sort_index
+     ) VALUES ($1,$2,$3,$4,$5,$6,0,'AED',0)`,
+    [lineId, stmtId, opts.clientId, opts.txnDate, opts.description, opts.debitMinor],
+  );
+  const { materializeBooksBankTransactions } = await import("@/server/books/bank-transactions");
+  await materializeBooksBankTransactions(opts.userId, opts.clientId);
+  const txn = await admin.query(
+    `SELECT id FROM books_bank_transactions
+     WHERE client_id = $1 AND statement_line_id = $2`,
+    [opts.clientId, lineId],
+  );
+  assert.ok(txn.rowCount);
+  return String(txn.rows[0].id);
+}
+
+test("P3-3: link bank outflow before approve; txn posted with expense journal", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  try {
+    const company = await createTestCompany(admin, "p3-3-link");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    const opex = company.accountIdByCode["6600"];
+    const bank = company.accountIdByCode["1120"];
+    assert.ok(periodId && opex && bank);
+
+    const gross = 4200;
+    const created = await createBooksExpense(OMAR, clientId, {
+      expenseDate: "2026-05-10",
+      periodId,
+      description: "Fuel",
+      paidFromKind: "bank",
+      paidFromAccountId: bank,
+      lines: [{ accountId: opex, netMinor: gross, vatMinor: 0 }],
+    });
+
+    const txnId = await seedBankOutflow(admin, {
+      clientId,
+      accountId: bank,
+      userId: OMAR,
+      debitMinor: gross,
+      txnDate: "2026-05-11",
+      description: "ENOC fuel",
+    });
+
+    const cands = await listBooksExpenseBankCandidates(OMAR, clientId, created.id);
+    assert.ok(cands.some((c) => c.id === txnId));
+
+    const linked = await linkBooksExpenseBankTxn(OMAR, clientId, created.id, txnId);
+    assert.equal(linked.bankTxnId, txnId);
+
+    await submitBooksExpense(OMAR, clientId, created.id);
+    const approved = await approveAndPostBooksExpense(LAYLA, clientId, created.id);
+    assert.equal(approved.bankTxnId, txnId);
+    assert.ok(approved.journalEntryId);
+
+    const txn = await admin.query(
+      `SELECT review_status, journal_entry_id FROM books_bank_transactions WHERE id = $1`,
+      [txnId],
+    );
+    assert.equal(String(txn.rows[0].review_status), "posted");
+    assert.equal(String(txn.rows[0].journal_entry_id), approved.journalEntryId);
+
+    const jeCount = await admin.query(
+      `SELECT count(*)::int AS n FROM books_journal_entries
+       WHERE client_id = $1 AND deleted_at IS NULL AND status = 'posted'
+         AND id = $2`,
+      [clientId, approved.journalEntryId],
+    );
+    assert.equal(Number(jeCount.rows[0].n), 1);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("P3-3: later match after approve; amount mismatch rejected", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  try {
+    const company = await createTestCompany(admin, "p3-3-later");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    const opex = company.accountIdByCode["6600"];
+    const bank = company.accountIdByCode["1120"];
+    assert.ok(periodId && opex && bank);
+
+    const gross = 8800;
+    const created = await createBooksExpense(OMAR, clientId, {
+      expenseDate: "2026-05-20",
+      periodId,
+      description: "Supplies later match",
+      paidFromKind: "bank",
+      paidFromAccountId: bank,
+      lines: [{ accountId: opex, netMinor: gross, vatMinor: 0 }],
+    });
+    await submitBooksExpense(OMAR, clientId, created.id);
+    const approved = await approveAndPostBooksExpense(LAYLA, clientId, created.id);
+    assert.equal(approved.bankTxnId, null);
+
+    const wrong = await seedBankOutflow(admin, {
+      clientId,
+      accountId: bank,
+      userId: OMAR,
+      debitMinor: gross + 100,
+      txnDate: "2026-05-21",
+      description: "wrong amount",
+    });
+    await assert.rejects(
+      () => matchApprovedExpenseToBankTxn(OMAR, clientId, created.id, wrong),
+      /bank_txn_amount_mismatch/,
+    );
+
+    const txnId = await seedBankOutflow(admin, {
+      clientId,
+      accountId: bank,
+      userId: OMAR,
+      debitMinor: gross,
+      txnDate: "2026-05-22",
+      description: "office depot",
+    });
+    const matched = await matchApprovedExpenseToBankTxn(OMAR, clientId, created.id, txnId);
+    assert.equal(matched.bankTxnId, txnId);
+
+    const txn = await admin.query(
+      `SELECT review_status, journal_entry_id FROM books_bank_transactions WHERE id = $1`,
+      [txnId],
+    );
+    assert.equal(String(txn.rows[0].review_status), "posted");
+    assert.equal(String(txn.rows[0].journal_entry_id), approved.journalEntryId);
   } finally {
     await admin.end().catch(() => undefined);
   }

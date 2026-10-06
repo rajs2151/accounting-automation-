@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
-import { displayToMinor, MoneyTypeError } from "@/lib/money";
+import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 import type { StatusLabel } from "@/lib/status-labels";
 
 type Expense = {
@@ -30,10 +30,20 @@ type Expense = {
   vendorName: string;
   paidFromKind: string | null;
   paidFromAccountCode: string | null;
+  bankTxnId: string | null;
   netMinor: number;
   vatMinor: number;
   grossMinor: number;
   rejectionReason: string | null;
+};
+
+type BankCandidate = {
+  id: string;
+  txnDate: string | null;
+  description: string;
+  debitMinor: number;
+  accountCode: string | null;
+  reviewStatus: string;
 };
 
 type Account = { id: string; code: string; name: string; accountType: string; isPostable: boolean };
@@ -74,6 +84,9 @@ export default function BooksExpensesPage() {
   const [saving, setSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
   const [acting, setActing] = useState<string | null>(null);
+  const [matchFor, setMatchFor] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<BankCandidate[]>([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -244,13 +257,61 @@ export default function BooksExpensesPage() {
     void reload();
   }
 
+  async function openMatch(id: string) {
+    if (matchFor === id) {
+      setMatchFor(null);
+      setCandidates([]);
+      return;
+    }
+    setMatchFor(id);
+    setCandidatesLoading(true);
+    const res = await fetch(`/api/books/expenses/${id}/bank-candidates`);
+    const data = await res.json().catch(() => []);
+    setCandidatesLoading(false);
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    setCandidates(Array.isArray(data) ? data : []);
+  }
+
+  async function linkBank(expenseId: string, bankTxnId: string | null, approved: boolean) {
+    setActing(`link:${expenseId}`);
+    const path = approved
+      ? `/api/books/expenses/${expenseId}/match-bank`
+      : `/api/books/expenses/${expenseId}/link-bank`;
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bankTxnId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setActing(null);
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(bankTxnId ? "Bank line linked" : "Bank link cleared");
+    setMatchFor(null);
+    setCandidates([]);
+    void reload();
+  }
+
+  function canMatchBank(r: Expense) {
+    return (
+      (r.paidFromKind === "bank" || r.paidFromKind === "card") &&
+      (["draft", "pending", "rejected"].includes(r.status) ||
+        (r.status === "approved" && !r.bankTxnId))
+    );
+  }
+
   return (
     <div className="space-y-4 py-4" data-testid="expenses-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Expenses</h1>
           <p className="text-sm text-muted-foreground">
-            Staff claims — submit for approval; approver posts the journal
+            Staff claims — link bank/card outflows so approve does not double-post the payment
           </p>
         </div>
         <Button data-testid="expenses-new" onClick={() => setFormOpen((v) => !v)}>
@@ -435,8 +496,8 @@ export default function BooksExpensesPage() {
               </tr>
             ) : (
               visible.map((r) => (
+                <Fragment key={r.id}>
                 <tr
-                  key={r.id}
                   className={
                     r.status === "rejected"
                       ? "border-b bg-red-50/60 dark:bg-red-950/20"
@@ -456,7 +517,12 @@ export default function BooksExpensesPage() {
                     <CellAmount minor={r.grossMinor} />
                   </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">
-                    {r.paidFromAccountCode || r.paidFromKind || "—"}
+                    <div>{r.paidFromAccountCode || r.paidFromKind || "—"}</div>
+                    {r.bankTxnId ? (
+                      <div className="text-[11px] text-emerald-700" data-testid={`expense-matched-${r.id}`}>
+                        Matched to bank
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2">
                     <StatusBadge meta={STATUS_META[r.status] || STATUS_META.draft} />
@@ -466,6 +532,16 @@ export default function BooksExpensesPage() {
                   </td>
                   <td className="px-3 py-2 text-right">
                     <div className="flex flex-wrap items-center justify-end gap-1">
+                      {canMatchBank(r) ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          data-testid={`expense-match-${r.id}`}
+                          onClick={() => void openMatch(r.id)}
+                        >
+                          {matchFor === r.id ? "Hide" : r.bankTxnId ? "Change bank" : "Match bank"}
+                        </Button>
+                      ) : null}
                       {r.status === "draft" ? (
                         <>
                           <Button
@@ -529,6 +605,54 @@ export default function BooksExpensesPage() {
                     </div>
                   </td>
                 </tr>
+                {matchFor === r.id ? (
+                  <tr className="border-b bg-muted/30" data-testid={`expense-candidates-${r.id}`}>
+                    <td colSpan={7} className="px-3 py-3">
+                      {candidatesLoading ? (
+                        <p className="text-sm text-muted-foreground">Loading candidates…</p>
+                      ) : candidates.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          No matching bank outflows (same account, amount, ±14 days).
+                        </p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {candidates.map((c) => (
+                            <li
+                              key={c.id}
+                              className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                            >
+                              <span>
+                                {c.txnDate || "—"} · {c.accountCode} · {c.description || "(no desc)"} ·{" "}
+                                {formatMinor(c.debitMinor)} AED
+                              </span>
+                              <Button
+                                size="sm"
+                                data-testid={`expense-pick-bank-${c.id}`}
+                                disabled={acting === `link:${r.id}`}
+                                onClick={() =>
+                                  void linkBank(r.id, c.id, r.status === "approved")
+                                }
+                              >
+                                Use this line
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {r.bankTxnId && r.status !== "approved" ? (
+                        <Button
+                          className="mt-2"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void linkBank(r.id, null, false)}
+                        >
+                          Clear link
+                        </Button>
+                      ) : null}
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
               ))
             )}
           </tbody>

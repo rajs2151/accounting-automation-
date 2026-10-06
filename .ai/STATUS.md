@@ -2,7 +2,10 @@
 
 ## Now
 - Phase: 3 (Expenses) on feat/books-phase1 — Stream A
-- Current task: P3-2 PASS — next P3-3 paid-from bank match
+- Current task: P3-3 PASS — Phase 3 expenses core closed; goldens/UI polish deferred
+- 2026-10-06: P3-3 PASS — paid-from bank/card match (link before approve or later); no double journal
+- 2026-10-06: P3-2 PASS — submit/approve/reject dual-control EXP journal
+- 2026-10-06: P3-1 PASS — expenses draft schema + UI
 - 2026-10-06: P2A-6 PASS — bulk preview/post, Rules page, transfer auto-link; Phase 2 Stream A closed
 - 2026-10-06: P2A-5 PASS — materialize requires balance_ok; top-bar period shows label
 - 2026-10-06: P2A-4 PASS — card repayment / gateway payout + group net-zero; Unmatched→post e2e
@@ -42,9 +45,10 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b · C2-1 · C1b-2 · C2-2 · C3-1 · C3-2 · C3-3 · P2A-1..6
-2. P3-1 draft expenses → P3-2 approve/reject → P3-3 paid-from match
+2. (done) P3-1 draft → P3-2 approve/reject → P3-3 paid-from match
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
-4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
+4. Phase 3 follow-ups: receipt upload UI, golden v3 expenses, SideDrawer polish
+5. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -102,3 +106,4 @@
 - 2026-10-06 | P2A-6 | PASS | bulk journal preview+post; /books/rules; auto-link transfers; Phase 2 A close
 - 2026-10-06 | P3-1 | PASS | db/55 expenses draft + EXP voucher + /books/expenses UI; unit 2/2
 - 2026-10-06 | P3-2 | PASS | submit/approve/reject/resubmit; dual-control EXP journal; VAT-in-cost without TRN
+- 2026-10-06 | P3-3 | PASS | bank/card paid-from match; link before approve or later; unique bank_txn; unit 7/7

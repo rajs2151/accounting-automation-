@@ -33,6 +33,7 @@ export type ExpenseRow = {
   paidFromKind: PaidFromKind | null;
   paidFromAccountId: string | null;
   paidFromAccountCode: string | null;
+  bankTxnId: string | null;
   netMinor: number;
   vatMinor: number;
   grossMinor: number;
@@ -102,6 +103,7 @@ function mapExpense(r: Record<string, unknown>): ExpenseRow {
       : r.paidFromAccountCode
         ? String(r.paidFromAccountCode)
         : null,
+    bankTxnId: r.bank_txn_id || r.bankTxnId ? String(r.bank_txn_id ?? r.bankTxnId) : null,
     netMinor: Number(r.net_minor ?? r.netMinor ?? 0),
     vatMinor: Number(r.vat_minor ?? r.vatMinor ?? 0),
     grossMinor: Number(r.gross_minor ?? r.grossMinor ?? 0),
@@ -823,6 +825,17 @@ export async function approveAndPostBooksExpense(
     await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
     const lines = await loadExpenseLines(db, clientId, id);
     if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
+    const bankTxnId = row.bank_txn_id ? String(row.bank_txn_id) : null;
+    if (bankTxnId) {
+      await assertBankTxnMatchesExpense(db, {
+        clientId,
+        bankTxnId,
+        expenseId: id,
+        paidFromAccountId: String(row.paid_from_account_id),
+        paidFromKind: String(row.paid_from_kind || ""),
+        grossMinor: Number(row.gross_minor),
+      });
+    }
     const journalLines = await buildExpenseJournalLines(db, clientId, row, lines);
     return {
       row,
@@ -856,6 +869,21 @@ export async function approveAndPostBooksExpense(
   const posted = await postBooksJournal(userId, clientId, created.id);
 
   const expense = await withUser(userId, async (db) => {
+    const bankTxnId = prepared.row.bank_txn_id
+      ? String(prepared.row.bank_txn_id)
+      : null;
+    if (bankTxnId) {
+      await assertAndMarkBankTxnPosted(db, {
+        clientId,
+        bankTxnId,
+        expenseId: id,
+        journalEntryId: created.id,
+        paidFromAccountId: String(prepared.row.paid_from_account_id),
+        paidFromKind: String(prepared.row.paid_from_kind || ""),
+        grossMinor: Number(prepared.row.gross_minor),
+        actor: userId,
+      });
+    }
     const updated = await db.query(
       `UPDATE books_expenses SET
          status = 'approved',
@@ -878,12 +906,273 @@ export async function approveAndPostBooksExpense(
         status: "approved",
         journalEntryId: created.id,
         entryNo: posted.entryNo,
+        bankTxnId,
       },
     });
     return mapExpense(updated.rows[0]);
   });
 
   return { ...expense, journalEntryId: created.id, entryNo: posted.entryNo };
+}
+
+const MATCH_DATE_WINDOW_DAYS = 14;
+
+export type ExpenseBankCandidate = {
+  id: string;
+  txnDate: string | null;
+  description: string;
+  debitMinor: number;
+  accountId: string;
+  accountCode: string | null;
+  reviewStatus: string;
+};
+
+async function assertBankTxnMatchesExpense(
+  db: PoolClient,
+  opts: {
+    clientId: string;
+    bankTxnId: string;
+    expenseId: string;
+    paidFromAccountId: string;
+    paidFromKind: string;
+    grossMinor: number;
+  },
+) {
+  if (!["bank", "card"].includes(opts.paidFromKind)) {
+    throw new BooksError("bank_match_only_for_bank_or_card", "invalid");
+  }
+  const txn = await db.query(
+    `SELECT t.*, a.code AS account_code
+     FROM books_bank_transactions t
+     JOIN books_accounts a ON a.id = t.account_id
+     WHERE t.id = $1 AND t.client_id = $2`,
+    [opts.bankTxnId, opts.clientId],
+  );
+  if (!txn.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+  const row = txn.rows[0];
+  if (String(row.review_status) === "posted") {
+    throw new BooksError("bank_txn_already_posted", "conflict");
+  }
+  if (String(row.review_status) === "excluded") {
+    throw new BooksError("bank_txn_excluded", "conflict");
+  }
+  if (String(row.account_id) !== opts.paidFromAccountId) {
+    throw new BooksError("bank_txn_account_mismatch", "invalid");
+  }
+  const debit = Number(row.debit_minor || 0);
+  if (debit <= 0) throw new BooksError("bank_txn_not_outflow", "invalid");
+  if (debit !== opts.grossMinor) throw new BooksError("bank_txn_amount_mismatch", "invalid");
+  if (row.journal_entry_id) throw new BooksError("bank_txn_already_posted", "conflict");
+
+  const taken = await db.query(
+    `SELECT id FROM books_expenses
+     WHERE client_id = $1 AND bank_txn_id = $2 AND deleted_at IS NULL AND id <> $3`,
+    [opts.clientId, opts.bankTxnId, opts.expenseId],
+  );
+  if (taken.rowCount) throw new BooksError("bank_txn_already_linked", "conflict");
+
+  return row;
+}
+
+async function assertAndMarkBankTxnPosted(
+  db: PoolClient,
+  opts: {
+    clientId: string;
+    bankTxnId: string;
+    expenseId: string;
+    journalEntryId: string;
+    paidFromAccountId: string;
+    paidFromKind: string;
+    grossMinor: number;
+    actor: string;
+  },
+) {
+  await assertBankTxnMatchesExpense(db, opts);
+  await db.query(
+    `UPDATE books_bank_transactions SET
+       review_status = 'posted',
+       journal_entry_id = $3,
+       posted_by = $4,
+       posted_at = now(),
+       updated_at = now()
+     WHERE id = $1 AND client_id = $2
+       AND review_status IN ('needs_review', 'ready')`,
+    [opts.bankTxnId, opts.clientId, opts.journalEntryId, opts.actor],
+  );
+  await writeBooksAudit(db, {
+    clientId: opts.clientId,
+    actor: opts.actor,
+    action: "link_expense_bank_txn",
+    entity: "books_bank_transaction",
+    entityId: opts.bankTxnId,
+    after: {
+      review_status: "posted",
+      journalEntryId: opts.journalEntryId,
+      expenseId: opts.expenseId,
+    },
+  });
+}
+
+/** Link (or clear) a bank/card outflow on a draft/pending expense. */
+export async function linkBooksExpenseBankTxn(
+  userId: string,
+  clientId: string,
+  id: string,
+  bankTxnId: string | null,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (!["draft", "pending", "rejected"].includes(String(row.status))) {
+      throw new BooksError("expense_not_linkable", "conflict");
+    }
+    const kind = String(row.paid_from_kind || "");
+    if (bankTxnId) {
+      if (!row.paid_from_account_id) throw new BooksError("paid_from_required", "invalid");
+      await assertBankTxnMatchesExpense(db, {
+        clientId,
+        bankTxnId,
+        expenseId: id,
+        paidFromAccountId: String(row.paid_from_account_id),
+        paidFromKind: kind,
+        grossMinor: Number(row.gross_minor),
+      });
+    }
+    const updated = await db.query(
+      `UPDATE books_expenses SET bank_txn_id = $3, updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, bankTxnId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: bankTxnId ? "set_expense_bank_txn" : "clear_expense_bank_txn",
+      entity: "books_expense",
+      entityId: id,
+      before: { bank_txn_id: row.bank_txn_id },
+      after: { bankTxnId },
+    });
+    return mapExpense(updated.rows[0]);
+  });
+}
+
+/** Candidate outflows on the paid-from account (±14 days, amount = gross). */
+export async function listBooksExpenseBankCandidates(
+  userId: string,
+  clientId: string,
+  id: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasExpensesTable(db))) return [];
+    const exp = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!exp.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = exp.rows[0];
+    const kind = String(row.paid_from_kind || "");
+    if (!["bank", "card"].includes(kind) || !row.paid_from_account_id) return [];
+
+    const rows = await db.query(
+      `SELECT t.id, t.txn_date, t.description, t.debit_minor, t.account_id, t.review_status,
+              a.code AS account_code
+       FROM books_bank_transactions t
+       JOIN books_accounts a ON a.id = t.account_id
+       WHERE t.client_id = $1
+         AND t.account_id = $2
+         AND t.debit_minor = $3
+         AND t.credit_minor = 0
+         AND t.review_status IN ('needs_review', 'ready')
+         AND t.journal_entry_id IS NULL
+         AND t.txn_date BETWEEN ($4::date - $5::int) AND ($4::date + $5::int)
+         AND NOT EXISTS (
+           SELECT 1 FROM books_expenses e
+           WHERE e.bank_txn_id = t.id AND e.deleted_at IS NULL AND e.id <> $6
+         )
+       ORDER BY abs(t.txn_date - $4::date), t.txn_date DESC
+       LIMIT 25`,
+      [
+        clientId,
+        row.paid_from_account_id,
+        Number(row.gross_minor),
+        row.expense_date,
+        MATCH_DATE_WINDOW_DAYS,
+        id,
+      ],
+    );
+    return rows.rows.map(
+      (r): ExpenseBankCandidate => ({
+        id: String(r.id),
+        txnDate: isoDate(r.txn_date),
+        description: String(r.description || ""),
+        debitMinor: Number(r.debit_minor),
+        accountId: String(r.account_id),
+        accountCode: r.account_code ? String(r.account_code) : null,
+        reviewStatus: String(r.review_status),
+      }),
+    );
+  });
+}
+
+/**
+ * After approve with no bank line yet: match a later statement outflow to the expense journal
+ * (marks the bank txn posted — does not create a second journal).
+ */
+export async function matchApprovedExpenseToBankTxn(
+  userId: string,
+  clientId: string,
+  id: string,
+  bankTxnId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.status) !== "approved") {
+      throw new BooksError("expense_not_approved", "conflict");
+    }
+    if (!row.journal_entry_id) throw new BooksError("expense_missing_journal", "conflict");
+    if (row.bank_txn_id) throw new BooksError("expense_already_matched", "conflict");
+    if (!row.paid_from_account_id) throw new BooksError("paid_from_required", "invalid");
+
+    await assertAndMarkBankTxnPosted(db, {
+      clientId,
+      bankTxnId,
+      expenseId: id,
+      journalEntryId: String(row.journal_entry_id),
+      paidFromAccountId: String(row.paid_from_account_id),
+      paidFromKind: String(row.paid_from_kind || ""),
+      grossMinor: Number(row.gross_minor),
+      actor: userId,
+    });
+
+    const updated = await db.query(
+      `UPDATE books_expenses SET bank_txn_id = $3, updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, bankTxnId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "match_expense_bank_txn",
+      entity: "books_expense",
+      entityId: id,
+      after: { bankTxnId, journalEntryId: row.journal_entry_id },
+    });
+    return mapExpense(updated.rows[0]);
+  });
 }
 
 /** Soft-delete draft only. */

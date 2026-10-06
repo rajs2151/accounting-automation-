@@ -70,7 +70,10 @@ import {
   approveAndPostBooksExpense,
   createBooksExpense,
   getBooksExpense,
+  linkBooksExpenseBankTxn,
+  listBooksExpenseBankCandidates,
   listBooksExpenses,
+  matchApprovedExpenseToBankTxn,
   rejectBooksExpense,
   resubmitBooksExpense,
   softDeleteBooksExpenseDraft,
@@ -472,6 +475,11 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "expenses" && path.length === 2) {
       return NextResponse.json(await getBooksExpense(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "expenses" && path[2] === "bank-candidates" && path.length === 3) {
+      return NextResponse.json(
+        await listBooksExpenseBankCandidates(session.userId, session.clientId, path[1]),
+      );
     }
     if (path[0] === "bank-rules" && path[2] === "preview" && path.length === 3) {
       return NextResponse.json(
@@ -905,6 +913,25 @@ export async function POST(request: Request, ctx: Ctx) {
     }
     if (path[0] === "expenses" && path[2] === "resubmit" && path.length === 3) {
       return NextResponse.json(await resubmitBooksExpense(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "expenses" && path[2] === "link-bank" && path.length === 3) {
+      const bankTxnId =
+        body.bankTxnId === undefined || body.bankTxnId === null || body.bankTxnId === ""
+          ? null
+          : String(body.bankTxnId);
+      return NextResponse.json(
+        await linkBooksExpenseBankTxn(session.userId, session.clientId, path[1], bankTxnId),
+      );
+    }
+    if (path[0] === "expenses" && path[2] === "match-bank" && path.length === 3) {
+      return NextResponse.json(
+        await matchApprovedExpenseToBankTxn(
+          session.userId,
+          session.clientId,
+          path[1],
+          String(body.bankTxnId || ""),
+        ),
+      );
     }
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
       const applyAdvanceOriginalMinor =
