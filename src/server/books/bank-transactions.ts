@@ -308,6 +308,76 @@ export async function materializeBooksBankTransactions(
   });
 }
 
+/**
+ * Auto-link unique opposite-amount pairs across different accounts (±3 days).
+ * Only when exactly one counterpart exists; sets txn_type=transfer on both.
+ */
+export async function autoLinkTransferPairs(userId: string, clientId: string) {
+  if (!(await withUser(userId, (db) => hasLinkedTxnColumn(db)))) {
+    return { linked: 0 };
+  }
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const outs = await db.query(
+      `SELECT id, account_id, debit_minor, credit_minor, txn_date, currency, linked_txn_id
+       FROM books_bank_transactions
+       WHERE client_id = $1
+         AND review_status IN ('needs_review', 'ready')
+         AND debit_minor > 0 AND credit_minor = 0
+         AND linked_txn_id IS NULL
+       ORDER BY txn_date NULLS LAST`,
+      [clientId],
+    );
+    let linked = 0;
+    for (const out of outs.rows) {
+      if (out.linked_txn_id) continue;
+      const amt = Number(out.debit_minor || 0);
+      const d = isoDate(out.txn_date);
+      const cands = await db.query(
+        `SELECT id FROM books_bank_transactions
+         WHERE client_id = $1
+           AND review_status IN ('needs_review', 'ready')
+           AND credit_minor = $2 AND debit_minor = 0
+           AND account_id <> $3
+           AND currency = $4
+           AND linked_txn_id IS NULL
+           AND ($5::date IS NULL OR txn_date BETWEEN $5::date - 3 AND $5::date + 3)`,
+        [clientId, amt, out.account_id, out.currency || "AED", d],
+      );
+      if ((cands.rowCount ?? 0) !== 1) continue;
+      const innId = String(cands.rows[0].id);
+      await db.query(
+        `UPDATE books_bank_transactions SET
+           linked_txn_id = $3,
+           txn_type = COALESCE(txn_type, 'transfer'),
+           updated_at = now()
+         WHERE client_id = $2 AND id = $1 AND linked_txn_id IS NULL`,
+        [out.id, clientId, innId],
+      );
+      await db.query(
+        `UPDATE books_bank_transactions SET
+           linked_txn_id = $3,
+           txn_type = COALESCE(txn_type, 'transfer'),
+           updated_at = now()
+         WHERE client_id = $2 AND id = $1 AND linked_txn_id IS NULL`,
+        [innId, clientId, out.id],
+      );
+      linked += 1;
+    }
+    if (linked > 0) {
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "auto_link_transfer_pairs",
+        entity: "books_bank_transactions",
+        entityId: clientId,
+        after: { linked },
+      });
+    }
+    return { linked };
+  });
+}
+
 export async function listBooksBankTransactions(
   userId: string,
   clientId: string,
@@ -323,6 +393,11 @@ export async function listBooksBankTransactions(
     await materializeBooksBankTransactions(userId, clientId, {
       accountId: opts?.accountId,
     });
+    try {
+      await autoLinkTransferPairs(userId, clientId);
+    } catch {
+      /* transfer link optional */
+    }
     // P2A-3: suggest type/category from rules (Needs Review, unset type only).
     try {
       const { applyBooksBankRuleSuggestions } = await import("@/server/books/bank-rules");
@@ -1682,6 +1757,324 @@ export async function postBooksBankTransaction(
   });
 
   return { id: txnId, journalEntryId, entryNo, settlementDocumentId, pairedTxnId };
+}
+
+export type BankTxnPreviewLine = {
+  accountId: string;
+  accountCode: string;
+  accountName: string;
+  debitMinor: number;
+  creditMinor: number;
+};
+
+export type BankTxnPostPreview = {
+  txnId: string;
+  description: string;
+  txnType: string | null;
+  voucherType: "Receipt" | "Payment" | "Contra" | "Journal";
+  amountMinor: number;
+  lines: BankTxnPreviewLine[];
+  balanced: boolean;
+  error?: string;
+};
+
+async function acctMeta(
+  db: {
+    query: (
+      sql: string,
+      params?: unknown[],
+    ) => Promise<{ rowCount: number | null; rows: Array<Record<string, unknown>> }>;
+  },
+  clientId: string,
+  accountId: string,
+): Promise<{ id: string; code: string; name: string } | null> {
+  const r = await db.query(
+    `SELECT id, code, name FROM books_accounts WHERE id = $1 AND client_id = $2`,
+    [accountId, clientId],
+  );
+  if (!r.rowCount) return null;
+  return {
+    id: String(r.rows[0].id),
+    code: String(r.rows[0].code),
+    name: String(r.rows[0].name),
+  };
+}
+
+function previewLine(
+  acct: { id: string; code: string; name: string },
+  debitMinor: number,
+  creditMinor: number,
+): BankTxnPreviewLine {
+  return {
+    accountId: acct.id,
+    accountCode: acct.code,
+    accountName: acct.name,
+    debitMinor,
+    creditMinor,
+  };
+}
+
+/** Dry-run journal lines for a Ready bank txn (no writes). */
+export async function previewBooksBankTransactionPost(
+  userId: string,
+  clientId: string,
+  txnId: string,
+): Promise<BankTxnPostPreview> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const txn = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    if (!txn.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const row = txn.rows[0];
+    const description = String(row.description || "");
+    const txnType = row.txn_type ? String(row.txn_type) : null;
+    const debit = Number(row.debit_minor || 0);
+    const credit = Number(row.credit_minor || 0);
+    const amountMinor = Math.max(debit, credit);
+    const bank = await acctMeta(db, clientId, String(row.account_id));
+    if (!bank) {
+      return {
+        txnId,
+        description,
+        txnType,
+        voucherType: "Journal",
+        amountMinor,
+        lines: [],
+        balanced: false,
+        error: "account_not_found",
+      };
+    }
+
+    const fail = (error: string, voucherType: BankTxnPostPreview["voucherType"] = "Journal") => ({
+      txnId,
+      description,
+      txnType,
+      voucherType,
+      amountMinor,
+      lines: [] as BankTxnPreviewLine[],
+      balanced: false,
+      error,
+    });
+
+    if (String(row.review_status) !== "ready") return fail("bank_txn_not_ready");
+
+    const finish = (voucherType: BankTxnPostPreview["voucherType"], lines: BankTxnPreviewLine[]) => {
+      const dr = lines.reduce((s, l) => s + l.debitMinor, 0);
+      const cr = lines.reduce((s, l) => s + l.creditMinor, 0);
+      return {
+        txnId,
+        description,
+        txnType,
+        voucherType,
+        amountMinor,
+        lines,
+        balanced: dr === cr && dr > 0,
+      };
+    };
+
+    if (txnType === "transfer") {
+      if (!row.linked_txn_id) return fail("transfer_link_required", "Contra");
+      const other = await db.query(
+        `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+        [row.linked_txn_id, clientId],
+      );
+      if (!other.rowCount) return fail("transfer_counterpart_missing", "Contra");
+      const counterpart = other.rows[0];
+      const out = isMoneyOut(row) ? row : isMoneyOut(counterpart) ? counterpart : null;
+      const inn = isMoneyIn(row) ? row : isMoneyIn(counterpart) ? counterpart : null;
+      if (!out || !inn) return fail("transfer_direction_mismatch", "Contra");
+      const amt = txnAmountMinor(out);
+      if (amt !== txnAmountMinor(inn) || amt <= 0) return fail("transfer_amount_mismatch", "Contra");
+      const from = await acctMeta(db, clientId, String(out.account_id));
+      const to = await acctMeta(db, clientId, String(inn.account_id));
+      if (!from || !to) return fail("account_not_found", "Contra");
+      return finish("Contra", [
+        previewLine(to, amt, 0),
+        previewLine(from, 0, amt),
+      ]);
+    }
+
+    if (txnType === "card_repayment") {
+      if (debit <= 0) return fail("match_amount_direction");
+      const payableId =
+        (row.category_account_id && String(row.category_account_id)) ||
+        (await accountIdByCode(db, clientId, CARD_PAYABLE_CODE));
+      const payable = payableId ? await acctMeta(db, clientId, payableId) : null;
+      if (!payable) return fail("card_payable_account_missing");
+      return finish("Journal", [previewLine(payable, debit, 0), previewLine(bank, 0, debit)]);
+    }
+
+    if (txnType === "gateway_payout") {
+      if (credit <= 0) return fail("match_amount_direction");
+      const clearingId =
+        (row.category_account_id && String(row.category_account_id)) ||
+        (await accountIdByCode(db, clientId, DEFAULT_GATEWAY_CLEARING_CODE));
+      const clearing = clearingId ? await acctMeta(db, clientId, clearingId) : null;
+      if (!clearing) return fail("gateway_clearing_account_missing");
+      return finish("Journal", [previewLine(bank, credit, 0), previewLine(clearing, 0, credit)]);
+    }
+
+    if (txnType === "customer_receipt" || txnType === "supplier_payment") {
+      const voucherType = txnType === "customer_receipt" ? "Receipt" : "Payment";
+      const bankAmt = txnType === "customer_receipt" ? credit : debit;
+      if (bankAmt <= 0) return fail("match_amount_direction", voucherType);
+
+      const controlCode = txnType === "customer_receipt" ? "1210" : "2110";
+      let controlId: string | null = null;
+      if (row.open_item_id) {
+        const oi = await db.query(
+          `SELECT oi.party_id, p.default_account_id
+           FROM books_open_items oi
+           LEFT JOIN books_parties p ON p.id = oi.party_id
+           WHERE oi.id = $1 AND oi.client_id = $2`,
+          [row.open_item_id, clientId],
+        );
+        if (oi.rowCount && oi.rows[0].default_account_id) {
+          controlId = String(oi.rows[0].default_account_id);
+        }
+      }
+      if (!controlId && row.category_account_id) controlId = String(row.category_account_id);
+      if (!controlId) controlId = await accountIdByCode(db, clientId, controlCode);
+      const control = controlId ? await acctMeta(db, clientId, controlId) : null;
+      if (!control) return fail("account_not_found", voucherType);
+
+      const lines: BankTxnPreviewLine[] =
+        txnType === "customer_receipt"
+          ? [previewLine(bank, bankAmt, 0), previewLine(control, 0, bankAmt)]
+          : [previewLine(control, bankAmt, 0), previewLine(bank, 0, bankAmt)];
+
+      if (await hasAllocTable(db)) {
+        const allocs = await db.query(
+          `SELECT alloc_kind, amount_original_minor, account_id
+           FROM books_bank_txn_allocations WHERE client_id = $1 AND bank_txn_id = $2`,
+          [clientId, txnId],
+        );
+        for (const a of allocs.rows) {
+          const kind = String(a.alloc_kind);
+          const amt = Number(a.amount_original_minor || 0);
+          if (!["bank_fee", "fx_difference", "discount"].includes(kind) || !a.account_id) continue;
+          const diffAcct = await acctMeta(db, clientId, String(a.account_id));
+          if (!diffAcct) continue;
+          if (kind === "discount") {
+            if (txnType === "customer_receipt") lines.push(previewLine(diffAcct, amt, 0));
+            else lines.push(previewLine(diffAcct, 0, amt));
+          } else if (txnType === "customer_receipt") {
+            lines.push(previewLine(diffAcct, amt, 0));
+          } else {
+            lines.push(previewLine(diffAcct, amt, 0));
+          }
+        }
+      }
+      return finish(voucherType, lines);
+    }
+
+    if (!row.category_account_id) return fail("category_account_required");
+    const cat = await acctMeta(db, clientId, String(row.category_account_id));
+    if (!cat) return fail("account_not_found");
+    const lines =
+      credit > 0
+        ? [previewLine(bank, credit, 0), previewLine(cat, 0, credit)]
+        : [previewLine(cat, debit, 0), previewLine(bank, 0, debit)];
+    return finish("Journal", lines);
+  });
+}
+
+export async function previewBooksBankTransactionsBulk(
+  userId: string,
+  clientId: string,
+  txnIds: string[],
+) {
+  const ids = [...new Set(txnIds.map(String).filter(Boolean))];
+  if (ids.length === 0) throw new BooksError("txn_ids_required", "invalid");
+  if (ids.length > 50) throw new BooksError("bulk_limit_exceeded", "invalid");
+  const previews: BankTxnPostPreview[] = [];
+  for (const id of ids) {
+    previews.push(await previewBooksBankTransactionPost(userId, clientId, id));
+  }
+  return {
+    previews,
+    allBalanced: previews.every((p) => p.balanced && !p.error),
+    count: previews.length,
+  };
+}
+
+export async function bulkMarkBooksBankTransactionsReviewed(
+  userId: string,
+  clientId: string,
+  txnIds: string[],
+) {
+  const ids = [...new Set(txnIds.map(String).filter(Boolean))];
+  if (ids.length === 0) throw new BooksError("txn_ids_required", "invalid");
+  if (ids.length > 50) throw new BooksError("bulk_limit_exceeded", "invalid");
+  const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+  for (const id of ids) {
+    try {
+      await markBooksBankTransactionReviewed(userId, clientId, id);
+      results.push({ id, ok: true });
+    } catch (e) {
+      results.push({
+        id,
+        ok: false,
+        error: e instanceof BooksError ? e.message : "mark_reviewed_failed",
+      });
+    }
+  }
+  return {
+    results,
+    marked: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+  };
+}
+
+/** Approver posts selected Ready rows after preview. Dual control enforced per row. */
+export async function bulkPostBooksBankTransactions(
+  approverId: string,
+  clientId: string,
+  txnIds: string[],
+) {
+  const ids = [...new Set(txnIds.map(String).filter(Boolean))];
+  if (ids.length === 0) throw new BooksError("txn_ids_required", "invalid");
+  if (ids.length > 50) throw new BooksError("bulk_limit_exceeded", "invalid");
+
+  // Skip transfer counterparts already posted by pairing.
+  const postedPair = new Set<string>();
+  const results: Array<{
+    id: string;
+    ok: boolean;
+    entryNo?: string;
+    journalEntryId?: string;
+    error?: string;
+  }> = [];
+
+  for (const id of ids) {
+    if (postedPair.has(id)) {
+      results.push({ id, ok: true, entryNo: "(paired)" });
+      continue;
+    }
+    try {
+      const posted = await postBooksBankTransaction(approverId, clientId, id);
+      if (posted.pairedTxnId) postedPair.add(posted.pairedTxnId);
+      results.push({
+        id,
+        ok: true,
+        entryNo: posted.entryNo,
+        journalEntryId: posted.journalEntryId,
+      });
+    } catch (e) {
+      results.push({
+        id,
+        ok: false,
+        error: e instanceof BooksError ? e.message : "post_failed",
+      });
+    }
+  }
+  return {
+    results,
+    posted: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+  };
 }
 
 /** Exported for unit tests of eligibility without DB. */

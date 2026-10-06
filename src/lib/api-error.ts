@@ -53,6 +53,8 @@ const MESSAGES: Record<string, string> = {
     "Payment gateway clearing (1310) is missing from the chart of accounts.",
   gateway_payout_not_balanced:
     "This payout group does not net to zero on gateway clearing. Fix the group before posting.",
+  txn_ids_required: "Select at least one transaction.",
+  bulk_limit_exceeded: "You can only bulk-process 50 transactions at a time.",
   void_reason_required: "Give a reason for voiding this document.",
   void_requires_posted: "Only posted documents can be voided.",
   already_void: "This document is already void.",

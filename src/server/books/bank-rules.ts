@@ -266,3 +266,87 @@ export async function applyBooksBankRuleSuggestions(
     return { updated };
   });
 }
+
+export async function updateBooksBankRule(
+  userId: string,
+  clientId: string,
+  ruleId: string,
+  body: Partial<BankRuleDef> & { active?: boolean; priority?: number; name?: string },
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasRulesTable(db))) {
+      throw new BooksError("p2a_bank_rules_migration_required", "invalid");
+    }
+    const before = await db.query(
+      `SELECT * FROM books_bank_rules WHERE id = $1 AND client_id = $2`,
+      [ruleId, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("bank_rule_not_found", "not_found");
+    const cur = mapRule(before.rows[0]);
+    const name = body.name !== undefined ? String(body.name).trim() : cur.name;
+    if (!name) throw new BooksError("rule_name_required", "invalid");
+    if (body.narrationRegex) {
+      try {
+        void new RegExp(body.narrationRegex, "i");
+      } catch {
+        throw new BooksError("invalid_narration_regex", "invalid");
+      }
+    }
+    const updated = await db.query(
+      `UPDATE books_bank_rules SET
+         name = $3,
+         priority = $4,
+         active = $5,
+         counterparty_contains = $6,
+         narration_regex = $7,
+         amount_min_minor = $8,
+         amount_max_minor = $9,
+         account_id = $10,
+         direction = $11,
+         set_txn_type = $12,
+         set_category_account_id = $13,
+         set_vat_code = $14,
+         set_tags = $15::text[],
+         set_counterparty = $16,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [
+        ruleId,
+        clientId,
+        name,
+        body.priority ?? cur.priority,
+        body.active !== undefined ? Boolean(body.active) : cur.active,
+        body.counterpartyContains !== undefined
+          ? body.counterpartyContains || null
+          : cur.counterpartyContains,
+        body.narrationRegex !== undefined ? body.narrationRegex || null : cur.narrationRegex,
+        body.amountMinMinor !== undefined ? body.amountMinMinor : cur.amountMinMinor,
+        body.amountMaxMinor !== undefined ? body.amountMaxMinor : cur.amountMaxMinor,
+        body.accountId !== undefined ? body.accountId || null : cur.accountId,
+        body.direction !== undefined ? body.direction || null : cur.direction,
+        body.setTxnType !== undefined ? body.setTxnType || null : cur.setTxnType,
+        body.setCategoryAccountId !== undefined
+          ? body.setCategoryAccountId || null
+          : cur.setCategoryAccountId,
+        body.setVatCode !== undefined ? body.setVatCode || null : cur.setVatCode,
+        body.setTags !== undefined ? body.setTags : cur.setTags,
+        body.setCounterparty !== undefined
+          ? body.setCounterparty || null
+          : cur.setCounterparty,
+      ],
+    );
+    const rule = mapRule(updated.rows[0]);
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "update_bank_rule",
+      entity: "books_bank_rule",
+      entityId: ruleId,
+      before: { name: cur.name, priority: cur.priority, active: cur.active },
+      after: { name: rule.name, priority: rule.priority, active: rule.active },
+    });
+    return rule;
+  });
+}

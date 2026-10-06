@@ -64,6 +64,7 @@ import {
   createBooksBankRuleFromTxn,
   listBooksBankRules,
   previewBooksBankRule,
+  updateBooksBankRule,
 } from "@/server/books/bank-rules";
 import {
   excludeBooksBankTransaction,
@@ -76,6 +77,10 @@ import {
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  previewBooksBankTransactionPost,
+  previewBooksBankTransactionsBulk,
+  bulkMarkBooksBankTransactionsReviewed,
+  bulkPostBooksBankTransactions,
   rejectBooksBankTxnMatchSuggestion,
   setBooksBankTxnAllocations,
   unlinkBooksBankTransferPair,
@@ -452,6 +457,11 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "bank-transactions" && path[2] === "match-candidates" && path.length === 3) {
       return NextResponse.json(
         await listBooksBankTxnMatchCandidates(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "post-preview" && path.length === 3) {
+      return NextResponse.json(
+        await previewBooksBankTransactionPost(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "bank-transactions" && path[2] === "transfer-candidates" && path.length === 3) {
@@ -986,6 +996,45 @@ export async function POST(request: Request, ctx: Ctx) {
         }),
       );
     }
+    if (path[0] === "bank-rules" && path.length === 2 && path[1] !== "from-txn") {
+      return NextResponse.json(
+        await updateBooksBankRule(session.userId, session.clientId, path[1], {
+          name: body.name !== undefined ? String(body.name) : undefined,
+          priority: body.priority != null ? Number(body.priority) : undefined,
+          active: body.active !== undefined ? Boolean(body.active) : undefined,
+          counterpartyContains:
+            body.counterpartyContains === undefined
+              ? undefined
+              : body.counterpartyContains
+                ? String(body.counterpartyContains)
+                : null,
+          narrationRegex:
+            body.narrationRegex === undefined
+              ? undefined
+              : body.narrationRegex
+                ? String(body.narrationRegex)
+                : null,
+          setTxnType:
+            body.setTxnType === undefined
+              ? undefined
+              : body.setTxnType
+                ? String(body.setTxnType)
+                : null,
+          setCategoryAccountId:
+            body.setCategoryAccountId === undefined
+              ? undefined
+              : body.setCategoryAccountId
+                ? String(body.setCategoryAccountId)
+                : null,
+          direction:
+            body.direction === undefined
+              ? undefined
+              : body.direction === "in" || body.direction === "out"
+                ? body.direction
+                : null,
+        }),
+      );
+    }
     if (path[0] === "bank-rules" && path[1] === "from-txn" && path.length === 2) {
       return NextResponse.json(
         await createBooksBankRuleFromTxn(session.userId, session.clientId, String(body.txnId || ""), {
@@ -1064,6 +1113,24 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "bank-transactions" && path[2] === "post" && path.length === 3) {
       return NextResponse.json(
         await postBooksBankTransaction(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[1] === "bulk-mark-reviewed" && path.length === 2) {
+      const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+      return NextResponse.json(
+        await bulkMarkBooksBankTransactionsReviewed(session.userId, session.clientId, ids),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[1] === "bulk-preview" && path.length === 2) {
+      const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+      return NextResponse.json(
+        await previewBooksBankTransactionsBulk(session.userId, session.clientId, ids),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[1] === "bulk-post" && path.length === 2) {
+      const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+      return NextResponse.json(
+        await bulkPostBooksBankTransactions(session.userId, session.clientId, ids),
       );
     }
     if (path[0] === "statements" && path[1] === "csv" && path.length === 2) {
