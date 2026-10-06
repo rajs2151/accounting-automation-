@@ -44,7 +44,16 @@ type InboxRow = {
   status: string;
   error: string | null;
   detectedType: string | null;
+  intendedType?: string | null;
 };
+
+function isPurchaseUpload(u: InboxRow): boolean {
+  const t = String(u.intendedType || u.detectedType || "").toLowerCase();
+  if (!t) return true;
+  if (t.includes("bank") || t.includes("statement")) return false;
+  if (t.includes("sales")) return false;
+  return t.includes("purchase") || t.includes("bill");
+}
 
 type Tab = "all" | "needs_review" | "uploads";
 
@@ -79,7 +88,9 @@ export default function PurchasesPage() {
       setParties(pts);
       if (!form.partyId && pts[0]) setForm((f) => ({ ...f, partyId: pts[0].id }));
     }
-    if (Array.isArray(inbox)) setUploads(inbox);
+    if (Array.isArray(inbox)) {
+      setUploads(inbox.filter((u: InboxRow) => isPurchaseUpload(u)));
+    }
     setSelectedDocs(new Set());
     setSelectedUploads(new Set());
   }, [form.partyId]);

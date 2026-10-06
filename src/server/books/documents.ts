@@ -41,6 +41,10 @@ export type DocumentInput = {
   fxRateScaled?: number;
   documentNumber?: string | null;
   memo?: string;
+  /** C1b: required when recording a sales invoice manually (no upload/extraction). */
+  manualRecordReason?: string | null;
+  /** Set to "manual" from the Sales "Record manually" UI (not inbox confirm / fixtures). */
+  recordSource?: "manual" | "upload" | "test" | null;
   originalDocumentId?: string | null;
   periodId: string;
   lines: DocLineInput[];
@@ -162,9 +166,11 @@ export async function listBooksDocuments(
               d.due_date AS "dueDate", d.currency, d.gross_minor AS "grossMinor",
               d.aed_total_minor AS "aedTotalMinor", d.vat_minor AS "vatMinor",
               d.journal_entry_id AS "journalEntryId", d.defer_revenue AS "deferRevenue",
-              p.name AS "partyName", p.id AS "partyId"
+              p.name AS "partyName", p.id AS "partyId",
+              oi.open_aed_minor AS "outstandingMinor"
        FROM books_documents d
        LEFT JOIN books_parties p ON p.id = d.party_id
+       LEFT JOIN books_open_items oi ON oi.document_id = d.id AND oi.client_id = d.client_id
        WHERE d.client_id = $1 AND d.deleted_at IS NULL
          AND ($2::text IS NULL OR d.doc_type = $2)
          AND ($3::text IS NULL OR d.status = $3)
@@ -219,8 +225,25 @@ export async function getBooksDocument(userId: string, clientId: string, documen
 
 export async function createBooksDocument(userId: string, clientId: string, body: DocumentInput) {
   if (!body.lines?.length) throw new BooksError("lines_required", "invalid");
+  if (!body.partyId?.trim()) throw new BooksError("party_required", "invalid");
   const currency = (body.currency || "AED").toUpperCase();
   const fxRateScaled = body.fxRateScaled ?? 100000000;
+
+  // C1b record-only: Sales UI "Record manually" must send reason + printed invoice no.
+  // Inbox confirm (extractionId/fileId) and synthetic fixtures are exempt.
+  if (
+    body.docType === "sales_invoice" &&
+    body.recordSource === "manual" &&
+    !body.extractionId &&
+    !body.fileId
+  ) {
+    if (!body.documentNumber?.trim()) {
+      throw new BooksError("document_number_required", "invalid");
+    }
+    if (!body.manualRecordReason?.trim()) {
+      throw new BooksError("manual_record_requires_reason", "invalid");
+    }
+  }
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -316,6 +339,13 @@ export async function createBooksDocument(userId: string, clientId: string, body
     );
 
     const id = randomUUID();
+    const reason = body.manualRecordReason?.trim() || "";
+    const memo =
+      reason && !body.memo
+        ? `Manual record: ${reason}`
+        : reason && body.memo
+          ? `${body.memo}\nManual record: ${reason}`
+          : body.memo || "";
     await db.query(
       `INSERT INTO books_documents (
          id, client_id, doc_type, doc_kind, status, document_number, party_id,
@@ -348,7 +378,7 @@ export async function createBooksDocument(userId: string, clientId: string, body
         net,
         vat,
         gross,
-        body.memo || "",
+        memo,
         body.originalDocumentId || null,
         userId,
         printedNet,
@@ -398,7 +428,13 @@ export async function createBooksDocument(userId: string, clientId: string, body
       entity: "books_document",
       entityId: id,
       before: null,
-      after: { docType: body.docType, gross, defer },
+      after: {
+        docType: body.docType,
+        gross,
+        defer,
+        manualRecordReason: reason || null,
+        extractionId: body.extractionId || null,
+      },
     });
 
     const linesOut = await db.query(

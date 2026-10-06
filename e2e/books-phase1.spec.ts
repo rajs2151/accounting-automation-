@@ -216,6 +216,8 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Sales invoices" })).toBeVisible();
   await expect(page.getByText("Upload Invoices")).toBeVisible();
   await expect(page.getByRole("button", { name: /Record manually/i })).toBeVisible();
+  await expect(page.getByTestId("sales-uploads-tab")).toBeVisible();
+  await expect(page.getByTestId("sales-issue-date")).toBeVisible();
 
   await page.goto("/books/purchases");
   await expect(page.getByRole("heading", { name: "Purchase bills" })).toBeVisible();

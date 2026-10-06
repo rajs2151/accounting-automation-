@@ -5,6 +5,7 @@ import pg from "pg";
 import {
   approveAndPostBooksDocument,
   createBooksDocument,
+  listBooksDocuments,
   previewBooksDocumentJournal,
   softDeleteBooksDocumentDraft,
 } from "@/server/books/documents";
@@ -504,6 +505,101 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     assert.equal(sumDrAed, sumCrAed);
     assert.equal(preview.debitMinor, sumDrAed);
     assert.equal(preview.creditMinor, sumCrAed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C1b: manual sales requires invoice no + reason; outstanding ≤ gross", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "c1b-sales");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    assert.ok(periodId);
+    const customerId = await uniqueCustomer(clientId, `c1b-${Date.now()}`);
+
+    await assert.rejects(
+      () =>
+        createBooksDocument(OMAR, clientId, {
+          docType: "sales_invoice",
+          partyId: customerId,
+          issueDate: "2026-05-15",
+          periodId,
+          recordSource: "manual",
+          documentNumber: "INV-C1B-1",
+          lines: [
+            {
+              description: "Consulting",
+              lineKind: "revenue",
+              vatCode: "SR",
+              netMinor: 10000,
+              vatMinor: 500,
+            },
+          ],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof BooksError);
+        assert.match(String(err.message), /manual_record_requires_reason/);
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      () =>
+        createBooksDocument(OMAR, clientId, {
+          docType: "sales_invoice",
+          partyId: customerId,
+          issueDate: "2026-05-15",
+          periodId,
+          recordSource: "manual",
+          manualRecordReason: "client emailed",
+          lines: [
+            {
+              description: "Consulting",
+              lineKind: "revenue",
+              vatCode: "SR",
+              netMinor: 10000,
+              vatMinor: 500,
+            },
+          ],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof BooksError);
+        assert.match(String(err.message), /document_number_required/);
+        return true;
+      },
+    );
+
+    const doc = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: customerId,
+      issueDate: "2026-05-15",
+      periodId,
+      recordSource: "manual",
+      documentNumber: `INV-C1B-${Date.now()}`,
+      manualRecordReason: "client emailed PDF",
+      lines: [
+        {
+          description: "Consulting",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
+
+    const listed = await listBooksDocuments(OMAR, clientId, { docType: "sales_invoice" });
+    const row = listed.find((r: { id: string }) => String(r.id) === String(doc.id));
+    assert.ok(row);
+    const outstanding = Number(
+      (row as { outstandingMinor?: number | null }).outstandingMinor ?? 0,
+    );
+    const gross = Number((row as { grossMinor: number }).grossMinor);
+    assert.ok(outstanding <= gross, `outstanding ${outstanding} > gross ${gross}`);
   } finally {
     await admin.end().catch(() => undefined);
   }

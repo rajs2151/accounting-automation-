@@ -70,6 +70,7 @@ export async function listBooksInbox(
     const rows = await db.query(
       `SELECT i.id, i.client_id AS "clientId", i.file_id AS "fileId",
               i.detected_type AS "detectedType",
+              i.intended_type AS "intendedType",
               i.classification_confidence AS "classificationConfidence",
               i.status, i.error, i.created_at AS "createdAt",
               f.filename, f.sha256, f.content_type AS "contentType"

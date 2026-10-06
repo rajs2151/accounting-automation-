@@ -2,11 +2,12 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: next is C1b / C2 remaining
+- Current task: next is C2 remaining (bank accounts page, coverage/gaps)
+- 2026-10-06: C1b PASS — sales Uploads/tabs parity + manual record reason gate.
 - 2026-10-06: C1-3 PASS — Item/Accounting, Approve & Next, party mismatch, purchases tabs/bulk.
 - 2026-10-06: E1d PASS (71cde5b) — confirm/UI never invent SR; block until VAT picked.
 - 2026-10-06: E1c PASS (24a77ca) + UI-3-fix1 scroll/flags PASS (8e9b4f9). Queue:
-  **C1b | C2 remaining**
+  **C2 remaining**
 - 2026-10-05: E4 + E5 + UI-1..UI-4 PASS on feat/books-phase1 (pushed).
 - 2026-10-05 16:50 owner decisions on E2: (1) ambiguous multi-IBAN activity -> two statements, both needs_review,
   attribute by position, flag account_attribution_ambiguous, never 'ready'; (2) bank ground_truth filled from
@@ -28,8 +29,9 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3
-2. C1b sales record-only parity | C2 remaining (bank accounts page, coverage/gaps)
+1. (done) POC-001 · VERIFY-S1 · VERIFY-S1-FIX1 · C1-1 · C1-2 · TEST-ISO-1 · PYTEST-0 · E1-E5 · UI-1..UI-4 · E1c · UI-3-fix1 · E1d · C1-3 · C1b
+2. C2 remaining (bank accounts page, coverage/gaps)
+3. C1b follow-up: apply advance/credit on approve (deferred)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -71,3 +73,4 @@
 - 2026-10-06 | E1c | PASS (24a77ca) | UI-3-fix1 | PASS (8e9b4f9)
 - 2026-10-06 | E1d | PASS (71cde5b) | confirm blocks null vatCode; never invents SR
 - 2026-10-06 | C1-3 | PASS | review queue chrome + purchases bulk; Assign=route; Revert=soft-delete draft
+- 2026-10-06 | C1b | PASS | sales Uploads/tabs parity; manual record reason + invoice no gate
