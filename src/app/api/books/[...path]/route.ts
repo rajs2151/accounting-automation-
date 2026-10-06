@@ -681,6 +681,7 @@ export async function POST(request: Request, ctx: Ctx) {
               : undefined,
           issueDate: body.issueDate ? String(body.issueDate) : undefined,
           dueDate: body.dueDate === undefined ? undefined : body.dueDate ? String(body.dueDate) : null,
+          lines: Array.isArray(body.lines) ? body.lines : undefined,
         }),
       );
     }

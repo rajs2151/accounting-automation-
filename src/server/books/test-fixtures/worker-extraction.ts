@@ -37,11 +37,16 @@ export function workerInvoiceFieldsJson(opts: {
   grossMinor?: number;
   currency?: string;
   supplierTrn?: string;
-}): Record<string, WorkerField> {
+  /** Line VAT code from evidence; null = missing (confirm must be blocked). Default SR for legacy confirm tests. */
+  lineVatCode?: string | null;
+  /** When false, omit _line_items (confirm sees no lines). Default true. */
+  withLineItems?: boolean;
+}): Record<string, unknown> {
   const net = opts.netMinor ?? 10000;
   const vat = opts.vatMinor ?? 500;
   const gross = opts.grossMinor ?? net + vat;
-  return {
+  const lineVatCode = opts.lineVatCode === undefined ? "SR" : opts.lineVatCode;
+  const fields: Record<string, unknown> = {
     invoice_no: workerField(opts.invoiceNo),
     document_number: workerField(opts.invoiceNo),
     invoice_date: workerField(opts.invoiceDate ?? "2026-05-15"),
@@ -53,4 +58,17 @@ export function workerInvoiceFieldsJson(opts: {
     gross: workerField(gross),
     grand_total: workerField(gross),
   };
+  if (opts.withLineItems !== false) {
+    fields._line_items = [
+      {
+        description: "Invoice total",
+        vatCode: lineVatCode,
+        vat_code: lineVatCode,
+        netMinor: net,
+        vatMinor: vat,
+        amount_minor: gross,
+      },
+    ];
+  }
+  return fields;
 }

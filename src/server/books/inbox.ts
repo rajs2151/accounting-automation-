@@ -402,6 +402,15 @@ export async function confirmInboxAsDocument(
     docType?: "sales_invoice" | "purchase_bill";
     issueDate?: string;
     dueDate?: string | null;
+    /** Optional line overrides from review UI (VAT codes the accountant picked). */
+    lines?: Array<{
+      description?: string;
+      vatCode?: string | null;
+      vat_code?: string | null;
+      netMinor?: number;
+      vatMinor?: number;
+      lineKind?: string;
+    }>;
   },
 ) {
   const review = await getBooksInboxReview(userId, clientId, inboxItemId);
@@ -439,20 +448,34 @@ export async function confirmInboxAsDocument(
     reroutedFrom = "purchase_bill";
   }
 
-  const lineItems = (review.lineItems || []) as Array<{
+  type ConfirmLine = {
     description?: string;
-    vatCode?: string;
+    vatCode?: string | null;
+    vat_code?: string | null;
     netMinor?: number;
     vatMinor?: number;
     lineKind?: string;
-  }>;
+  };
+
+  // Optional UI override (accountant picked VAT codes). Never invent SR here.
+  const overrideLines = Array.isArray(body.lines) ? (body.lines as ConfirmLine[]) : null;
+  const sourceLines = (overrideLines && overrideLines.length > 0
+    ? overrideLines
+    : (review.lineItems || [])) as ConfirmLine[];
+
+  function normalizeVatCode(raw: unknown): string | null {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    return s ? s : null;
+  }
+
   const lines =
-    lineItems.length > 0
-      ? lineItems.map((l) => ({
+    sourceLines.length > 0
+      ? sourceLines.map((l) => ({
           description: l.description || "Line",
           lineKind: (l.lineKind as "revenue" | "expense" | "disbursement") ||
             (docType === "purchase_bill" ? "expense" : "revenue"),
-          vatCode: l.vatCode || "SR",
+          vatCode: normalizeVatCode(l.vatCode ?? l.vat_code),
           netMinor: Number(l.netMinor || 0),
           vatMinor: Number(l.vatMinor || 0),
         }))
@@ -460,11 +483,26 @@ export async function confirmInboxAsDocument(
           {
             description: "Extracted line",
             lineKind: (docType === "purchase_bill" ? "expense" : "revenue") as "expense" | "revenue",
-            vatCode: "SR",
+            // No evidence → null (never invent SR). Confirm is blocked below.
+            vatCode: null as string | null,
             netMinor: fieldMinorAlias(fields, ["subtotal", "net"]) ?? 0,
             vatMinor: fieldMinorAlias(fields, ["vat_total", "vat"]) ?? 0,
           },
         ];
+
+  const missingVat = lines
+    .map((l, i) => ({ i, ...l }))
+    .filter((l) => l.lineKind !== "disbursement" && !l.vatCode);
+  if (missingVat.length) {
+    const labels = missingVat
+      .map((l) => l.description || `line ${l.i + 1}`)
+      .slice(0, 5)
+      .join(", ");
+    throw new BooksError(
+      `vat_code_required: pick a VAT code before confirm (${labels})`,
+      "invalid",
+    );
+  }
 
   const invoiceDateRaw =
     fieldStrAlias(fields, ["invoice_date", "document_date"]);

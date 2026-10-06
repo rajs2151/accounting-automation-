@@ -7,6 +7,7 @@ import pg from "pg";
 
 import { BooksError } from "@/server/books/errors";
 import {
+  confirmInboxAsDocument,
   getBooksInboxReview,
   retryBooksInboxExtract,
   uploadBooksInboxFiles,
@@ -269,6 +270,100 @@ test("retry re-queues extract_document; does not write extraction fields", async
     [inboxId],
   );
   assert.equal(extractions.rows[0].n, 1, "web app must not add an extraction row on retry");
+
+  await admin.end();
+});
+
+test("E1d: confirm rejects null vatCode (never invents SR)", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+
+  const company = await createTestCompany(admin, "e1d-no-sr");
+  const clientId = company.clientId;
+  const periodId = company.periods["May 2026"];
+  assert.ok(periodId);
+
+  const { createBooksParty } = await import("@/server/books/parties");
+  const party = await createBooksParty(OMAR, clientId, {
+    partyType: "customer",
+    name: `E1d Cust ${Date.now()}`,
+    trn: null,
+  });
+  const partyId = String(party.id);
+
+  const fileId = randomUUID();
+  const inboxId = randomUUID();
+  const extractionId = randomUUID();
+  await admin.query(
+    `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+     VALUES ($1,$2,$3,$4,'e1d.pdf','application/pdf',100,$5)`,
+    [fileId, clientId, `e1d-${Date.now()}`, `books/${clientId}/${fileId}/e1d.pdf`, OMAR],
+  );
+  await admin.query(
+    `INSERT INTO books_inbox_items (id, client_id, file_id, detected_type, status)
+     VALUES ($1,$2,$3,'sales_invoice','needs_review')`,
+    [inboxId, clientId, fileId],
+  );
+  await admin.query(
+    `INSERT INTO books_extractions (
+       id, client_id, file_id, inbox_item_id, doc_type, status, fields_json, validation_flags
+     ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,'["vat_code_missing"]'::jsonb)`,
+    [
+      extractionId,
+      clientId,
+      fileId,
+      inboxId,
+      JSON.stringify(
+        workerInvoiceFieldsJson({
+          invoiceNo: "INV-E1D-NULL-VAT",
+          netMinor: 10000,
+          vatMinor: 0,
+          grossMinor: 10000,
+          lineVatCode: null,
+        }),
+      ),
+    ],
+  );
+
+  await assert.rejects(
+    () =>
+      confirmInboxAsDocument(OMAR, clientId, inboxId, {
+        partyId,
+        periodId,
+        docType: "sales_invoice",
+        issueDate: "2026-05-15",
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof BooksError);
+      assert.match(String(err.message), /vat_code_required/);
+      assert.doesNotMatch(String(err.message), /\bSR\b/);
+      return true;
+    },
+  );
+
+  // Explicit SR (evidence / accountant pick) still confirms.
+  const ok = await confirmInboxAsDocument(OMAR, clientId, inboxId, {
+    partyId,
+    periodId,
+    docType: "sales_invoice",
+    issueDate: "2026-05-15",
+    lines: [
+      {
+        description: "Invoice total",
+        vatCode: "SR",
+        netMinor: 10000,
+        vatMinor: 500,
+      },
+    ],
+  });
+  assert.ok(ok.documentId);
+
+  const lines = await admin.query(
+    `SELECT vat_code FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
+    [ok.documentId],
+  );
+  assert.ok(lines.rowCount && lines.rowCount >= 1);
+  assert.equal(lines.rows[0].vat_code, "SR");
 
   await admin.end();
 });

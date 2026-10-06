@@ -115,13 +115,23 @@ function moneyMinorFromDisplay(value: string | undefined): number | null {
 }
 
 function normalizeLines(items: ReviewPayload["lineItems"]) {
-  return (items || []).map((l, i) => ({
-    description: l.description || `Line ${i + 1}`,
-    vatCode: l.vatCode || "SR",
-    netMinor: Number(l.netMinor ?? l.amount_minor ?? 0),
-    vatMinor: Number(l.vatMinor ?? 0),
-  }));
+  return (items || []).map((l, i) => {
+    const raw =
+      l.vatCode ??
+      (l as { vat_code?: string | null }).vat_code ??
+      null;
+    const code = raw == null || String(raw).trim() === "" ? "" : String(raw).trim();
+    return {
+      description: l.description || `Line ${i + 1}`,
+      // Never invent SR — blank means accountant must pick before confirm.
+      vatCode: code,
+      netMinor: Number(l.netMinor ?? l.amount_minor ?? 0),
+      vatMinor: Number(l.vatMinor ?? 0),
+    };
+  });
 }
+
+const REVIEW_VAT_CODES = ["SR", "ZR", "EX", "OOS"] as const;
 
 function FieldGroup({
   eyebrow,
@@ -334,10 +344,25 @@ export default function InboxReviewPage() {
       toast.error(apiErrorMessage({ error: "party_and_period_required" }));
       return;
     }
+    const missingVat = lineItems.filter((l) => !l.vatCode?.trim());
+    if (missingVat.length) {
+      toast.error("Pick a VAT code for every line before confirm (do not assume 5%).");
+      return;
+    }
     const res = await fetch(`/api/books/inbox/${params.id}/confirm`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ partyId, periodId, docType: "sales_invoice" }),
+      body: JSON.stringify({
+        partyId,
+        periodId,
+        docType: "sales_invoice",
+        lines: lineItems.map((l) => ({
+          description: l.description,
+          vatCode: l.vatCode || null,
+          netMinor: l.netMinor,
+          vatMinor: l.vatMinor,
+        })),
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -711,10 +736,29 @@ export default function InboxReviewPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {lineItems.map((l) => (
-                    <tr key={l.description} className="border-t border-border">
+                  {lineItems.map((l, idx) => (
+                    <tr key={`${l.description}-${idx}`} className="border-t border-border">
                       <td className="py-1">{l.description}</td>
-                      <td>{l.vatCode}</td>
+                      <td>
+                        <select
+                          className="h-8 rounded-md border border-input bg-background px-1 text-xs"
+                          data-testid={`line-vat-${idx}`}
+                          value={l.vatCode}
+                          onChange={(e) => {
+                            const vatCode = e.target.value;
+                            setLineItems((prev) =>
+                              prev.map((row, i) => (i === idx ? { ...row, vatCode } : row)),
+                            );
+                          }}
+                        >
+                          <option value="">—</option>
+                          {REVIEW_VAT_CODES.map((code) => (
+                            <option key={code} value={code}>
+                              {code}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                       <td className="text-right tabular-nums">{formatMinor(l.netMinor)}</td>
                       <td className="text-right tabular-nums">{formatMinor(l.vatMinor)}</td>
                     </tr>
