@@ -101,7 +101,12 @@ import {
   lockBooksPeriod,
   reopenBooksPeriod,
 } from "@/server/books/periods";
-import { createContra, createReceiptOrPayment } from "@/server/books/settlements";
+import {
+  allocatePartyAdvance,
+  createContra,
+  createReceiptOrPayment,
+  getPartyAdvanceBalance,
+} from "@/server/books/settlements";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -270,6 +275,16 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "parties" && path[2] === "disbursement-net" && path.length === 3) {
       return NextResponse.json(
         await partyDisbursementNet(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "parties" && path[2] === "advances" && path.length === 3) {
+      return NextResponse.json(
+        await getPartyAdvanceBalance(
+          session.userId,
+          session.clientId,
+          path[1],
+          url.searchParams.get("currency") || "AED",
+        ),
       );
     }
     if (path[0] === "documents" && path.length === 1) {
@@ -669,8 +684,17 @@ export async function POST(request: Request, ctx: Ctx) {
       return NextResponse.json(await createBooksDocument(session.userId, session.clientId, body));
     }
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
+      const applyAdvanceOriginalMinor =
+        body.applyAdvanceOriginalMinor != null
+          ? Number(body.applyAdvanceOriginalMinor)
+          : undefined;
       return NextResponse.json(
-        await approveAndPostBooksDocument(session.userId, session.clientId, path[1]),
+        await approveAndPostBooksDocument(session.userId, session.clientId, path[1], {
+          applyAdvanceOriginalMinor:
+            applyAdvanceOriginalMinor != null && Number.isFinite(applyAdvanceOriginalMinor)
+              ? applyAdvanceOriginalMinor
+              : undefined,
+        }),
       );
     }
     if (path[0] === "documents" && path[2] === "ack-check-vat" && path.length === 3) {
@@ -712,6 +736,22 @@ export async function POST(request: Request, ctx: Ctx) {
           originalAmountMinor: Number(body.originalAmountMinor || 0),
           memo: body.memo ? String(body.memo) : undefined,
           allocations: Array.isArray(body.allocations) ? body.allocations : [],
+        }),
+      );
+    }
+    if (path[0] === "settlements" && path[1] === "allocate-advance" && path.length === 2) {
+      const OMAR = "55555555-5555-4555-8555-555555555555";
+      const preparerId = String(
+        body.preparerId || (session.userId === OMAR ? "" : OMAR) || session.userId,
+      );
+      return NextResponse.json(
+        await allocatePartyAdvance(preparerId, session.userId, session.clientId, {
+          partyId: String(body.partyId || ""),
+          openItemId: String(body.openItemId || ""),
+          periodId: String(body.periodId || ""),
+          issueDate: String(body.issueDate || ""),
+          amountOriginalMinor: Number(body.amountOriginalMinor || 0),
+          currency: body.currency ? String(body.currency) : undefined,
         }),
       );
     }

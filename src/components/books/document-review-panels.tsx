@@ -11,6 +11,9 @@ import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 type Doc = {
   id: string;
   status: string;
+  docType?: string;
+  partyId?: string | null;
+  issueDate?: string | null;
   netMinor: number;
   vatMinor: number;
   grossMinor: number;
@@ -63,6 +66,9 @@ export function DocumentReviewPanels({
   const [printedPaid, setPrintedPaid] = useState("");
   const [printedBalance, setPrintedBalance] = useState("");
   const [blockReason, setBlockReason] = useState<string | null>(null);
+  const [advanceBalanceMinor, setAdvanceBalanceMinor] = useState(0);
+  const [applyAdvance, setApplyAdvance] = useState(false);
+  const [applyAdvanceAed, setApplyAdvanceAed] = useState("");
 
   const load = useCallback(async () => {
     const [dRes, pRes] = await Promise.all([
@@ -81,6 +87,23 @@ export function DocumentReviewPanels({
     }
     setDoc(d as Doc);
     setPreview(p);
+    setApplyAdvance(false);
+    setApplyAdvanceAed("");
+    setAdvanceBalanceMinor(0);
+    if (d.docType === "sales_invoice" && d.partyId && d.status === "draft") {
+      const advRes = await fetch(
+        `/api/books/parties/${d.partyId}/advances?currency=${encodeURIComponent(d.currency || "AED")}`,
+      );
+      const adv = await advRes.json().catch(() => ({}));
+      if (advRes.ok) {
+        const bal = Number(adv.balanceOriginalMinor || 0);
+        setAdvanceBalanceMinor(bal);
+        if (bal > 0) {
+          const max = Math.min(bal, Number(d.grossMinor || 0));
+          setApplyAdvanceAed(formatMinor(max));
+        }
+      }
+    }
     setPrintedNet(d.printedNetMinor == null ? "" : formatMinor(d.printedNetMinor));
     setPrintedVat(d.printedVatMinor == null ? "" : formatMinor(d.printedVatMinor));
     setPrintedGross(d.printedGrossMinor == null ? "" : formatMinor(d.printedGrossMinor));
@@ -150,9 +173,27 @@ export function DocumentReviewPanels({
   }
 
   async function approve(opts?: { andNext?: boolean }) {
+    let applyAdvanceOriginalMinor: number | undefined;
+    if (applyAdvance && doc?.docType === "sales_invoice") {
+      try {
+        const n = displayToMinor(applyAdvanceAed);
+        if (n != null && n > 0) applyAdvanceOriginalMinor = n;
+      } catch {
+        toast.error("Invalid advance amount");
+        return;
+      }
+      if (applyAdvanceOriginalMinor != null) {
+        const max = Math.min(advanceBalanceMinor, Number(doc.grossMinor || 0));
+        if (applyAdvanceOriginalMinor > max) {
+          toast.error(`Advance apply cannot exceed ${formatMinor(max)}`);
+          return;
+        }
+      }
+    }
     const res = await fetch(`/api/books/documents/${documentId}/approve`, {
       method: "POST",
-      body: "{}",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ applyAdvanceOriginalMinor }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -160,7 +201,11 @@ export function DocumentReviewPanels({
       void load();
       return;
     }
-    toast.success(`Posted ${data.entryNo}`);
+    toast.success(
+      data.advanceAllocation
+        ? `Posted ${data.entryNo} · applied advance ${formatMinor(data.advanceAllocation.amountOriginalMinor)}`
+        : `Posted ${data.entryNo}`,
+    );
     if (opts?.andNext && onApprovedAndNext) {
       onApprovedAndNext();
       return;
@@ -340,6 +385,42 @@ export function DocumentReviewPanels({
             <Button size="sm" variant="outline" data-testid="ack-check-vat" onClick={() => void ackCheckVat()}>
               Acknowledge
             </Button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {doc.status === "draft" &&
+      doc.docType === "sales_invoice" &&
+      advanceBalanceMinor > 0 ? (
+        <section
+          className="space-y-2 rounded-lg border border-border p-3"
+          data-testid="apply-advance-panel"
+        >
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={applyAdvance}
+              onChange={(e) => setApplyAdvance(e.target.checked)}
+              data-testid="apply-advance-toggle"
+            />
+            <span>
+              Apply customer advance{" "}
+              <span className="text-muted-foreground">
+                (available {formatMinor(advanceBalanceMinor)}; off by default)
+              </span>
+            </span>
+          </label>
+          {applyAdvance ? (
+            <div>
+              <Label className="text-xs">Amount to apply</Label>
+              <Input
+                value={applyAdvanceAed}
+                onChange={(e) => setApplyAdvanceAed(e.target.value)}
+                inputMode="decimal"
+                data-testid="apply-advance-amount"
+              />
+            </div>
           ) : null}
         </section>
       ) : null}

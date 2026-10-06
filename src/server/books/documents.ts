@@ -206,6 +206,12 @@ export async function getBooksDocument(userId: string, clientId: string, documen
     const d = doc.rows[0];
     return {
       ...d,
+      id: String(d.id),
+      partyId: d.party_id == null ? null : String(d.party_id),
+      docType: String(d.doc_type),
+      issueDate: d.issue_date == null ? null : String(d.issue_date).slice(0, 10),
+      currency: String(d.currency || "AED"),
+      status: String(d.status),
       printedNetMinor: d.printed_net_minor == null ? null : Number(d.printed_net_minor),
       printedVatMinor: d.printed_vat_minor == null ? null : Number(d.printed_vat_minor),
       printedGrossMinor: d.printed_gross_minor == null ? null : Number(d.printed_gross_minor),
@@ -770,6 +776,7 @@ export async function approveAndPostBooksDocument(
   userId: string,
   clientId: string,
   documentId: string,
+  opts?: { applyAdvanceOriginalMinor?: number },
 ) {
   // Pre-checks + build lines inside one session, then create journal
   const prepared = await withUser(userId, async (db) => {
@@ -906,7 +913,59 @@ export async function approveAndPostBooksDocument(
     });
   });
 
-  return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
+  // C1b-2: optional apply of existing 2320 advance (never default). Dual control: preparer = creator.
+  let advanceAllocation: { entryNo: string; amountOriginalMinor: number } | null = null;
+  const applyRaw = opts?.applyAdvanceOriginalMinor;
+  if (
+    applyRaw != null &&
+    applyRaw > 0 &&
+    String(prepared.doc.doc_type) === "sales_invoice" &&
+    prepared.doc.party_id
+  ) {
+    const { allocatePartyAdvance, getPartyAdvanceBalance } = await import(
+      "@/server/books/settlements"
+    );
+    const currency = String(prepared.doc.currency || "AED");
+    const advance = await getPartyAdvanceBalance(
+      userId,
+      clientId,
+      String(prepared.doc.party_id),
+      currency,
+    );
+    const oi = await withUser(userId, async (db) => {
+      const row = await db.query(
+        `SELECT id, open_original_minor FROM books_open_items
+         WHERE document_id = $1 AND client_id = $2`,
+        [documentId, clientId],
+      );
+      return row.rowCount ? row.rows[0] : null;
+    });
+    if (!oi) throw new BooksError("open_item_not_found", "not_found");
+    const amount = Math.min(
+      applyRaw,
+      Number(advance.balanceOriginalMinor),
+      Number(oi.open_original_minor),
+      Number(prepared.doc.original_total_minor || prepared.doc.gross_minor),
+    );
+    if (amount > 0) {
+      const alloc = await allocatePartyAdvance(preparerId, userId, clientId, {
+        partyId: String(prepared.doc.party_id),
+        openItemId: String(oi.id),
+        periodId: prepared.periodId,
+        issueDate: String(prepared.doc.issue_date).slice(0, 10),
+        amountOriginalMinor: amount,
+        currency,
+      });
+      advanceAllocation = { entryNo: String(alloc.entryNo), amountOriginalMinor: amount };
+    }
+  }
+
+  return {
+    documentId,
+    journalEntryId: created.id,
+    entryNo: posted.entryNo,
+    advanceAllocation,
+  };
 }
 
 /**

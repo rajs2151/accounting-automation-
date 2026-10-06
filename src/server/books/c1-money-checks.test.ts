@@ -12,6 +12,7 @@ import {
 import { BooksError } from "@/server/books/errors";
 import { getBooksOpenItemKpis, listBooksOpenItems } from "@/server/books/open-items";
 import { createBooksParty } from "@/server/books/parties";
+import { createReceiptOrPayment } from "@/server/books/settlements";
 import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
@@ -505,6 +506,95 @@ test("C1-1 journal preview: matches posted lines; creates no rows; balances", as
     assert.equal(sumDrAed, sumCrAed);
     assert.equal(preview.debitMinor, sumDrAed);
     assert.equal(preview.creditMinor, sumCrAed);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("C1b-2: approve with applyAdvance reduces 2320 and open item; default leaves advance", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "c1b2-adv");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    assert.ok(periodId);
+    const customerId = await uniqueCustomer(clientId, `adv-${Date.now()}`);
+    const bank = (
+      await admin.query(
+        `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1120'`,
+        [clientId],
+      )
+    ).rows[0].id as string;
+
+    await createReceiptOrPayment(OMAR, LAYLA, clientId, {
+      docType: "receipt",
+      partyId: customerId,
+      issueDate: "2026-05-10",
+      periodId,
+      bankAccountId: String(bank),
+      originalAmountMinor: 5000,
+      allocations: [],
+    });
+
+    const invNoApply = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: customerId,
+      issueDate: "2026-05-12",
+      periodId,
+      documentNumber: `C1B2-NO-${Date.now()}`,
+      lines: [
+        {
+          description: "Svc",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(invNoApply.id));
+    const advAfterDefault = await admin.query(
+      `SELECT balance_original_minor FROM books_party_advances
+       WHERE client_id = $1 AND party_id = $2 AND currency = 'AED'`,
+      [clientId, customerId],
+    );
+    assert.equal(Number(advAfterDefault.rows[0].balance_original_minor), 5000);
+
+    const invApply = await createBooksDocument(OMAR, clientId, {
+      docType: "sales_invoice",
+      partyId: customerId,
+      issueDate: "2026-05-13",
+      periodId,
+      documentNumber: `C1B2-YES-${Date.now()}`,
+      lines: [
+        {
+          description: "Svc",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 10000,
+          vatMinor: 500,
+        },
+      ],
+    });
+    const posted = await approveAndPostBooksDocument(LAYLA, clientId, String(invApply.id), {
+      applyAdvanceOriginalMinor: 5000,
+    });
+    assert.ok(posted.advanceAllocation);
+    assert.equal(posted.advanceAllocation!.amountOriginalMinor, 5000);
+
+    const advAfter = await admin.query(
+      `SELECT balance_original_minor FROM books_party_advances
+       WHERE client_id = $1 AND party_id = $2 AND currency = 'AED'`,
+      [clientId, customerId],
+    );
+    assert.equal(Number(advAfter.rows[0].balance_original_minor), 0);
+
+    const oi = await admin.query(
+      `SELECT open_original_minor FROM books_open_items WHERE document_id = $1`,
+      [invApply.id],
+    );
+    assert.equal(Number(oi.rows[0].open_original_minor), 5500); // 10500 - 5000
   } finally {
     await admin.end().catch(() => undefined);
   }

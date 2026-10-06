@@ -345,6 +345,40 @@ export async function createReceiptOrPayment(
   return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };
 }
 
+/** Unallocated customer advance balance for a party + currency (C1b-2 UI). */
+export async function getPartyAdvanceBalance(
+  userId: string,
+  clientId: string,
+  partyId: string,
+  currency = "AED",
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const cur = currency.toUpperCase();
+    const row = await db.query(
+      `SELECT balance_original_minor AS "balanceOriginalMinor",
+              balance_aed_minor AS "balanceAedMinor", currency
+       FROM books_party_advances
+       WHERE client_id = $1 AND party_id = $2 AND currency = $3`,
+      [clientId, partyId, cur],
+    );
+    if (!row.rowCount) {
+      return {
+        partyId,
+        currency: cur,
+        balanceOriginalMinor: 0,
+        balanceAedMinor: 0,
+      };
+    }
+    return {
+      partyId,
+      currency: cur,
+      balanceOriginalMinor: Number(row.rows[0].balanceOriginalMinor),
+      balanceAedMinor: Number(row.rows[0].balanceAedMinor),
+    };
+  });
+}
+
 /**
  * Apply an existing 2320 customer advance to an open AR invoice later
  * (Dr 2320 / Cr 1210; reduce books_party_advances; allocate open item).
