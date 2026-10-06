@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 
+import { bankTxnUnallocatedMinor } from "@/lib/bank-txn-alloc";
 import {
   __testStatementEligible,
   excludeBooksBankTransaction,
@@ -12,6 +13,7 @@ import {
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  setBooksBankTxnAllocations,
   updateBooksBankTransaction,
 } from "@/server/books/bank-transactions";
 import { approveAndPostBooksDocument, createBooksDocument } from "@/server/books/documents";
@@ -42,6 +44,50 @@ async function withAdmin(t: test.TestContext) {
   }
   return admin;
 }
+
+test("P2A-1: unallocated helper — fee and 1:N", () => {
+  assert.equal(
+    bankTxnUnallocatedMinor(
+      99500,
+      [
+        { allocKind: "against_item", amountOriginalMinor: 100000 },
+        { allocKind: "bank_fee", amountOriginalMinor: 500 },
+      ],
+      "receipt",
+    ),
+    0,
+  );
+  assert.equal(
+    bankTxnUnallocatedMinor(
+      150000,
+      [
+        { allocKind: "against_item", amountOriginalMinor: 100000 },
+        { allocKind: "against_item", amountOriginalMinor: 50000 },
+      ],
+      "receipt",
+    ),
+    0,
+  );
+  assert.equal(
+    bankTxnUnallocatedMinor(
+      40000,
+      [{ allocKind: "against_item", amountOriginalMinor: 100000 }],
+      "receipt",
+    ),
+    -60000,
+  );
+  assert.equal(
+    bankTxnUnallocatedMinor(
+      10500,
+      [
+        { allocKind: "against_item", amountOriginalMinor: 10000 },
+        { allocKind: "bank_fee", amountOriginalMinor: 500 },
+      ],
+      "payment",
+    ),
+    0,
+  );
+});
 
 test("C3-1: statement eligibility helper", () => {
   assert.equal(__testStatementEligible("ready", []), true);
@@ -465,6 +511,172 @@ test("C3-3: transfer pair posts one Contra CV", async (t) => {
       [posted.journalEntryId],
     );
     assert.equal(allocs.rowCount, 0);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("P2A-1: 1:N split + bank fee; unallocated gate; N:1 partial", async (t) => {
+  const adminClient = await withAdmin(t);
+  if (!adminClient) return;
+  const admin = adminClient;
+  const allocTbl = await admin.query(`SELECT to_regclass('books_bank_txn_allocations') AS t`);
+  if (!allocTbl.rows[0]?.t) {
+    t.skip("db/38 allocations not migrated");
+    await admin.end();
+    return;
+  }
+  try {
+    const company = await createTestCompany(admin, "p2a1-split");
+    const clientId = company.clientId;
+    const periodId = company.periods["May 2026"];
+    assert.ok(periodId);
+    const bank = company.accountIdByCode["1120"];
+    const feeAcct = company.accountIdByCode["6900"];
+    const ar = company.accountIdByCode["1210"];
+    assert.ok(bank && feeAcct && ar);
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'P2A Bank', iban = 'AE070331234567890123456',
+         iban_last4 = '3456' WHERE id = $1`,
+      [bank],
+    );
+
+    const customer = await createBooksParty(OMAR, clientId, {
+      partyType: "customer",
+      name: `P2A Cust ${Date.now()}`,
+      force: true,
+    });
+
+    async function postInvoice(net: number, vat: number, docNo: string) {
+      const inv = await createBooksDocument(OMAR, clientId, {
+        docType: "sales_invoice",
+        partyId: String(customer.id),
+        issueDate: "2026-05-01",
+        periodId,
+        documentNumber: docNo,
+        lines: [
+          {
+            description: "Svc",
+            lineKind: "revenue",
+            vatCode: "SR",
+            netMinor: net,
+            vatMinor: vat,
+          },
+        ],
+      });
+      await approveAndPostBooksDocument(LAYLA, clientId, String(inv.id));
+      const oi = await admin.query(
+        `SELECT id, open_original_minor FROM books_open_items WHERE document_id = $1`,
+        [inv.id],
+      );
+      return { invId: String(inv.id), oiId: String(oi.rows[0].id), open: Number(oi.rows[0].open_original_minor) };
+    }
+
+    const invA = await postInvoice(10000, 500, `P2A-A-${Date.now()}`);
+    const invB = await postInvoice(5000, 250, `P2A-B-${Date.now()}`);
+    assert.equal(invA.open, 10500);
+    assert.equal(invB.open, 5250);
+
+    async function materializeCredit(credit: number, desc: string) {
+      const fileId = randomUUID();
+      const stmtId = randomUUID();
+      const lineId = randomUUID();
+      await admin.query(
+        `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,'application/pdf',10,$6)`,
+        [fileId, clientId, `p2a-${randomUUID()}`, `books/${clientId}/${fileId}/x.pdf`, `${desc}.pdf`, OMAR],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_extractions (
+           id, client_id, file_id, account_id, iban, period_from, period_to,
+           opening_balance_minor, closing_balance_minor, status, validation_flags
+         ) VALUES (
+           $1,$2,$3,$4,'AE070331234567890123456','2026-05-01','2026-05-31',
+           0,$5,'ready','["balance_ok"]'::jsonb
+         )`,
+        [stmtId, clientId, fileId, bank, credit],
+      );
+      await admin.query(
+        `INSERT INTO books_statement_lines (
+           id, statement_id, client_id, line_date, description,
+           debit_minor, credit_minor, currency, sort_index
+         ) VALUES ($1,$2,$3,'2026-05-20',$4,0,$5,'AED',0)`,
+        [lineId, stmtId, clientId, desc, credit],
+      );
+      await materializeBooksBankTransactions(OMAR, clientId);
+      const listed = await listBooksBankTransactions(OMAR, clientId, {
+        materialize: false,
+        status: "needs_review",
+      });
+      const row = listed.find((r) => r.creditMinor === credit && r.description === desc);
+      assert.ok(row);
+      return row.id;
+    }
+
+    // 1:N + fee: bank 15500 = invA 10500 + invB 5250 - wait that's 15750.
+    // bank 15700 with fee 50: against 10500+5250, fee 50 → explained 15750-50=15700.
+    const txn1 = await materializeCredit(15700, "Combo receipt");
+    await updateBooksBankTransaction(OMAR, clientId, txn1, {
+      txnType: "customer_receipt",
+      categoryAccountId: ar,
+    });
+    // Partial plan → unallocated ≠ 0 → cannot mark Ready.
+    await setBooksBankTxnAllocations(OMAR, clientId, txn1, [
+      { allocKind: "against_item", openItemId: invA.oiId, amountOriginalMinor: 10500 },
+    ]);
+    await assert.rejects(
+      () => markBooksBankTransactionReviewed(OMAR, clientId, txn1),
+      (e: unknown) => e instanceof BooksError && e.message === "settlement_unallocated_nonzero",
+    );
+    await setBooksBankTxnAllocations(OMAR, clientId, txn1, [
+      { allocKind: "against_item", openItemId: invA.oiId, amountOriginalMinor: 10500 },
+      { allocKind: "against_item", openItemId: invB.oiId, amountOriginalMinor: 5250 },
+      { allocKind: "bank_fee", accountId: feeAcct, amountOriginalMinor: 50 },
+    ]);
+    await markBooksBankTransactionReviewed(OMAR, clientId, txn1);
+    const posted1 = await postBooksBankTransaction(LAYLA, clientId, txn1);
+    assert.match(String(posted1.entryNo), /^RV-2026-\d+$/);
+
+    const oiA = await admin.query(
+      `SELECT open_original_minor, status FROM books_open_items WHERE id = $1`,
+      [invA.oiId],
+    );
+    const oiB = await admin.query(
+      `SELECT open_original_minor, status FROM books_open_items WHERE id = $1`,
+      [invB.oiId],
+    );
+    assert.equal(Number(oiA.rows[0].open_original_minor), 0);
+    assert.equal(Number(oiB.rows[0].open_original_minor), 0);
+
+    // N:1 partial: two bank lines against one new invoice
+    const invC = await postInvoice(20000, 1000, `P2A-C-${Date.now()}`);
+    assert.equal(invC.open, 21000);
+    const txn2 = await materializeCredit(10000, "Partial 1");
+    const txn3 = await materializeCredit(11000, "Partial 2");
+    await updateBooksBankTransaction(OMAR, clientId, txn2, {
+      txnType: "customer_receipt",
+      categoryAccountId: ar,
+    });
+    await updateBooksBankTransaction(OMAR, clientId, txn3, {
+      txnType: "customer_receipt",
+      categoryAccountId: ar,
+    });
+    await setBooksBankTxnAllocations(OMAR, clientId, txn2, [
+      { allocKind: "against_item", openItemId: invC.oiId, amountOriginalMinor: 10000 },
+    ]);
+    await setBooksBankTxnAllocations(OMAR, clientId, txn3, [
+      { allocKind: "against_item", openItemId: invC.oiId, amountOriginalMinor: 11000 },
+    ]);
+    await markBooksBankTransactionReviewed(OMAR, clientId, txn2);
+    await markBooksBankTransactionReviewed(OMAR, clientId, txn3);
+    await postBooksBankTransaction(LAYLA, clientId, txn2);
+    await postBooksBankTransaction(LAYLA, clientId, txn3);
+    const oiC = await admin.query(
+      `SELECT open_original_minor, status FROM books_open_items WHERE id = $1`,
+      [invC.oiId],
+    );
+    assert.equal(Number(oiC.rows[0].open_original_minor), 0);
+    assert.equal(String(oiC.rows[0].status), "closed");
   } finally {
     await admin.end().catch(() => undefined);
   }

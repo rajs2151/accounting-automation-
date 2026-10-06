@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: next is C3-4 (bulk post) / N:1 / rules, or C4 dashboard, or polish
+- Current task: P2A stream A — A1 done; next A2 matching engine
+- 2026-10-06: P2A-1 PASS — split allocations 1:N/N:1 + fees; unallocated=0; advance VAT TBD flagged
 - 2026-10-06: C3-3 PASS — transfer pair link → one Contra (CV); dual-control post both sides.
 - 2026-10-06: C3-2 PASS — 1:1 open-item match + dual-control post (RV/PY or category JV).
 - 2026-10-06: C3-1 PASS — bank txns Needs Review / Ready / Excluded; categorize only (no journal post).
@@ -86,3 +87,4 @@
 - 2026-10-06 | C3-1 | PASS | books_bank_transactions materialize + categorize UI; no post
 - 2026-10-06 | C3-2 | PASS | match open item + dual-control post; Posted tab
 - 2026-10-06 | C3-3 | PASS | transfer pair → one CV; linked_txn_id; dual control
+- 2026-10-06 | P2A-1 | PASS | books_bank_txn_allocations; 1:N+fee+N:1; drawer; VAT on advances TBD

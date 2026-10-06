@@ -62,6 +62,7 @@ import {
 import {
   excludeBooksBankTransaction,
   linkBooksBankTransferPair,
+  listBooksBankTxnAllocations,
   listBooksBankTxnMatchCandidates,
   listBooksBankTxnTransferCandidates,
   listBooksBankTransactions,
@@ -69,8 +70,10 @@ import {
   matchBooksBankTransaction,
   materializeBooksBankTransactions,
   postBooksBankTransaction,
+  setBooksBankTxnAllocations,
   unlinkBooksBankTransferPair,
   updateBooksBankTransaction,
+  type BankTxnAllocInput,
 } from "@/server/books/bank-transactions";
 import {
   acknowledgeBooksDocumentCheckVat,
@@ -372,6 +375,11 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "bank-transactions" && path[2] === "transfer-candidates" && path.length === 3) {
       return NextResponse.json(
         await listBooksBankTxnTransferCandidates(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "allocations" && path.length === 3) {
+      return NextResponse.json(
+        await listBooksBankTxnAllocations(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "statements" && path.length === 1) {
@@ -867,6 +875,26 @@ export async function POST(request: Request, ctx: Ctx) {
           session.clientId,
           path[1],
           String(body.counterpartId || ""),
+        ),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "allocations" && path.length === 3) {
+      const lines = Array.isArray(body.lines) ? body.lines : [];
+      return NextResponse.json(
+        await setBooksBankTxnAllocations(
+          session.userId,
+          session.clientId,
+          path[1],
+          lines.map(
+            (l: Record<string, unknown>): BankTxnAllocInput => ({
+              allocKind: String(l.allocKind || l.kind || "") as BankTxnAllocInput["allocKind"],
+              openItemId: l.openItemId == null || l.openItemId === "" ? null : String(l.openItemId),
+              accountId: l.accountId == null || l.accountId === "" ? null : String(l.accountId),
+              partyId: l.partyId == null || l.partyId === "" ? null : String(l.partyId),
+              amountOriginalMinor: Number(l.amountOriginalMinor),
+              note: l.note == null ? "" : String(l.note),
+            }),
+          ),
         ),
       );
     }

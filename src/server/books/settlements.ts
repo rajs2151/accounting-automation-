@@ -13,6 +13,13 @@ export type AllocationInput = {
   allocatedOriginalMinor: number;
 };
 
+/** P2A-1: bank fee / FX / discount lines so bank amount reconciles to allocations. */
+export type SettlementDifferenceLine = {
+  kind: "bank_fee" | "fx_difference" | "discount";
+  accountId: string;
+  amountOriginalMinor: number;
+};
+
 export type ReceiptPaymentInput = {
   docType: "receipt" | "payment";
   partyId: string;
@@ -21,10 +28,14 @@ export type ReceiptPaymentInput = {
   bankAccountId: string;
   currency?: string;
   fxRateScaled?: number;
-  /** Gross settlement in original currency */
+  /** Gross amount that hit the bank (fils). */
   originalAmountMinor: number;
   memo?: string;
   allocations?: AllocationInput[];
+  /** Explicit remainder when not covered by open items (advance / on account). */
+  remainderKind?: "advance" | "on_account";
+  remainderOriginalMinor?: number;
+  differenceLines?: SettlementDifferenceLine[];
 };
 
 export type ContraInput = {
@@ -57,6 +68,9 @@ export async function createReceiptOrPayment(
   const fxRateScaled = body.fxRateScaled ?? 100000000;
   const aedTotal = aedFromOriginal(body.originalAmountMinor, fxRateScaled);
   const allocations = body.allocations || [];
+  const differenceLines = body.differenceLines || [];
+  const remainderOrig = Math.max(0, Number(body.remainderOriginalMinor || 0));
+  const remainderKind = body.remainderKind;
 
   const prepared = await withUser(preparerId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -103,11 +117,48 @@ export async function createReceiptOrPayment(
       });
     }
 
-    if (allocOrigSum > body.originalAmountMinor) {
-      throw new BooksError("allocations_exceed_payment", "invalid");
+    let feeOrig = 0;
+    let discountOrig = 0;
+    const validatedDiffs: Array<SettlementDifferenceLine & { aed: number }> = [];
+    for (const d of differenceLines) {
+      if (d.amountOriginalMinor <= 0) throw new BooksError("invalid_difference_amount", "invalid");
+      await accountCode(db, clientId, d.accountId);
+      const aed = aedFromOriginal(d.amountOriginalMinor, fxRateScaled);
+      if (d.kind === "discount") discountOrig += d.amountOriginalMinor;
+      else feeOrig += d.amountOriginalMinor;
+      validatedDiffs.push({ ...d, aed });
     }
 
-    const unallocatedOrig = body.originalAmountMinor - allocOrigSum;
+    if (remainderOrig > 0 && remainderKind !== "advance" && remainderKind !== "on_account") {
+      throw new BooksError("remainder_kind_required", "invalid");
+    }
+
+    // Legacy: no diffs / no explicit remainder → leftover after against-items is customer advance.
+    const useLegacyRemainder =
+      differenceLines.length === 0 && remainderOrig === 0 && !remainderKind;
+    const legacyUnallocated = useLegacyRemainder
+      ? body.originalAmountMinor - allocOrigSum
+      : 0;
+    if (legacyUnallocated < 0) throw new BooksError("allocations_exceed_payment", "invalid");
+
+    if (!useLegacyRemainder) {
+      // Receipt: bank + fees + discount = against + rem
+      // Payment: bank = against + rem + fees - discount
+      const explained =
+        body.docType === "receipt"
+          ? allocOrigSum + remainderOrig - feeOrig - discountOrig
+          : allocOrigSum + remainderOrig + feeOrig - discountOrig;
+      if (explained !== body.originalAmountMinor) {
+        throw new BooksError("settlement_unallocated_nonzero", "invalid");
+      }
+    }
+
+    const unallocatedOrig = useLegacyRemainder ? legacyUnallocated : remainderOrig;
+    const remainderIsAdvance =
+      unallocatedOrig > 0 &&
+      (remainderKind === "advance" ||
+        remainderKind === "on_account" ||
+        (useLegacyRemainder && body.docType === "receipt"));
     const aedAtPaymentForAlloc = aedFromOriginal(allocOrigSum, fxRateScaled);
     const fxGainLoss = aedAtPaymentForAlloc - allocAedAtInvoice; // +gain for AR receipt
 
@@ -123,6 +174,11 @@ export async function createReceiptOrPayment(
     ).rows[0].id as string;
     const advances = (
       await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '2320'`, [
+        clientId,
+      ])
+    ).rows[0].id as string;
+    const prepaid = (
+      await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1410'`, [
         clientId,
       ])
     ).rows[0].id as string;
@@ -153,6 +209,22 @@ export async function createReceiptOrPayment(
         aedMinor: aedTotal,
         lineMemo: "Receipt",
       });
+      for (const d of validatedDiffs) {
+        lines.push({
+          accountId: d.accountId,
+          debitMinor: d.aed,
+          currency,
+          originalMinor: d.amountOriginalMinor,
+          fxRateScaled,
+          aedMinor: d.aed,
+          lineMemo:
+            d.kind === "bank_fee"
+              ? "Bank fee"
+              : d.kind === "fx_difference"
+                ? "FX difference"
+                : "Discount allowed",
+        });
+      }
       if (allocAedAtInvoice > 0) {
         lines.push({
           accountId: ar,
@@ -166,6 +238,7 @@ export async function createReceiptOrPayment(
       }
       if (unallocatedOrig > 0) {
         const advAed = aedFromOriginal(unallocatedOrig, fxRateScaled);
+        // Owner decision open: VAT on customer advances — never invent VAT here.
         lines.push({
           accountId: advances,
           creditMinor: advAed,
@@ -173,11 +246,13 @@ export async function createReceiptOrPayment(
           originalMinor: unallocatedOrig,
           fxRateScaled,
           aedMinor: advAed,
-          lineMemo: "Customer advance (VAT policy TBD)",
+          lineMemo:
+            remainderKind === "on_account"
+              ? "On account (VAT on advances TBD — owner)"
+              : "Customer advance (VAT on advances TBD — owner)",
         });
       }
       if (fxGainLoss !== 0) {
-        // Receipt: payment AED vs invoice AED — gain credits 7300 (negative expense) via credit; loss debit
         if (fxGainLoss > 0) {
           lines.push({
             accountId: fxAcct,
@@ -216,10 +291,45 @@ export async function createReceiptOrPayment(
         });
       }
       if (unallocatedOrig > 0) {
-        throw new BooksError("unallocated_payment_not_supported", "invalid");
+        if (!remainderIsAdvance) {
+          throw new BooksError("unallocated_payment_not_supported", "invalid");
+        }
+        const prepaidAed = aedFromOriginal(unallocatedOrig, fxRateScaled);
+        lines.push({
+          accountId: prepaid,
+          debitMinor: prepaidAed,
+          currency,
+          originalMinor: unallocatedOrig,
+          fxRateScaled,
+          aedMinor: prepaidAed,
+          lineMemo:
+            remainderKind === "on_account" ? "On account (supplier)" : "Supplier prepaid / advance",
+        });
+      }
+      for (const d of validatedDiffs) {
+        if (d.kind === "discount") {
+          lines.push({
+            accountId: d.accountId,
+            creditMinor: d.aed,
+            currency,
+            originalMinor: d.amountOriginalMinor,
+            fxRateScaled,
+            aedMinor: d.aed,
+            lineMemo: "Discount received",
+          });
+        } else {
+          lines.push({
+            accountId: d.accountId,
+            debitMinor: d.aed,
+            currency,
+            originalMinor: d.amountOriginalMinor,
+            fxRateScaled,
+            aedMinor: d.aed,
+            lineMemo: d.kind === "bank_fee" ? "Bank fee" : "FX difference",
+          });
+        }
       }
       if (fxGainLoss !== 0) {
-        // Payment: if we pay more AED than invoice AED → loss
         const loss = -fxGainLoss;
         if (loss > 0) {
           lines.push({
@@ -243,6 +353,8 @@ export async function createReceiptOrPayment(
       lines,
       allocDetails,
       unallocatedOrig,
+      remainderKind: remainderKind || (legacyUnallocated > 0 ? "advance" : null),
+      trackPartyAdvance: body.docType === "receipt" && unallocatedOrig > 0,
       aedTotal,
       fxRateScaled,
       currency,
@@ -319,7 +431,7 @@ export async function createReceiptOrPayment(
       void gainLoss;
     }
 
-    if (body.docType === "receipt" && prepared.unallocatedOrig > 0) {
+    if (prepared.trackPartyAdvance && prepared.unallocatedOrig > 0) {
       const advAed = aedFromOriginal(prepared.unallocatedOrig, prepared.fxRateScaled);
       await db.query(
         `INSERT INTO books_party_advances (client_id, party_id, currency, balance_original_minor, balance_aed_minor)

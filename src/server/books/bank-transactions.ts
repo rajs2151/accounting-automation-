@@ -1,3 +1,8 @@
+import {
+  BANK_TXN_ALLOC_KINDS,
+  bankTxnUnallocatedMinor,
+  type BankTxnAllocKind,
+} from "@/lib/bank-txn-alloc";
 import { BANK_TXN_TYPES, type BooksBankTxnType } from "@/lib/bank-txn-types";
 import { withUser } from "@/lib/db";
 import { normalizeIban } from "@/lib/statement-coverage";
@@ -8,8 +13,8 @@ import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createContra, createReceiptOrPayment } from "@/server/books/settlements";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
-export type { BooksBankTxnType };
-export { BANK_TXN_TYPES };
+export type { BooksBankTxnType, BankTxnAllocKind };
+export { BANK_TXN_TYPES, BANK_TXN_ALLOC_KINDS, bankTxnUnallocatedMinor };
 export type BooksBankTxnReviewStatus = "needs_review" | "ready" | "excluded" | "posted";
 
 const HARD_BLOCK_FLAGS = [
@@ -98,6 +103,30 @@ function txnAmountMinor(row: { debit_minor?: unknown; credit_minor?: unknown; de
 
 function isMoneyOut(row: { debit_minor?: unknown; credit_minor?: unknown }) {
   return Number(row.debit_minor || 0) > 0;
+}
+
+export type BankTxnAllocInput = {
+  allocKind: BankTxnAllocKind;
+  openItemId?: string | null;
+  accountId?: string | null;
+  partyId?: string | null;
+  amountOriginalMinor: number;
+  note?: string;
+};
+
+export type BankTxnAllocRow = BankTxnAllocInput & {
+  id: string;
+  bankTxnId: string;
+};
+
+async function hasAllocTable(db: {
+  query: (
+    sql: string,
+    params?: unknown[],
+  ) => Promise<{ rowCount: number | null; rows: Array<Record<string, unknown>> }>;
+}) {
+  const t = await db.query(`SELECT to_regclass('books_bank_txn_allocations') AS t`);
+  return Boolean(t.rows[0]?.t);
 }
 
 function isMoneyIn(row: { debit_minor?: unknown; credit_minor?: unknown }) {
@@ -453,9 +482,38 @@ export async function markBooksBankTransactionReviewed(
       throw new BooksError("bank_txn_posted", "conflict");
     }
     if (!row.txn_type) throw new BooksError("txn_type_required", "invalid");
+    const txnType = String(row.txn_type);
     // Transfers need a counterpart link at post time; category COA is for non-transfer types.
-    if (String(row.txn_type) !== "transfer" && !row.category_account_id) {
-      throw new BooksError("category_account_required", "invalid");
+    if (txnType !== "transfer" && txnType !== "customer_receipt" && txnType !== "supplier_payment") {
+      if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
+    }
+    if (txnType === "customer_receipt" || txnType === "supplier_payment") {
+      if (!(await hasAllocTable(db))) {
+        if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
+      } else {
+        const allocs = await db.query(
+          `SELECT alloc_kind AS "allocKind", amount_original_minor AS "amountOriginalMinor"
+           FROM books_bank_txn_allocations WHERE client_id = $1 AND bank_txn_id = $2`,
+          [clientId, id],
+        );
+        if (allocs.rowCount && allocs.rowCount > 0) {
+          const bankAmt =
+            txnType === "customer_receipt"
+              ? Number(row.credit_minor || 0)
+              : Number(row.debit_minor || 0);
+          const unallocated = bankTxnUnallocatedMinor(
+            bankAmt,
+            allocs.rows.map((r) => ({
+              allocKind: String(r.allocKind),
+              amountOriginalMinor: Number(r.amountOriginalMinor),
+            })),
+            txnType === "customer_receipt" ? "receipt" : "payment",
+          );
+          if (unallocated !== 0) throw new BooksError("settlement_unallocated_nonzero", "invalid");
+        } else if (!row.category_account_id && !row.open_item_id) {
+          throw new BooksError("category_account_required", "invalid");
+        }
+      }
     }
 
     await db.query(
@@ -534,6 +592,209 @@ export async function excludeBooksBankTransaction(
     });
 
     return { id, reviewStatus: "excluded" as const, excludeReason };
+  });
+}
+
+export async function listBooksBankTxnAllocations(
+  userId: string,
+  clientId: string,
+  txnId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasAllocTable(db))) return [];
+    const rows = await db.query(
+      `SELECT id, bank_txn_id AS "bankTxnId", alloc_kind AS "allocKind",
+              open_item_id AS "openItemId", account_id AS "accountId",
+              party_id AS "partyId", amount_original_minor AS "amountOriginalMinor",
+              note
+       FROM books_bank_txn_allocations
+       WHERE client_id = $1 AND bank_txn_id = $2
+       ORDER BY created_at, id`,
+      [clientId, txnId],
+    );
+    return rows.rows.map(
+      (r): BankTxnAllocRow => ({
+        id: String(r.id),
+        bankTxnId: String(r.bankTxnId),
+        allocKind: String(r.allocKind) as BankTxnAllocKind,
+        openItemId: r.openItemId ? String(r.openItemId) : null,
+        accountId: r.accountId ? String(r.accountId) : null,
+        partyId: r.partyId ? String(r.partyId) : null,
+        amountOriginalMinor: Number(r.amountOriginalMinor),
+        note: String(r.note || ""),
+      }),
+    );
+  });
+}
+
+/** Replace draft allocations for a bank txn. Enforces kinds + party consistency. */
+export async function setBooksBankTxnAllocations(
+  userId: string,
+  clientId: string,
+  txnId: string,
+  lines: BankTxnAllocInput[],
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    if (!(await hasAllocTable(db))) {
+      throw new BooksError("p2a_bank_txn_alloc_migration_required", "invalid");
+    }
+    const txn = await db.query(
+      `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId],
+    );
+    if (!txn.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
+    const row = txn.rows[0];
+    if (!["needs_review", "ready"].includes(String(row.review_status))) {
+      throw new BooksError("bank_txn_not_editable", "conflict");
+    }
+    const txnType = String(row.txn_type || "");
+    if (txnType !== "customer_receipt" && txnType !== "supplier_payment") {
+      throw new BooksError("match_requires_receipt_or_payment", "invalid");
+    }
+    const side = txnType === "customer_receipt" ? "AR" : "AP";
+    const bankAmt =
+      side === "AR" ? Number(row.credit_minor || 0) : Number(row.debit_minor || 0);
+    if (bankAmt <= 0) throw new BooksError("match_amount_direction", "invalid");
+
+    let partyId: string | null = null;
+    const normalized: BankTxnAllocInput[] = [];
+    for (const raw of lines) {
+      const kind = String(raw.allocKind || "") as BankTxnAllocKind;
+      if (!(BANK_TXN_ALLOC_KINDS as readonly string[]).includes(kind)) {
+        throw new BooksError("invalid_alloc_kind", "invalid");
+      }
+      const amount = Number(raw.amountOriginalMinor);
+      if (!Number.isInteger(amount) || amount <= 0) {
+        throw new BooksError("invalid_money", "invalid_money");
+      }
+      if (kind === "against_item") {
+        if (!raw.openItemId) throw new BooksError("open_item_required", "invalid");
+        const oi = await db.query(
+          `SELECT id, party_id, side, currency, open_original_minor, status
+           FROM books_open_items WHERE id = $1 AND client_id = $2`,
+          [raw.openItemId, clientId],
+        );
+        if (!oi.rowCount) throw new BooksError("open_item_not_found", "not_found");
+        if (String(oi.rows[0].side) !== side) throw new BooksError("side_mismatch", "invalid");
+        if (!["open", "partial"].includes(String(oi.rows[0].status))) {
+          throw new BooksError("open_item_not_open", "invalid");
+        }
+        if (String(oi.rows[0].currency) !== String(row.currency || "AED")) {
+          throw new BooksError("currency_mismatch", "invalid");
+        }
+        if (amount > Number(oi.rows[0].open_original_minor)) {
+          throw new BooksError("allocation_exceeds_open", "invalid");
+        }
+        const p = String(oi.rows[0].party_id);
+        if (partyId && partyId !== p) throw new BooksError("party_mismatch", "invalid");
+        partyId = p;
+        normalized.push({
+          allocKind: kind,
+          openItemId: String(oi.rows[0].id),
+          partyId: p,
+          amountOriginalMinor: amount,
+          note: raw.note || "",
+        });
+      } else if (kind === "on_account" || kind === "advance") {
+        if (!raw.partyId) throw new BooksError("party_required", "invalid");
+        const p = String(raw.partyId);
+        const party = await db.query(
+          `SELECT id FROM books_parties WHERE id = $1 AND client_id = $2`,
+          [p, clientId],
+        );
+        if (!party.rowCount) throw new BooksError("party_not_found", "not_found");
+        if (partyId && partyId !== p) throw new BooksError("party_mismatch", "invalid");
+        partyId = p;
+        normalized.push({
+          allocKind: kind,
+          partyId: p,
+          amountOriginalMinor: amount,
+          note: raw.note || "",
+        });
+      } else {
+        if (!raw.accountId) throw new BooksError("account_not_found", "invalid");
+        const acc = await db.query(
+          `SELECT id FROM books_accounts
+           WHERE id = $1 AND client_id = $2 AND active = true AND is_postable = true`,
+          [raw.accountId, clientId],
+        );
+        if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
+        normalized.push({
+          allocKind: kind,
+          accountId: String(acc.rows[0].id),
+          amountOriginalMinor: amount,
+          note: raw.note || "",
+        });
+      }
+    }
+
+    const unallocated = bankTxnUnallocatedMinor(
+      bankAmt,
+      normalized,
+      side === "AR" ? "receipt" : "payment",
+    );
+
+    await db.query(`DELETE FROM books_bank_txn_allocations WHERE client_id = $1 AND bank_txn_id = $2`, [
+      clientId,
+      txnId,
+    ]);
+    for (const n of normalized) {
+      await db.query(
+        `INSERT INTO books_bank_txn_allocations (
+           client_id, bank_txn_id, alloc_kind, open_item_id, account_id, party_id,
+           amount_original_minor, note
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          clientId,
+          txnId,
+          n.allocKind,
+          n.openItemId || null,
+          n.accountId || null,
+          n.partyId || null,
+          n.amountOriginalMinor,
+          n.note || "",
+        ],
+      );
+    }
+
+    const firstItem = normalized.find((n) => n.allocKind === "against_item");
+    // Demote Ready only when the plan no longer balances (unallocated ≠ 0).
+    await db.query(
+      `UPDATE books_bank_transactions SET
+         open_item_id = $3,
+         review_status = CASE
+           WHEN review_status = 'ready' AND $4::bigint <> 0 THEN 'needs_review'
+           ELSE review_status
+         END,
+         reviewed_by = CASE
+           WHEN review_status = 'ready' AND $4::bigint <> 0 THEN NULL
+           ELSE reviewed_by
+         END,
+         reviewed_at = CASE
+           WHEN review_status = 'ready' AND $4::bigint <> 0 THEN NULL
+           ELSE reviewed_at
+         END,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [txnId, clientId, firstItem?.openItemId || null, unallocated],
+    );
+
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "set_bank_txn_allocations",
+      entity: "books_bank_transaction",
+      entityId: txnId,
+      after: { lines: normalized.length, unallocatedMinor: unallocated },
+    });
+
+    return {
+      id: txnId,
+      unallocatedMinor: unallocated,
+      lines: await listBooksBankTxnAllocations(userId, clientId, txnId),
+    };
   });
 }
 
@@ -778,77 +1039,52 @@ export async function matchBooksBankTransaction(
   txnId: string,
   openItemId: string | null,
 ) {
-  return withUser(userId, async (db) => {
+  // P2A-1: 1:1 match is a single against_item allocation for the full bank amount.
+  const txn = await withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const before = await db.query(
       `SELECT * FROM books_bank_transactions WHERE id = $1 AND client_id = $2`,
       [txnId, clientId],
     );
     if (!before.rowCount) throw new BooksError("bank_txn_not_found", "not_found");
-    const row = before.rows[0];
-    if (!["needs_review", "ready"].includes(String(row.review_status))) {
-      throw new BooksError("bank_txn_not_editable", "conflict");
-    }
-
-    if (openItemId == null || openItemId === "") {
-      await db.query(
-        `UPDATE books_bank_transactions SET open_item_id = NULL, updated_at = now()
-         WHERE id = $1 AND client_id = $2`,
-        [txnId, clientId],
-      );
-      await writeBooksAudit(db, {
-        clientId,
-        actor: userId,
-        action: "clear_bank_txn_match",
-        entity: "books_bank_transaction",
-        entityId: txnId,
-        before: { open_item_id: row.open_item_id },
-        after: { open_item_id: null },
-      });
-      return { id: txnId, openItemId: null };
-    }
-
-    const txnType = String(row.txn_type || "");
-    const wantSide = txnType === "customer_receipt" ? "AR" : txnType === "supplier_payment" ? "AP" : null;
-    if (!wantSide) throw new BooksError("match_requires_receipt_or_payment", "invalid");
-
-    const amount =
-      wantSide === "AR" ? Number(row.credit_minor || 0) : Number(row.debit_minor || 0);
-    if (amount <= 0) throw new BooksError("match_amount_direction", "invalid");
-
-    const oi = await db.query(
-      `SELECT id, side, currency, open_original_minor, status
-       FROM books_open_items WHERE id = $1 AND client_id = $2`,
-      [openItemId, clientId],
-    );
-    if (!oi.rowCount) throw new BooksError("open_item_not_found", "not_found");
-    if (String(oi.rows[0].side) !== wantSide) throw new BooksError("side_mismatch", "invalid");
-    if (!["open", "partial"].includes(String(oi.rows[0].status))) {
-      throw new BooksError("open_item_not_open", "invalid");
-    }
-    if (String(oi.rows[0].currency) !== String(row.currency || "AED")) {
-      throw new BooksError("currency_mismatch", "invalid");
-    }
-    if (amount > Number(oi.rows[0].open_original_minor)) {
-      throw new BooksError("allocation_exceeds_open", "invalid");
-    }
-
-    await db.query(
-      `UPDATE books_bank_transactions SET open_item_id = $3, updated_at = now()
-       WHERE id = $1 AND client_id = $2`,
-      [txnId, clientId, openItemId],
-    );
-    await writeBooksAudit(db, {
-      clientId,
-      actor: userId,
-      action: "match_bank_transaction",
-      entity: "books_bank_transaction",
-      entityId: txnId,
-      before: { open_item_id: row.open_item_id },
-      after: { open_item_id: openItemId },
-    });
-    return { id: txnId, openItemId };
+    return before.rows[0];
   });
+  if (!(await withUser(userId, (db) => hasAllocTable(db)))) {
+    // Pre-migration fallback (C3-2 behaviour).
+    return withUser(userId, async (db) => {
+      if (openItemId == null || openItemId === "") {
+        await db.query(
+          `UPDATE books_bank_transactions SET open_item_id = NULL, updated_at = now()
+           WHERE id = $1 AND client_id = $2`,
+          [txnId, clientId],
+        );
+        return { id: txnId, openItemId: null };
+      }
+      await db.query(
+        `UPDATE books_bank_transactions SET open_item_id = $3, updated_at = now()
+         WHERE id = $1 AND client_id = $2`,
+        [txnId, clientId, openItemId],
+      );
+      return { id: txnId, openItemId };
+    });
+  }
+  if (openItemId == null || openItemId === "") {
+    await setBooksBankTxnAllocations(userId, clientId, txnId, []);
+    return { id: txnId, openItemId: null };
+  }
+  const txnType = String(txn.txn_type || "");
+  const amount =
+    txnType === "customer_receipt"
+      ? Number(txn.credit_minor || 0)
+      : Number(txn.debit_minor || 0);
+  await setBooksBankTxnAllocations(userId, clientId, txnId, [
+    {
+      allocKind: "against_item",
+      openItemId,
+      amountOriginalMinor: amount,
+    },
+  ]);
+  return { id: txnId, openItemId };
 }
 
 /**
@@ -959,37 +1195,133 @@ export async function postBooksBankTransaction(
     entryNo = String(contra.entryNo);
     settlementDocumentId = contra.documentId;
     pairedTxnId = String(counterpart.id);
-  } else if (row.open_item_id && (txnType === "customer_receipt" || txnType === "supplier_payment")) {
-    const oi = await withUser(approverId, async (db) => {
-      const r = await db.query(
-        `SELECT id, party_id, open_original_minor FROM books_open_items
-         WHERE id = $1 AND client_id = $2`,
-        [row.open_item_id, clientId],
-      );
-      if (!r.rowCount) throw new BooksError("open_item_not_found", "not_found");
-      return r.rows[0];
-    });
+  } else if (txnType === "customer_receipt" || txnType === "supplier_payment") {
     const amount = txnType === "customer_receipt" ? credit : debit;
     if (amount <= 0) throw new BooksError("match_amount_direction", "invalid");
-    const settlement = await createReceiptOrPayment(preparerId, approverId, clientId, {
-      docType: txnType === "customer_receipt" ? "receipt" : "payment",
-      partyId: String(oi.party_id),
-      issueDate: txnDate,
-      periodId,
-      bankAccountId,
-      currency,
-      originalAmountMinor: amount,
-      memo,
-      allocations: [
-        {
-          openItemId: String(oi.id),
-          allocatedOriginalMinor: Math.min(amount, Number(oi.open_original_minor)),
-        },
-      ],
-    });
-    journalEntryId = settlement.journalEntryId;
-    entryNo = String(settlement.entryNo);
-    settlementDocumentId = settlement.documentId;
+    const draft = await listBooksBankTxnAllocations(approverId, clientId, txnId);
+    const unallocated = bankTxnUnallocatedMinor(
+      amount,
+      draft,
+      txnType === "customer_receipt" ? "receipt" : "payment",
+    );
+    if (draft.length > 0 && unallocated !== 0) {
+      throw new BooksError("settlement_unallocated_nonzero", "invalid");
+    }
+
+    if (draft.length > 0) {
+      const against = draft.filter((l) => l.allocKind === "against_item");
+      const remLines = draft.filter(
+        (l) => l.allocKind === "advance" || l.allocKind === "on_account",
+      );
+      const diffs = draft.filter((l) =>
+        ["bank_fee", "fx_difference", "discount"].includes(l.allocKind),
+      );
+      const partyId =
+        against[0]?.partyId ||
+        remLines[0]?.partyId ||
+        (
+          await withUser(approverId, async (db) => {
+            if (!row.open_item_id) return null;
+            const r = await db.query(
+              `SELECT party_id FROM books_open_items WHERE id = $1 AND client_id = $2`,
+              [row.open_item_id, clientId],
+            );
+            return r.rowCount ? String(r.rows[0].party_id) : null;
+          })
+        );
+      if (!partyId) throw new BooksError("party_required", "invalid");
+
+      const remAdvance = remLines
+        .filter((l) => l.allocKind === "advance")
+        .reduce((s, l) => s + l.amountOriginalMinor, 0);
+      const remOnAccount = remLines
+        .filter((l) => l.allocKind === "on_account")
+        .reduce((s, l) => s + l.amountOriginalMinor, 0);
+      // Thin: one remainder kind per post (prefer advance if both — flag VAT TBD on advance).
+      const remainderOriginalMinor = remAdvance + remOnAccount;
+      const remainderKind =
+        remAdvance > 0 ? "advance" : remOnAccount > 0 ? "on_account" : undefined;
+
+      const settlement = await createReceiptOrPayment(preparerId, approverId, clientId, {
+        docType: txnType === "customer_receipt" ? "receipt" : "payment",
+        partyId,
+        issueDate: txnDate,
+        periodId,
+        bankAccountId,
+        currency,
+        originalAmountMinor: amount,
+        memo,
+        allocations: against.map((l) => ({
+          openItemId: String(l.openItemId),
+          allocatedOriginalMinor: l.amountOriginalMinor,
+        })),
+        remainderKind,
+        remainderOriginalMinor: remainderOriginalMinor || undefined,
+        differenceLines: diffs.map((l) => ({
+          kind: l.allocKind as "bank_fee" | "fx_difference" | "discount",
+          accountId: String(l.accountId),
+          amountOriginalMinor: l.amountOriginalMinor,
+        })),
+      });
+      journalEntryId = settlement.journalEntryId;
+      entryNo = String(settlement.entryNo);
+      settlementDocumentId = settlement.documentId;
+    } else if (row.open_item_id) {
+      // Legacy single open_item_id (C3-2) when no draft allocation rows.
+      const oi = await withUser(approverId, async (db) => {
+        const r = await db.query(
+          `SELECT id, party_id, open_original_minor FROM books_open_items
+           WHERE id = $1 AND client_id = $2`,
+          [row.open_item_id, clientId],
+        );
+        if (!r.rowCount) throw new BooksError("open_item_not_found", "not_found");
+        return r.rows[0];
+      });
+      const settlement = await createReceiptOrPayment(preparerId, approverId, clientId, {
+        docType: txnType === "customer_receipt" ? "receipt" : "payment",
+        partyId: String(oi.party_id),
+        issueDate: txnDate,
+        periodId,
+        bankAccountId,
+        currency,
+        originalAmountMinor: amount,
+        memo,
+        allocations: [
+          {
+            openItemId: String(oi.id),
+            allocatedOriginalMinor: Math.min(amount, Number(oi.open_original_minor)),
+          },
+        ],
+      });
+      journalEntryId = settlement.journalEntryId;
+      entryNo = String(settlement.entryNo);
+      settlementDocumentId = settlement.documentId;
+    } else {
+      // Categorise-only receipt/payment without match → fall through to category JV.
+      if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
+      const categoryId = String(row.category_account_id);
+      const lines =
+        credit > 0
+          ? [
+              { accountId: bankAccountId, debitMinor: credit, aedMinor: credit, currency },
+              { accountId: categoryId, creditMinor: credit, aedMinor: credit, currency },
+            ]
+          : [
+              { accountId: categoryId, debitMinor: debit, aedMinor: debit, currency },
+              { accountId: bankAccountId, creditMinor: debit, aedMinor: debit, currency },
+            ];
+      const created = await createBooksJournal(preparerId, clientId, {
+        periodId,
+        entryDate: txnDate,
+        memo,
+        voucherType: "Journal",
+        lines,
+        post: false,
+      });
+      const posted = await postBooksJournal(approverId, clientId, created.id);
+      journalEntryId = created.id;
+      entryNo = String(posted.entryNo);
+    }
   } else {
     if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
     if (debit <= 0 && credit <= 0) throw new BooksError("zero_amount", "invalid_money");

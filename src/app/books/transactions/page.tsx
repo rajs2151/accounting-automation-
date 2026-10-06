@@ -6,6 +6,7 @@ import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "r
 import { toast } from "sonner";
 
 import { CellAmount } from "@/components/books/cells";
+import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { StatusBadge } from "@/components/books/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
+import { bankTxnUnallocatedMinor } from "@/lib/bank-txn-alloc";
 import { BANK_TXN_TYPE_LABEL, BANK_TXN_TYPES } from "@/lib/bank-txn-types";
 import { formatDateUae } from "@/lib/date";
 import { bankTxnReviewStatusLabel } from "@/lib/status-labels";
@@ -66,6 +68,14 @@ type TransferCand = {
   description: string;
   debitMinor: number;
   creditMinor: number;
+};
+
+type AllocDraft = {
+  allocKind: string;
+  openItemId?: string | null;
+  accountId?: string | null;
+  partyId?: string | null;
+  amountOriginalMinor: number;
 };
 
 type Tab = "needs_review" | "ready" | "excluded" | "posted";
@@ -142,6 +152,9 @@ function TransactionsInner() {
   });
   const [matchCands, setMatchCands] = useState<Record<string, MatchCand[]>>({});
   const [transferCands, setTransferCands] = useState<Record<string, TransferCand[]>>({});
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const [allocDraft, setAllocDraft] = useState<AllocDraft[]>([]);
+  const [feeAccountId, setFeeAccountId] = useState("");
 
   useEffect(() => {
     async function loadCounts() {
@@ -286,6 +299,59 @@ function TransactionsInner() {
       delete next[id];
       return next;
     });
+    void reload();
+  }
+
+  const peekRow = useMemo(() => rows.find((r) => r.id === peekId) || null, [rows, peekId]);
+  const peekUnallocated = useMemo(() => {
+    if (!peekRow) return 0;
+    if (peekRow.txnType !== "customer_receipt" && peekRow.txnType !== "supplier_payment") return 0;
+    const bank =
+      peekRow.txnType === "customer_receipt" ? peekRow.creditMinor : peekRow.debitMinor;
+    return bankTxnUnallocatedMinor(
+      bank,
+      allocDraft,
+      peekRow.txnType === "customer_receipt" ? "receipt" : "payment",
+    );
+  }, [peekRow, allocDraft]);
+
+  async function openPeek(id: string) {
+    setPeekId(id);
+    const res = await fetch(`/api/books/bank-transactions/${id}/allocations`);
+    const data = await res.json().catch(() => []);
+    if (res.ok && Array.isArray(data)) {
+      setAllocDraft(
+        data.map((l: AllocDraft & { allocKind: string }) => ({
+          allocKind: String(l.allocKind),
+          openItemId: l.openItemId || null,
+          accountId: l.accountId || null,
+          partyId: l.partyId || null,
+          amountOriginalMinor: Number(l.amountOriginalMinor),
+        })),
+      );
+    } else {
+      setAllocDraft([]);
+    }
+    void loadMatchCandidates(id);
+  }
+
+  async function saveAllocations() {
+    if (!peekId) return;
+    const res = await fetch(`/api/books/bank-transactions/${peekId}/allocations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lines: allocDraft }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(
+      data.unallocatedMinor === 0
+        ? "Allocations saved · unallocated 0"
+        : `Saved · unallocated ${data.unallocatedMinor}`,
+    );
     void reload();
   }
 
@@ -457,7 +523,12 @@ function TransactionsInner() {
                     </td>
                   </tr>
                   {items.map((r) => (
-                    <tr key={r.id} className="border-t border-border" data-testid={`txn-row-${r.id}`}>
+                    <tr
+                      key={r.id}
+                      className="border-t border-border cursor-pointer"
+                      data-testid={`txn-row-${r.id}`}
+                      onClick={() => void openPeek(r.id)}
+                    >
                       <td className="px-3 py-2 whitespace-nowrap">
                         {r.txnDate ? formatDateUae(r.txnDate) : "—"}
                       </td>
@@ -467,7 +538,7 @@ function TransactionsInner() {
                           {r.accountCode} · {r.accountName}
                         </div>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <Select
                           value={r.txnType || undefined}
                           onValueChange={(v) => void patchRow(r.id, { txnType: v || null })}
@@ -485,7 +556,7 @@ function TransactionsInner() {
                           </SelectContent>
                         </Select>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         {r.txnType === "transfer" ? (
                           <span className="text-xs text-muted-foreground">Pair (CV)</span>
                         ) : (
@@ -512,7 +583,7 @@ function TransactionsInner() {
                           </Select>
                         )}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         {r.txnType === "transfer" ? (
                           r.reviewStatus === "posted" ? (
                             <span className="text-xs text-muted-foreground">
@@ -610,7 +681,10 @@ function TransactionsInner() {
                           <div className="text-xs text-muted-foreground">{r.excludeReason}</div>
                         ) : null}
                       </td>
-                      <td className="space-x-1 px-3 py-2 text-right whitespace-nowrap">
+                      <td
+                        className="space-x-1 px-3 py-2 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {r.reviewStatus === "needs_review" || r.reviewStatus === "ready" ? (
                           <>
                             {r.reviewStatus === "needs_review" ? (
@@ -653,6 +727,146 @@ function TransactionsInner() {
           </tbody>
         </table>
       </div>
+
+      <BooksSideDrawer
+        open={Boolean(peekId && peekRow)}
+        onOpenChange={(o) => {
+          if (!o) setPeekId(null);
+        }}
+        title={peekRow?.description || "Transaction"}
+        status={peekRow?.reviewStatus}
+        entryType={peekRow?.txnType || undefined}
+      >
+        {peekRow ? (
+          <div className="space-y-4" data-testid="txn-alloc-drawer">
+            <p className="text-sm text-muted-foreground">
+              {peekRow.txnDate ? formatDateUae(peekRow.txnDate) : "—"} ·{" "}
+              {peekRow.accountCode} ·{" "}
+              <span className={peekRow.amountSignedMinor >= 0 ? "text-emerald-700" : "text-red-700"}>
+                {peekRow.amountSignedMinor >= 0 ? "+" : "−"}
+                <CellAmount minor={Math.abs(peekRow.amountSignedMinor)} />
+              </span>
+            </p>
+            {(peekRow.txnType === "customer_receipt" || peekRow.txnType === "supplier_payment") &&
+            peekRow.reviewStatus !== "posted" ? (
+              <>
+                <div className="space-y-2">
+                  <Label>Allocations (against item / fee / advance)</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Unallocated must be 0 to mark Ready. Advance lines: no VAT (owner policy TBD).
+                  </p>
+                  {allocDraft.map((l, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="w-28">{l.allocKind}</span>
+                      <span className="tabular-nums">{l.amountOriginalMinor}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setAllocDraft((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap gap-2">
+                    <Select
+                      onValueChange={(v) => {
+                        if (!v) return;
+                        const c = (matchCands[peekRow.id] || []).find((x) => x.openItemId === v);
+                        if (!c) return;
+                        setAllocDraft((prev) => [
+                          ...prev,
+                          {
+                            allocKind: "against_item",
+                            openItemId: c.openItemId,
+                            amountOriginalMinor: c.openOriginalMinor,
+                          },
+                        ]);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-[220px]" data-testid="txn-alloc-add-item">
+                        <SelectValue placeholder="Add against item" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(matchCands[peekRow.id] || []).map((c) => (
+                          <SelectItem key={c.openItemId} value={c.openItemId}>
+                            {(c.documentNumber || "Doc") + ` · ${c.openOriginalMinor}`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select value={feeAccountId || undefined} onValueChange={(v) => v && setFeeAccountId(v)}>
+                      <SelectTrigger className="h-8 w-[180px]">
+                        <SelectValue placeholder="Fee account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {coa.map((a) => (
+                          <SelectItem key={a.id} value={a.id}>
+                            {a.code} · {a.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!feeAccountId}
+                      onClick={() => {
+                        const bank =
+                          peekRow.txnType === "customer_receipt"
+                            ? peekRow.creditMinor
+                            : peekRow.debitMinor;
+                        const gap = bankTxnUnallocatedMinor(
+                          bank,
+                          allocDraft,
+                          peekRow.txnType === "customer_receipt" ? "receipt" : "payment",
+                        );
+                        // Receipt: against > bank → gap negative; add fee = −gap.
+                        // Payment: bank > against → gap positive; add fee = gap.
+                        const feeAmt =
+                          peekRow.txnType === "customer_receipt"
+                            ? gap < 0
+                              ? -gap
+                              : 0
+                            : gap > 0
+                              ? gap
+                              : 0;
+                        if (feeAmt <= 0) {
+                          toast.error("Nothing to allocate as fee from current gap");
+                          return;
+                        }
+                        setAllocDraft((prev) => [
+                          ...prev,
+                          {
+                            allocKind: "bank_fee",
+                            accountId: feeAccountId,
+                            amountOriginalMinor: feeAmt,
+                          },
+                        ]);
+                      }}
+                    >
+                      Add bank fee
+                    </Button>
+                  </div>
+                  <p
+                    className={`text-sm font-medium ${peekUnallocated === 0 ? "text-emerald-700" : "text-red-700"}`}
+                    data-testid="txn-unallocated"
+                  >
+                    Unallocated: {peekUnallocated}
+                  </p>
+                  <Button data-testid="txn-alloc-save" onClick={() => void saveAllocations()}>
+                    Save allocations
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {peekRow.openItemLabel || peekRow.linkedTxnLabel || "No allocation panel for this type."}
+              </p>
+            )}
+          </div>
+        ) : null}
+      </BooksSideDrawer>
     </div>
   );
 }

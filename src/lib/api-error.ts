@@ -38,6 +38,11 @@ const MESSAGES: Record<string, string> = {
   transfer_direction_mismatch: "Link an outgoing transfer to an incoming one.",
   transfer_already_linked: "That transfer is already linked.",
   transfer_type_required: "Both sides must be typed as Transfer.",
+  settlement_unallocated_nonzero: "Allocate the full bank amount (including fees/differences) before marking Ready.",
+  p2a_bank_txn_alloc_migration_required: "Database migration db/38 is required for split allocations.",
+  remainder_kind_required: "Choose Advance or On account for the unallocated remainder.",
+  party_required: "Choose a party for this allocation.",
+  open_item_required: "Choose an open invoice or bill for Against item.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {
