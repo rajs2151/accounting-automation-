@@ -51,6 +51,7 @@ type TxnRow = {
   linkedTxnLabel: string | null;
   journalEntryId: string | null;
   entryNo: string | null;
+  suggestionSource: string | null;
 };
 
 type MatchCand = {
@@ -570,6 +571,14 @@ function TransactionsInner() {
                         <div className="text-xs text-muted-foreground">
                           {r.accountCode} · {r.accountName}
                         </div>
+                        {r.suggestionSource ? (
+                          <span
+                            className="mt-0.5 inline-block rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                            data-testid={`txn-rule-chip-${r.id}`}
+                          >
+                            {r.suggestionSource}
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <Select
@@ -929,6 +938,27 @@ function TransactionsInner() {
                 {peekRow.openItemLabel || peekRow.linkedTxnLabel || "No allocation panel for this type."}
               </p>
             )}
+            {peekRow.reviewStatus !== "posted" ? (
+              <Button
+                variant="outline"
+                data-testid="txn-create-rule"
+                onClick={async () => {
+                  const res = await fetch("/api/books/bank-rules/from-txn", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ txnId: peekRow.id }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    toast.error(apiErrorMessage(data));
+                    return;
+                  }
+                  toast.success(`Rule created: ${data.name || ""}`);
+                }}
+              >
+                Create rule from this
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </BooksSideDrawer>

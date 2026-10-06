@@ -60,6 +60,12 @@ import {
   updateBooksBankAccountSetup,
 } from "@/server/books/bank-accounts";
 import {
+  createBooksBankRule,
+  createBooksBankRuleFromTxn,
+  listBooksBankRules,
+  previewBooksBankRule,
+} from "@/server/books/bank-rules";
+import {
   excludeBooksBankTransaction,
   linkBooksBankTransferPair,
   listBooksBankTxnAllocations,
@@ -366,6 +372,14 @@ export async function GET(request: Request, ctx: Ctx) {
           status: url.searchParams.get("status") || undefined,
           q: url.searchParams.get("q") || undefined,
         }),
+      );
+    }
+    if (path[0] === "bank-rules" && path.length === 1) {
+      return NextResponse.json(await listBooksBankRules(session.userId, session.clientId));
+    }
+    if (path[0] === "bank-rules" && path[2] === "preview" && path.length === 3) {
+      return NextResponse.json(
+        await previewBooksBankRule(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "bank-transactions" && path[2] === "match-candidates" && path.length === 3) {
@@ -839,6 +853,38 @@ export async function POST(request: Request, ctx: Ctx) {
       return NextResponse.json(
         await materializeBooksBankTransactions(session.userId, session.clientId, {
           accountId: body.accountId ? String(body.accountId) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "bank-rules" && path.length === 1) {
+      return NextResponse.json(
+        await createBooksBankRule(session.userId, session.clientId, {
+          name: String(body.name || ""),
+          priority: body.priority != null ? Number(body.priority) : undefined,
+          active: body.active !== false,
+          counterpartyContains: body.counterpartyContains
+            ? String(body.counterpartyContains)
+            : null,
+          narrationRegex: body.narrationRegex ? String(body.narrationRegex) : null,
+          amountMinMinor: body.amountMinMinor != null ? Number(body.amountMinMinor) : null,
+          amountMaxMinor: body.amountMaxMinor != null ? Number(body.amountMaxMinor) : null,
+          accountId: body.accountId ? String(body.accountId) : null,
+          direction: body.direction === "in" || body.direction === "out" ? body.direction : null,
+          setTxnType: body.setTxnType ? String(body.setTxnType) : null,
+          setCategoryAccountId: body.setCategoryAccountId
+            ? String(body.setCategoryAccountId)
+            : null,
+          setVatCode: body.setVatCode ? String(body.setVatCode) : null,
+          setTags: Array.isArray(body.setTags) ? body.setTags.map(String) : [],
+          setCounterparty: body.setCounterparty ? String(body.setCounterparty) : null,
+        }),
+      );
+    }
+    if (path[0] === "bank-rules" && path[1] === "from-txn" && path.length === 2) {
+      return NextResponse.json(
+        await createBooksBankRuleFromTxn(session.userId, session.clientId, String(body.txnId || ""), {
+          name: body.name ? String(body.name) : undefined,
+          priority: body.priority != null ? Number(body.priority) : undefined,
         }),
       );
     }

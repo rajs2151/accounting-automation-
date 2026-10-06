@@ -44,6 +44,10 @@ const MESSAGES: Record<string, string> = {
   party_required: "Choose a party for this allocation.",
   open_item_required: "Choose an open invoice or bill for Against item.",
   p2a_match_suggestions_migration_required: "Database migration db/39 is required for match suggestions.",
+  p2a_bank_rules_migration_required: "Database migration db/40 is required for bank rules.",
+  rule_name_required: "Give the rule a name.",
+  invalid_narration_regex: "That narration pattern is not a valid regular expression.",
+  bank_rule_not_found: "That bank rule was not found.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: 1 (engine shipped 117c803) -> Addendum C slice 1 verified -> C1 in progress
-- Current task: P2A stream A — A2 done; next A3 rules engine
+- Current task: P2A stream A — A3 done; next A4 gateway/card + e2e
+- 2026-10-06: P2A-3 PASS — bank rules (conditions→actions), preview, Rule: chip, create-from-txn
 - 2026-10-06: P2A-2 PASS — weighted match scores, bands, reject memory, subset-sum bundle
 - 2026-10-06: P2A-1 PASS — split allocations 1:N/N:1 + fees; unallocated=0; advance VAT TBD flagged
 - 2026-10-06: C3-3 PASS — transfer pair link → one Contra (CV); dual-control post both sides.
@@ -90,3 +91,4 @@
 - 2026-10-06 | C3-3 | PASS | transfer pair → one CV; linked_txn_id; dual control
 - 2026-10-06 | P2A-1 | PASS | books_bank_txn_allocations; 1:N+fee+N:1; drawer; VAT on advances TBD
 - 2026-10-06 | P2A-2 | PASS | match score engine + rejected_matches; unit 174 pass / 1 skip; e2e 4/4
+- 2026-10-06 | P2A-3 | PASS | books_bank_rules; apply suggestions; preview; create-from-txn

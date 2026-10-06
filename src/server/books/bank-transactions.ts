@@ -86,6 +86,7 @@ export type BooksBankTransactionRow = {
   linkedTxnLabel: string | null;
   journalEntryId: string | null;
   entryNo: string | null;
+  suggestionSource: string | null;
 };
 
 async function hasLinkedTxnColumn(db: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null }> }) {
@@ -265,6 +266,13 @@ export async function listBooksBankTransactions(
     await materializeBooksBankTransactions(userId, clientId, {
       accountId: opts?.accountId,
     });
+    // P2A-3: suggest type/category from rules (Needs Review, unset type only).
+    try {
+      const { applyBooksBankRuleSuggestions } = await import("@/server/books/bank-rules");
+      await applyBooksBankRuleSuggestions(userId, clientId, { accountId: opts?.accountId });
+    } catch {
+      /* rules migration optional */
+    }
   }
 
   return withUser(userId, async (db) => {
@@ -272,12 +280,20 @@ export async function listBooksBankTransactions(
     const status = opts?.status && opts.status !== "all" ? opts.status : null;
     const q = opts?.q?.trim() || null;
     const hasLink = await hasLinkedTxnColumn(db);
+    const sugCol = await db.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'books_bank_transactions' AND column_name = 'suggestion_source'`,
+    );
+    const hasSug = Boolean(sugCol.rowCount);
     const linkSelect = hasLink
       ? `t.linked_txn_id AS "linkedTxnId",
               CASE WHEN lt.id IS NULL THEN NULL
                    ELSE COALESCE(la.code, '') || ' · ' || COALESCE(lt.description, '')
               END AS "linkedTxnLabel",`
       : `NULL::uuid AS "linkedTxnId", NULL::text AS "linkedTxnLabel",`;
+    const sugSelect = hasSug
+      ? `t.suggestion_source AS "suggestionSource",`
+      : `NULL::text AS "suggestionSource",`;
     const linkJoin = hasLink
       ? `LEFT JOIN books_bank_transactions lt ON lt.id = t.linked_txn_id
        LEFT JOIN books_accounts la ON la.id = lt.account_id`
@@ -296,6 +312,7 @@ export async function listBooksBankTransactions(
               t.note, t.exclude_reason AS "excludeReason",
               t.open_item_id AS "openItemId",
               ${linkSelect}
+              ${sugSelect}
               t.journal_entry_id AS "journalEntryId",
               je.entry_no AS "entryNo",
               CASE WHEN oi.id IS NULL THEN NULL
@@ -355,6 +372,7 @@ export async function listBooksBankTransactions(
         linkedTxnLabel: r.linkedTxnLabel ? String(r.linkedTxnLabel).trim() : null,
         journalEntryId: r.journalEntryId ? String(r.journalEntryId) : null,
         entryNo: r.entryNo != null ? String(r.entryNo) : null,
+        suggestionSource: r.suggestionSource ? String(r.suggestionSource) : null,
       };
     });
   });
