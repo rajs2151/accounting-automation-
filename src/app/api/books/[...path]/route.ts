@@ -60,6 +60,13 @@ import {
   updateBooksBankAccountSetup,
 } from "@/server/books/bank-accounts";
 import {
+  excludeBooksBankTransaction,
+  listBooksBankTransactions,
+  markBooksBankTransactionReviewed,
+  materializeBooksBankTransactions,
+  updateBooksBankTransaction,
+} from "@/server/books/bank-transactions";
+import {
   acknowledgeBooksDocumentCheckVat,
   approveAndPostBooksDocument,
   createBooksDocument,
@@ -341,6 +348,15 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "bank-accounts" && path.length === 1) {
       return NextResponse.json(await listBooksBankAccounts(session.userId, session.clientId));
+    }
+    if (path[0] === "bank-transactions" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksBankTransactions(session.userId, session.clientId, {
+          accountId: url.searchParams.get("accountId") || undefined,
+          status: url.searchParams.get("status") || undefined,
+          q: url.searchParams.get("q") || undefined,
+        }),
+      );
     }
     if (path[0] === "statements" && path.length === 1) {
       return NextResponse.json(await listStatementExtractions(session.userId, session.clientId));
@@ -794,6 +810,28 @@ export async function POST(request: Request, ctx: Ctx) {
         await setInboxDocType(session.userId, session.clientId, path[1], String(body.docType || "")),
       );
     }
+    if (path[0] === "bank-transactions" && path[1] === "materialize" && path.length === 2) {
+      return NextResponse.json(
+        await materializeBooksBankTransactions(session.userId, session.clientId, {
+          accountId: body.accountId ? String(body.accountId) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "mark-reviewed" && path.length === 3) {
+      return NextResponse.json(
+        await markBooksBankTransactionReviewed(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "bank-transactions" && path[2] === "exclude" && path.length === 3) {
+      return NextResponse.json(
+        await excludeBooksBankTransaction(
+          session.userId,
+          session.clientId,
+          path[1],
+          String(body.reason || body.excludeReason || ""),
+        ),
+      );
+    }
     if (path[0] === "statements" && path[1] === "csv" && path.length === 2) {
       return NextResponse.json(
         await ingestCsvToStatement(session.userId, session.clientId, {
@@ -964,6 +1002,20 @@ export async function PATCH(request: Request, ctx: Ctx) {
               : body.ibanLast4
                 ? String(body.ibanLast4)
                 : null,
+        }),
+      );
+    }
+    if (path[0] === "bank-transactions" && path.length === 2) {
+      return NextResponse.json(
+        await updateBooksBankTransaction(session.userId, session.clientId, path[1], {
+          txnType: body.txnType === undefined ? undefined : body.txnType ? String(body.txnType) : null,
+          categoryAccountId:
+            body.categoryAccountId === undefined
+              ? undefined
+              : body.categoryAccountId
+                ? String(body.categoryAccountId)
+                : null,
+          note: body.note === undefined ? undefined : String(body.note),
         }),
       );
     }

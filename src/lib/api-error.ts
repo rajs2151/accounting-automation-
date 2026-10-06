@@ -19,6 +19,12 @@ const MESSAGES: Record<string, string> = {
   bank_account_not_set_up: "Set up bank name / IBAN before uploading to this account.",
   account_not_found: "That bank account was not found.",
   account_requires_client: "Choose a company before uploading to a bank account.",
+  txn_type_required: "Choose a transaction type before marking reviewed.",
+  category_account_required: "Choose a COA account before marking reviewed.",
+  exclude_reason_required: "Give a reason when excluding a transaction.",
+  bank_txn_not_found: "That bank transaction was not found.",
+  bank_txn_not_editable: "That transaction can no longer be edited.",
+  c3_bank_transactions_migration_required: "Database migration db/35 is required for Transactions.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

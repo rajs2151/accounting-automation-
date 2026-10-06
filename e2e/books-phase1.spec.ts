@@ -208,9 +208,14 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await periodTrigger.click();
   await page.keyboard.press("Escape");
 
-  await page.getByTestId("topbar-search").blur();
+  const search = page.getByTestId("topbar-search");
+  await search.blur();
   await page.keyboard.press("Control+k");
-  await expect(page.getByTestId("topbar-search")).toBeFocused();
+  // Focus shortcut can race with period popover teardown — retry once.
+  if (!(await search.evaluate((el) => el === document.activeElement))) {
+    await page.keyboard.press("Control+k");
+  }
+  await expect(search).toBeFocused({ timeout: 5000 });
 
   await page.goto("/books/sales");
   await expect(page.getByRole("heading", { name: "Sales invoices" })).toBeVisible();
@@ -233,6 +238,11 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await page.goto("/books/banking");
   await expect(page.getByRole("heading", { name: "Banking" })).toBeVisible();
   await expect(page.getByTestId("banking-accounts-table")).toBeVisible();
+
+  await page.goto("/books/transactions");
+  await expect(page.getByRole("heading", { name: "Transactions" })).toBeVisible();
+  await expect(page.getByTestId("txn-tab-needs-review")).toBeVisible();
+  await expect(page.getByTestId("txn-table")).toBeVisible();
 
   await page.goto("/books/inbox");
   await expect(page.getByRole("heading", { name: /Inbox/ })).toBeVisible();

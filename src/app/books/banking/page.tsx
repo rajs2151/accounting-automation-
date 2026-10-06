@@ -265,6 +265,13 @@ export default function BankingPage() {
                 </td>
                 <td className="px-3 py-2 tabular-nums">{r.unreviewedLineCount}</td>
                 <td className="space-x-2 px-3 py-2 text-right">
+                  <Link
+                    href={`/books/transactions?accountId=${encodeURIComponent(r.id)}`}
+                    className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs hover:bg-muted"
+                    data-testid={`banking-transactions-${r.code}`}
+                  >
+                    Transactions
+                  </Link>
                   {!r.setupOk ? (
                     <Button
                       size="sm"

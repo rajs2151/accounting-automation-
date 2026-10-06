@@ -45,6 +45,13 @@ const BALANCE: Record<string, StatusLabel> = {
   failed: { label: "Off balance", tone: "danger" },
 };
 
+const BANK_TXN: Record<string, StatusLabel> = {
+  needs_review: { label: "Needs review", tone: "warning" },
+  ready: { label: "Ready", tone: "info" },
+  excluded: { label: "Excluded", tone: "neutral" },
+  posted: { label: "Posted", tone: "success" },
+};
+
 const DOC_TYPE: Record<string, StatusLabel> = {
   sales_invoice: { label: "Sales invoice", tone: "info" },
   purchase_bill: { label: "Purchase bill", tone: "info" },
@@ -81,6 +88,10 @@ export function balanceCheckLabel(check: string): StatusLabel {
   return BALANCE[check] || { label: check, tone: "neutral" };
 }
 
+export function bankTxnReviewStatusLabel(status: string): StatusLabel {
+  return BANK_TXN[status] || { label: status, tone: "neutral" };
+}
+
 export function docTypeLabel(type: string | null | undefined): StatusLabel {
   if (!type) return { label: "—", tone: "neutral" };
   return DOC_TYPE[type] || { label: type, tone: "neutral" };
@@ -93,4 +104,5 @@ export const ALL_KNOWN_STATUS_KEYS = [
   ...Object.keys(EXTRACTION),
   ...Object.keys(STATEMENT),
   ...Object.keys(BALANCE),
+  ...Object.keys(BANK_TXN),
 ] as const;
