@@ -2,7 +2,7 @@
 
 ## Now
 - Phase: 3 (Expenses) on feat/books-phase1 — Stream A
-- Current task: P3-1 PASS — next P3-2 approve/reject (+ dual control)
+- Current task: P3-2 PASS — next P3-3 paid-from bank match
 - 2026-10-06: P2A-6 PASS — bulk preview/post, Rules page, transfer auto-link; Phase 2 Stream A closed
 - 2026-10-06: P2A-5 PASS — materialize requires balance_ok; top-bar period shows label
 - 2026-10-06: P2A-4 PASS — card repayment / gateway payout + group net-zero; Unmatched→post e2e
@@ -101,3 +101,4 @@
 - 2026-10-06 | P2A-5 | PASS | ready≠eligible without balance_ok; period picker label; unit+e2e green
 - 2026-10-06 | P2A-6 | PASS | bulk journal preview+post; /books/rules; auto-link transfers; Phase 2 A close
 - 2026-10-06 | P3-1 | PASS | db/55 expenses draft + EXP voucher + /books/expenses UI; unit 2/2
+- 2026-10-06 | P3-2 | PASS | submit/approve/reject/resubmit; dual-control EXP journal; VAT-in-cost without TRN

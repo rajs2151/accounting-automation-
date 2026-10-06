@@ -72,6 +72,8 @@ export default function BooksExpensesPage() {
   const [lineVat, setLineVat] = useState("5.00");
   const [lineVatCode, setLineVatCode] = useState("SR");
   const [saving, setSaving] = useState(false);
+  const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
+  const [acting, setActing] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -215,13 +217,40 @@ export default function BooksExpensesPage() {
     void reload();
   }
 
+  async function act(id: string, action: "submit" | "approve" | "reject" | "resubmit") {
+    setActing(`${action}:${id}`);
+    const body =
+      action === "reject" ? { reason: rejectReason[id] || "" } : undefined;
+    const res = await fetch(`/api/books/expenses/${id}/${action}`, {
+      method: "POST",
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    setActing(null);
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data));
+      return;
+    }
+    toast.success(
+      action === "submit"
+        ? "Submitted for approval"
+        : action === "approve"
+          ? `Approved${data.entryNo ? ` · ${data.entryNo}` : ""}`
+          : action === "reject"
+            ? "Rejected"
+            : "Resubmitted",
+    );
+    void reload();
+  }
+
   return (
     <div className="space-y-4 py-4" data-testid="expenses-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Expenses</h1>
           <p className="text-sm text-muted-foreground">
-            Staff claims — draft now; approve &amp; post in the next slice
+            Staff claims — submit for approval; approver posts the journal
           </p>
         </div>
         <Button data-testid="expenses-new" onClick={() => setFormOpen((v) => !v)}>
@@ -436,16 +465,68 @@ export default function BooksExpensesPage() {
                     ) : null}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {r.status === "draft" ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        data-testid={`expense-delete-${r.id}`}
-                        onClick={() => void deleteDraft(r.id)}
-                      >
-                        Delete
-                      </Button>
-                    ) : null}
+                    <div className="flex flex-wrap items-center justify-end gap-1">
+                      {r.status === "draft" ? (
+                        <>
+                          <Button
+                            size="sm"
+                            data-testid={`expense-submit-${r.id}`}
+                            disabled={acting === `submit:${r.id}`}
+                            onClick={() => void act(r.id, "submit")}
+                          >
+                            Submit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            data-testid={`expense-delete-${r.id}`}
+                            onClick={() => void deleteDraft(r.id)}
+                          >
+                            Delete
+                          </Button>
+                        </>
+                      ) : null}
+                      {r.status === "pending" ? (
+                        <>
+                          <Button
+                            size="sm"
+                            data-testid={`expense-approve-${r.id}`}
+                            disabled={acting === `approve:${r.id}`}
+                            onClick={() => void act(r.id, "approve")}
+                          >
+                            Approve
+                          </Button>
+                          <Input
+                            className="h-8 w-36"
+                            placeholder="Reject reason"
+                            value={rejectReason[r.id] || ""}
+                            onChange={(e) =>
+                              setRejectReason((m) => ({ ...m, [r.id]: e.target.value }))
+                            }
+                            data-testid={`expense-reject-reason-${r.id}`}
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            data-testid={`expense-reject-${r.id}`}
+                            disabled={acting === `reject:${r.id}`}
+                            onClick={() => void act(r.id, "reject")}
+                          >
+                            Reject
+                          </Button>
+                        </>
+                      ) : null}
+                      {r.status === "rejected" ? (
+                        <Button
+                          size="sm"
+                          data-testid={`expense-resubmit-${r.id}`}
+                          disabled={acting === `resubmit:${r.id}`}
+                          onClick={() => void act(r.id, "resubmit")}
+                        >
+                          Resubmit
+                        </Button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))

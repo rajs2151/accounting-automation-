@@ -27,6 +27,7 @@ export const VOUCHER_TYPES = [
   "Debit Note",
   "Opening",
   "Closing",
+  "Expense",
 ] as const;
 
 export type VoucherType = (typeof VOUCHER_TYPES)[number];

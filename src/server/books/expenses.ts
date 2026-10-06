@@ -1,7 +1,10 @@
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
+import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
+import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { assertSyntheticTenant } from "@/server/security-gate";
+import type { PoolClient } from "pg";
 
 export const EXPENSE_STATUSES = ["draft", "pending", "approved", "rejected"] as const;
 export type ExpenseStatus = (typeof EXPENSE_STATUSES)[number];
@@ -38,6 +41,8 @@ export type ExpenseRow = {
   rejectionReason: string | null;
   journalEntryId: string | null;
   createdBy: string;
+  /** Present after approve/post */
+  entryNo?: string | null;
   lines?: ExpenseLineRow[];
 };
 
@@ -386,8 +391,8 @@ export async function updateBooksExpenseDraft(
     );
     if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
     const row = before.rows[0];
-    if (String(row.status) !== "draft") {
-      throw new BooksError("expense_not_draft", "conflict");
+    if (!["draft", "rejected"].includes(String(row.status))) {
+      throw new BooksError("expense_not_editable", "conflict");
     }
 
     const expenseDate = body.expenseDate !== undefined ? isoDate(body.expenseDate) : isoDate(row.expense_date);
@@ -512,11 +517,373 @@ export async function updateBooksExpenseDraft(
       entity: "books_expense",
       entityId: id,
       before: { status: row.status, gross_minor: row.gross_minor },
-      after: { status: "draft", grossMinor: grossTotal },
+      after: { status: row.status, grossMinor: grossTotal },
     });
 
     return mapExpense(updated.rows[0]);
   });
+}
+
+async function loadExpenseLines(db: PoolClient, clientId: string, expenseId: string) {
+  const lines = await db.query(
+    `SELECT l.*, a.code AS account_code
+     FROM books_expense_lines l
+     JOIN books_accounts a ON a.id = l.account_id
+     WHERE l.expense_id = $1 AND l.client_id = $2
+     ORDER BY l.line_no`,
+    [expenseId, clientId],
+  );
+  return lines.rows;
+}
+
+async function assertReceiptIfRequired(
+  db: PoolClient,
+  clientId: string,
+  expenseId: string,
+  grossMinor: number,
+) {
+  const thr = await db.query(
+    `SELECT expense_receipt_threshold_minor AS t FROM clients WHERE id = $1`,
+    [clientId],
+  );
+  const threshold = thr.rows[0]?.t;
+  if (threshold == null) return;
+  if (grossMinor <= Number(threshold)) return;
+  const files = await db.query(
+    `SELECT 1 FROM books_expense_files WHERE expense_id = $1 AND client_id = $2 LIMIT 1`,
+    [expenseId, clientId],
+  );
+  if (!files.rowCount) {
+    throw new BooksError("receipt_required", "invalid");
+  }
+}
+
+/** draft → pending (preparer submit). */
+export async function submitBooksExpense(userId: string, clientId: string, id: string) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.status) !== "draft") {
+      throw new BooksError("expense_not_draft", "conflict");
+    }
+    if (!row.paid_from_account_id || !row.paid_from_kind) {
+      throw new BooksError("paid_from_required", "invalid");
+    }
+    const lines = await loadExpenseLines(db, clientId, id);
+    if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
+    await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
+
+    const period = await db.query(
+      `SELECT status FROM books_periods WHERE id = $1 AND client_id = $2`,
+      [row.period_id, clientId],
+    );
+    if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
+    if (!["OPEN", "REOPENED"].includes(String(period.rows[0].status))) {
+      throw new BooksError("period_locked", "period_closed");
+    }
+
+    const updated = await db.query(
+      `UPDATE books_expenses SET
+         status = 'pending',
+         submitted_by = $3,
+         submitted_at = now(),
+         rejected_by = NULL,
+         rejected_at = NULL,
+         rejection_reason = NULL,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, userId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "submit_expense",
+      entity: "books_expense",
+      entityId: id,
+      before: { status: "draft" },
+      after: { status: "pending", submittedBy: userId },
+    });
+    return mapExpense(updated.rows[0]);
+  });
+}
+
+/** pending → rejected (approver ≠ submitter). No journal. */
+export async function rejectBooksExpense(
+  userId: string,
+  clientId: string,
+  id: string,
+  reason: string,
+) {
+  const trimmed = String(reason || "").trim();
+  if (!trimmed) throw new BooksError("rejection_reason_required", "invalid");
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.status) !== "pending") {
+      throw new BooksError("expense_not_pending", "conflict");
+    }
+    await requireDualControlActor(db, userId, String(row.submitted_by), "post");
+
+    const updated = await db.query(
+      `UPDATE books_expenses SET
+         status = 'rejected',
+         rejected_by = $3,
+         rejected_at = now(),
+         rejection_reason = $4,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, userId, trimmed],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "reject_expense",
+      entity: "books_expense",
+      entityId: id,
+      before: { status: "pending" },
+      after: { status: "rejected", reason: trimmed },
+    });
+    return mapExpense(updated.rows[0]);
+  });
+}
+
+/** rejected → pending (same EXP no). */
+export async function resubmitBooksExpense(userId: string, clientId: string, id: string) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.status) !== "rejected") {
+      throw new BooksError("expense_not_rejected", "conflict");
+    }
+    if (!row.paid_from_account_id || !row.paid_from_kind) {
+      throw new BooksError("paid_from_required", "invalid");
+    }
+    const lines = await loadExpenseLines(db, clientId, id);
+    if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
+    await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
+
+    const updated = await db.query(
+      `UPDATE books_expenses SET
+         status = 'pending',
+         submitted_by = $3,
+         submitted_at = now(),
+         rejected_by = NULL,
+         rejected_at = NULL,
+         rejection_reason = NULL,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, userId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "resubmit_expense",
+      entity: "books_expense",
+      entityId: id,
+      before: { status: "rejected" },
+      after: { status: "pending", submittedBy: userId },
+    });
+    return mapExpense(updated.rows[0]);
+  });
+}
+
+type BuiltExpenseLine = {
+  accountId: string;
+  debitMinor: number;
+  creditMinor: number;
+  lineMemo: string;
+  vatTreatment: string | null;
+};
+
+async function buildExpenseJournalLines(
+  db: PoolClient,
+  clientId: string,
+  expense: Record<string, unknown>,
+  lines: Array<Record<string, unknown>>,
+): Promise<BuiltExpenseLine[]> {
+  const paidFromId = String(expense.paid_from_account_id);
+  const vatIn = await db.query(
+    `SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1430' AND active = true`,
+    [clientId],
+  );
+  if (!vatIn.rowCount) throw new BooksError("vat_input_account_missing", "invalid");
+  const vatInId = String(vatIn.rows[0].id);
+
+  let supplierTrn: string | null = null;
+  if (expense.vendor_party_id) {
+    const p = await db.query(`SELECT trn FROM books_parties WHERE id = $1 AND client_id = $2`, [
+      expense.vendor_party_id,
+      clientId,
+    ]);
+    supplierTrn = p.rows[0]?.trn ? String(p.rows[0].trn).trim() : null;
+    if (!supplierTrn) supplierTrn = null;
+  }
+
+  const out: BuiltExpenseLine[] = [];
+  let recoverableVat = 0;
+  let creditGross = 0;
+
+  for (const line of lines) {
+    const net = Number(line.net_minor);
+    const vat = Number(line.vat_minor);
+    const vatCode = line.vat_code == null ? null : String(line.vat_code);
+    let recoverable = false;
+    if (vat > 0 && vatCode && vatCode !== "NR" && supplierTrn) {
+      const meta = await db.query(
+        `SELECT recoverable FROM books_vat_codes WHERE code = $1 AND active = true`,
+        [vatCode],
+      );
+      recoverable = Boolean(meta.rows[0]?.recoverable);
+    }
+    const debitAmt = recoverable ? net : net + vat;
+    if (recoverable) recoverableVat += vat;
+    creditGross += net + vat;
+    out.push({
+      accountId: String(line.account_id),
+      debitMinor: debitAmt,
+      creditMinor: 0,
+      lineMemo: String(line.description || expense.description || "Expense"),
+      vatTreatment: vatCode,
+    });
+  }
+
+  if (recoverableVat > 0) {
+    out.push({
+      accountId: vatInId,
+      debitMinor: recoverableVat,
+      creditMinor: 0,
+      lineMemo: "Input VAT",
+      vatTreatment: "SR",
+    });
+  }
+
+  out.push({
+    accountId: paidFromId,
+    debitMinor: 0,
+    creditMinor: creditGross,
+    lineMemo: `Paid from ${String(expense.paid_from_kind || "")}`,
+    vatTreatment: null,
+  });
+
+  const dr = out.reduce((s, l) => s + l.debitMinor, 0);
+  const cr = out.reduce((s, l) => s + l.creditMinor, 0);
+  if (dr !== cr) throw new BooksError("expense_journal_unbalanced", "invalid_money");
+  return out;
+}
+
+/** pending → approved + posted journal (approver ≠ submitter). */
+export async function approveAndPostBooksExpense(
+  userId: string,
+  clientId: string,
+  id: string,
+) {
+  const prepared = await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const before = await db.query(
+      `SELECT * FROM books_expenses WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [id, clientId],
+    );
+    if (!before.rowCount) throw new BooksError("expense_not_found", "not_found");
+    const row = before.rows[0];
+    if (String(row.status) !== "pending") {
+      throw new BooksError("expense_not_pending", "conflict");
+    }
+    if (row.journal_entry_id) throw new BooksError("expense_already_posted", "conflict");
+    await requireDualControlActor(db, userId, String(row.submitted_by), "post");
+    if (!row.paid_from_account_id) throw new BooksError("paid_from_required", "invalid");
+
+    const period = await db.query(
+      `SELECT id, status FROM books_periods WHERE id = $1 AND client_id = $2`,
+      [row.period_id, clientId],
+    );
+    if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
+    if (!["OPEN", "REOPENED"].includes(String(period.rows[0].status))) {
+      throw new BooksError("period_locked", "period_closed");
+    }
+
+    await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
+    const lines = await loadExpenseLines(db, clientId, id);
+    if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
+    const journalLines = await buildExpenseJournalLines(db, clientId, row, lines);
+    return {
+      row,
+      journalLines,
+      preparerId: String(row.submitted_by),
+    };
+  });
+
+  const created = await createBooksJournal(prepared.preparerId, clientId, {
+    periodId: String(prepared.row.period_id),
+    entryDate: isoDate(prepared.row.expense_date) || "",
+    memo: String(prepared.row.description || prepared.row.expense_no || "Expense"),
+    reference: String(prepared.row.expense_no),
+    voucherType: "Expense",
+    lines: prepared.journalLines.map((l) => ({
+      accountId: l.accountId,
+      debitMinor: l.debitMinor,
+      creditMinor: l.creditMinor,
+      currency: String(prepared.row.currency || "AED"),
+      originalMinor: l.debitMinor || l.creditMinor,
+      fxRateScaled: 100_000_000,
+      aedMinor: l.debitMinor || l.creditMinor,
+      lineMemo: l.lineMemo,
+      vatCode: null,
+      vatTreatment: l.vatTreatment,
+      isVatCompanion: true,
+    })),
+    post: false,
+  });
+
+  const posted = await postBooksJournal(userId, clientId, created.id);
+
+  const expense = await withUser(userId, async (db) => {
+    const updated = await db.query(
+      `UPDATE books_expenses SET
+         status = 'approved',
+         approved_by = $3,
+         approved_at = now(),
+         journal_entry_id = $4,
+         updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING *`,
+      [id, clientId, userId, created.id],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "approve_expense",
+      entity: "books_expense",
+      entityId: id,
+      before: { status: "pending" },
+      after: {
+        status: "approved",
+        journalEntryId: created.id,
+        entryNo: posted.entryNo,
+      },
+    });
+    return mapExpense(updated.rows[0]);
+  });
+
+  return { ...expense, journalEntryId: created.id, entryNo: posted.entryNo };
 }
 
 /** Soft-delete draft only. */

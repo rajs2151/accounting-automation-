@@ -29,6 +29,18 @@ FROM clients c
 WHERE c.is_synthetic = true
 ON CONFLICT (client_id, voucher_type, year) DO NOTHING;
 
+-- Allow Expense on journal entries (EXP series).
+ALTER TABLE books_journal_entries
+  DROP CONSTRAINT IF EXISTS books_journal_entries_voucher_type_check;
+ALTER TABLE books_journal_entries
+  ADD CONSTRAINT books_journal_entries_voucher_type_check
+  CHECK (
+    voucher_type IS NULL OR voucher_type IN (
+      'Sales', 'Purchase', 'Receipt', 'Payment', 'Contra', 'Journal',
+      'Credit Note', 'Debit Note', 'Opening', 'Closing', 'Expense'
+    )
+  );
+
 -- Receipt mandatory above this amount (fils). NULL = not enforced yet (owner TBD).
 ALTER TABLE clients
   ADD COLUMN IF NOT EXISTS expense_receipt_threshold_minor bigint

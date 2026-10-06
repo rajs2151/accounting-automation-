@@ -67,10 +67,14 @@ import {
   updateBooksBankRule,
 } from "@/server/books/bank-rules";
 import {
+  approveAndPostBooksExpense,
   createBooksExpense,
   getBooksExpense,
   listBooksExpenses,
+  rejectBooksExpense,
+  resubmitBooksExpense,
   softDeleteBooksExpenseDraft,
+  submitBooksExpense,
   updateBooksExpenseDraft,
   type ExpenseLineInput,
   type PaidFromKind,
@@ -880,6 +884,27 @@ export async function POST(request: Request, ctx: Ctx) {
           lines,
         }),
       );
+    }
+    if (path[0] === "expenses" && path[2] === "submit" && path.length === 3) {
+      return NextResponse.json(await submitBooksExpense(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "expenses" && path[2] === "approve" && path.length === 3) {
+      return NextResponse.json(
+        await approveAndPostBooksExpense(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "expenses" && path[2] === "reject" && path.length === 3) {
+      return NextResponse.json(
+        await rejectBooksExpense(
+          session.userId,
+          session.clientId,
+          path[1],
+          String(body.reason || body.rejectionReason || ""),
+        ),
+      );
+    }
+    if (path[0] === "expenses" && path[2] === "resubmit" && path.length === 3) {
+      return NextResponse.json(await resubmitBooksExpense(session.userId, session.clientId, path[1]));
     }
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
       const applyAdvanceOriginalMinor =
