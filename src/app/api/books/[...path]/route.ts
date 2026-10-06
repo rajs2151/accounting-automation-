@@ -121,6 +121,7 @@ import {
   createReceiptOrPayment,
   getPartyAdvanceBalance,
 } from "@/server/books/settlements";
+import { listPlaceOfSupplyGaps, setDocumentPlaceOfSupply } from "@/server/books/place-of-supply";
 import {
   getStatementExtraction,
   ingestCsvToStatement,
@@ -313,6 +314,14 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "documents" && path.length === 2) {
       return NextResponse.json(await getBooksDocument(session.userId, session.clientId, path[1]));
+    }
+    if (path[0] === "place-of-supply" && path[1] === "gaps" && path.length === 2) {
+      return NextResponse.json(
+        await listPlaceOfSupplyGaps(session.userId, session.clientId, {
+          from: url.searchParams.get("from") || undefined,
+          to: url.searchParams.get("to") || undefined,
+        }),
+      );
     }
     if (path[0] === "documents" && path[2] === "journal-preview" && path.length === 3) {
       return NextResponse.json(
@@ -738,6 +747,14 @@ export async function POST(request: Request, ctx: Ctx) {
             applyAdvanceOriginalMinor != null && Number.isFinite(applyAdvanceOriginalMinor)
               ? applyAdvanceOriginalMinor
               : undefined,
+        }),
+      );
+    }
+    if (path[0] === "documents" && path[2] === "place-of-supply" && path.length === 3) {
+      return NextResponse.json(
+        await setDocumentPlaceOfSupply(session.userId, session.clientId, path[1], {
+          placeOfSupply: body.placeOfSupply == null ? null : String(body.placeOfSupply),
+          reason: body.reason == null ? null : String(body.reason),
         }),
       );
     }

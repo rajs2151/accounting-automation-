@@ -51,6 +51,9 @@ const MESSAGES: Record<string, string> = {
   original_party_mismatch: "The note's party must match the original document.",
   original_currency_mismatch: "The note's currency must match the original document.",
   exceeds_original_balance: "The note is more than the original's open balance.",
+  invalid_place_of_supply: "Choose one of the seven emirates or Outside UAE.",
+  place_of_supply_reason_required: "Give a reason for changing the place of supply.",
+  place_of_supply_not_applicable: "Place of supply applies only to invoices, bills and notes.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

@@ -11,6 +11,7 @@ import { BooksError } from "@/server/books/errors";
 import { createBooksJournal, postBooksJournal, reverseBooksJournal } from "@/server/books/journals";
 import { upsertOpenItemFromDocument } from "@/server/books/open-items";
 import { enqueueBooksJob } from "@/server/books/jobs";
+import { normalizePlaceOfSupply, refreshDraftPlaceOfSupply } from "@/server/books/place-of-supply";
 import { vatMinorForNet } from "@/server/books/vat-codes";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
@@ -58,6 +59,9 @@ export type DocumentInput = {
   printedBalanceDueMinor?: number | null;
   extractionId?: string | null;
   fileId?: string | null;
+  /** P2B-2: document-level override of the party's emirate (reason required, audited). */
+  placeOfSupply?: string | null;
+  placeOfSupplyReason?: string | null;
 };
 
 function optionalMinor(value: unknown): number | null {
@@ -267,6 +271,15 @@ export async function createBooksDocument(userId: string, clientId: string, body
     }
   }
 
+  let posOverride: { placeOfSupply: string; reason: string } | null = null;
+  if (body.placeOfSupply) {
+    const pos = normalizePlaceOfSupply(body.placeOfSupply);
+    if (!pos) throw new BooksError("invalid_place_of_supply", "invalid");
+    const posReason = String(body.placeOfSupplyReason || "").trim();
+    if (!posReason) throw new BooksError("place_of_supply_reason_required", "invalid");
+    posOverride = { placeOfSupply: pos, reason: posReason };
+  }
+
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     if (!body.periodId) throw new BooksError("period_required", "invalid");
@@ -444,6 +457,21 @@ export async function createBooksDocument(userId: string, clientId: string, body
       );
     }
 
+    if (posOverride) {
+      await db.query(
+        `UPDATE books_documents SET place_of_supply = $3, place_of_supply_source = 'override',
+           place_of_supply_reason = $4
+         WHERE id = $1 AND client_id = $2`,
+        [id, clientId, posOverride.placeOfSupply, posOverride.reason],
+      );
+    } else {
+      await refreshDraftPlaceOfSupply(db, clientId, id);
+    }
+    const posRow = await db.query(
+      `SELECT place_of_supply, place_of_supply_source FROM books_documents WHERE id = $1`,
+      [id],
+    );
+
     await writeBooksAudit(db, {
       clientId,
       actor: userId,
@@ -457,6 +485,9 @@ export async function createBooksDocument(userId: string, clientId: string, body
         defer,
         manualRecordReason: reason || null,
         extractionId: body.extractionId || null,
+        placeOfSupply: posRow.rows[0]?.place_of_supply ?? null,
+        placeOfSupplySource: posRow.rows[0]?.place_of_supply_source ?? null,
+        placeOfSupplyReason: posOverride?.reason ?? null,
       },
     });
 
@@ -810,6 +841,8 @@ export async function approveAndPostBooksDocument(
     if (doc.check_vat_reason && !doc.check_vat_ack_at) {
       throw new BooksError("check_vat_unacknowledged", "conflict");
     }
+    // P2B-2: snapshot place of supply from the party (or original) at posting; overrides stay.
+    await refreshDraftPlaceOfSupply(db, clientId, documentId);
 
     const linesRes = await db.query(
       `SELECT * FROM books_document_lines WHERE document_id = $1 ORDER BY line_no`,
