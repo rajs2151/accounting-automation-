@@ -33,6 +33,12 @@ import {
 } from "@/server/books/close";
 import { BooksError } from "@/server/books/errors";
 import {
+  listBooksFixedAssets,
+  previewBooksFixedAssetSchedule,
+  registerBooksFixedAsset,
+  runBooksDepreciation,
+} from "@/server/books/fixed-assets";
+import {
   beginBooksJournalCorrection,
   bulkAddBooksJournalTags,
   bulkPostBooksJournals,
@@ -543,6 +549,14 @@ export async function GET(request: Request, ctx: Ctx) {
         }),
       );
     }
+    if (path[0] === "fixed-assets" && path.length === 1) {
+      return NextResponse.json(await listBooksFixedAssets(session.userId, session.clientId));
+    }
+    if (path[0] === "fixed-assets" && path[2] === "schedule" && path.length === 3) {
+      return NextResponse.json(
+        await previewBooksFixedAssetSchedule(session.userId, session.clientId, path[1]),
+      );
+    }
     if (path[0] === "expenses" && path.length === 2) {
       return NextResponse.json(await getBooksExpense(session.userId, session.clientId, path[1]));
     }
@@ -749,6 +763,36 @@ export async function POST(request: Request, ctx: Ctx) {
           String(body.periodId || ""),
           String(body.gateKey || ""),
           String(body.reason || ""),
+        ),
+      );
+    }
+    if (path[0] === "fixed-assets" && path.length === 1) {
+      return NextResponse.json(
+        await registerBooksFixedAsset(session.userId, session.clientId, {
+          name: String(body.name || ""),
+          costMinor: Number(body.costMinor),
+          residualMinor: body.residualMinor == null ? 0 : Number(body.residualMinor),
+          inServiceDate: String(body.inServiceDate || ""),
+          lifeMonths: Number(body.lifeMonths),
+          assetAccountId: body.assetAccountId ? String(body.assetAccountId) : undefined,
+          accumulatedAccountId: body.accumulatedAccountId
+            ? String(body.accumulatedAccountId)
+            : undefined,
+          expenseAccountId: body.expenseAccountId ? String(body.expenseAccountId) : undefined,
+          sourceJournalEntryId: body.sourceJournalEntryId
+            ? String(body.sourceJournalEntryId)
+            : null,
+          sourceDocumentId: body.sourceDocumentId ? String(body.sourceDocumentId) : null,
+          disposedAt: body.disposedAt ? String(body.disposedAt) : null,
+        }),
+      );
+    }
+    if (path[0] === "fixed-assets" && path[1] === "run-depreciation" && path.length === 2) {
+      return NextResponse.json(
+        await runBooksDepreciation(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
         ),
       );
     }

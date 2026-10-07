@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, MoreHorizontal, Plus, Search } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -827,6 +828,19 @@ export default function BooksSettingsPage() {
       </section>
 
       <VatSettingsSection />
+
+      <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+        <h2 className="text-lg font-medium">Fixed assets</h2>
+        <p className="text-sm text-muted-foreground">
+          Register assets and run monthly straight-line depreciation (dual-control JV).
+        </p>
+        <Link
+          href="/books/fixed-assets"
+          className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+        >
+          Open fixed assets
+        </Link>
+      </section>
 
       <CoaSection periodId={periodId} />
 

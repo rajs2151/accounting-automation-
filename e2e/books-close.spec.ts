@@ -24,6 +24,10 @@ test("close page shows gates; approver can open waive/lock controls", async ({ p
     timeout: 30_000,
   });
   await expect(page.getByText("Suspense (1390) closing balance")).toBeVisible();
-  await expect(page.getByText("Depreciation")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Depreciation" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Depreciation" })).toHaveAttribute(
+    "href",
+    "/books/fixed-assets",
+  );
   await expect(page.getByRole("button", { name: /Lock period|Unlock/ })).toBeVisible();
 });

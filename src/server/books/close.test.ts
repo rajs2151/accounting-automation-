@@ -60,7 +60,8 @@ test("P5-1: placeholders + dual control; waive then lock", async (t) => {
     assert.ok(periodId);
 
     const checklist = await getBooksCloseChecklist(OMAR, company.clientId, periodId);
-    assert.ok(checklist.gates.some((g) => g.key === "depreciation" && g.status === "not_set_up"));
+    // P5-2: no assets due → depreciation passes; FX still placeholder.
+    assert.ok(checklist.gates.some((g) => g.key === "depreciation" && g.status === "pass"));
     assert.ok(checklist.gates.some((g) => g.key === "fx_revaluation" && g.status === "not_set_up"));
     assert.ok(checklist.gates.some((g) => g.key === "clearing_info" && g.status === "info"));
     // Fresh synthetic companies have bank COA accounts without statements → fail until waived.

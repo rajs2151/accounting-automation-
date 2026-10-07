@@ -1,32 +1,31 @@
-TASK ID: P5-2
-PHASE: Phase 5 - Fixed asset register + monthly straight-line depreciation
+TASK ID: P5-3
+PHASE: Phase 5 - FX rate table + month-end FX revaluation (unrealised gain/loss)
 
 OBJECTIVE:
-Register fixed assets per company and post monthly depreciation as dual-control journals; add the Depreciation gate
-to the P5-1 close checklist.
+Per-company manual FX rate table, and a month-end revaluation of foreign-currency monetary balances that posts one
+unrealised gain/loss journal (auto-reversed on the 1st of the next month), plus the FX gate in the close checklist.
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md line 335. PORT from the legacy engine:
-src/server/close.ts monthlyStraightLineMinor, registerFixedAsset, listDepreciation, postDepreciation.
-COA: 1600 Fixed assets (sub fa), 1690 Accumulated depreciation (fa_contra), 6800 Depreciation (depr),
-1790/6810 amortisation. Journal engine: src/server/books/journals.ts (create + post with dual control).
+READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md line 336. Existing: fx_rate_scaled on
+documents/lines/open items (scale 1e8 - see src/lib/fx.ts), P4-3/P4-4 auto-reverse scheduling (journals.ts),
+accounts.currency, 1121 USD bank, open items (open_original_minor / open_aed_minor). COA 7310 FX unrealised.
 
 REQUIREMENTS:
-- New migration: books_fixed_assets (client, name, asset account default 1600, accumulated account default 1690,
-  expense account default 6800, cost_minor, residual_minor, in_service_date, life_months, method 'straight_line',
-  disposed_at nullable, source journal/document optional) + books_depreciation_runs (asset, period, amount_minor,
-  journal_entry_id, unique (asset, period)). RLS like other books tables.
-- Monthly amount = (cost - residual) / life_months in fils, remainder distributed so the total over the life equals
-  cost - residual exactly (state the rounding rule; last month absorbs the remainder). First month = month of
-  in_service_date (full month; state it). Never depreciate below residual or after disposal.
-- "Run depreciation for <period>": creates ONE draft journal (JV, entry_type depreciation) with one Dr 6800 /
-  Cr 1690 line per asset, preparer = current user; posting needs an approver (existing dual control). Idempotent:
-  running twice for the same period does not double-post (unique run per asset+period).
-- Locked period -> refuse (period_locked). Disposal: out of scope (record disposed_at only, stop depreciation).
-- Close checklist (P5-1) gate "Depreciation": pass when every active asset has a posted run for the period (or no
-  assets), else fail with the list.
-- Screen: Settings > Fixed assets (or /books/fixed-assets): list, add asset, schedule preview, Run depreciation.
+- New migration: books_fx_rates (client, currency, rate_date, rate_scaled to AED, source 'manual', entered_by).
+  Unique (client, currency, rate_date). RLS like other books tables.
+- Revaluation for a period end: for each non-AED monetary item - bank/card accounts in a foreign currency (balance
+  in original currency from journal lines) and open AR/AP items in a foreign currency (open_original_minor) -
+  revalued AED = original x period-end rate; difference vs carried AED goes to 7310 (gain = Cr, loss = Dr) against
+  the account (bank) or the AR/AP control account (1210/2110). Rounding per item to fils; state the rule.
+- One draft journal (entry_type fx_revaluation, JV) with a line per item + one 7310 line; posted with dual
+  control; auto-reverse on the 1st of the next month (reuse the P4 auto-reverse mechanism). Refuse if any needed
+  currency has no rate for the period-end date (fx_rate_missing with the list) - never guess a rate.
+- Idempotent per period (re-run replaces the draft; a posted run blocks re-run until reversed).
+- Close checklist gate "FX revaluation": pass when no foreign-currency balances, or a posted run exists for the
+  period; fail lists missing rates / missing run.
+- Screen: Settings > FX rates (add rate) and a "Revalue FX" action on the Close page.
 
-TESTS (hand-computed): asset cost 36,000.00 residual 0 life 36 -> 1,000.00/month; asset 10,000.00 residual 1,000.00
-life 7 -> 1,285.71 x 6 + 1,285.74 last (total 9,000.00); run twice same period -> one journal; locked period
-refused; preparer cannot post own run; gate fails before run, passes after posting.
-ACCEPTANCE: exact amounts, balanced journals, idempotent runs, gate wired, full gates green.
+TESTS (hand-computed): USD bank 1,000.00 USD carried at 3.6725 = AED 3,672.50, period-end rate 3.6730 -> gain 0.50
+(Dr bank 0.50 / Cr 7310 0.50); USD AR open 500.00 carried 1,836.25, rate 3.6700 -> loss 1.25 (Dr 7310 / Cr 1210);
+missing rate refused; auto-reverse entry dated 1st next month; gate behaviour.
+ACCEPTANCE: exact amounts, balanced, reversal scheduled, gate wired, full gates green.
+DO NOT: fetch rates from the internet; change realised FX logic in settlements.

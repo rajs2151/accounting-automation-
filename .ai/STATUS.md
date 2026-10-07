@@ -2,7 +2,8 @@
 
 ## Now
 - Phase: **5 (Close + TB)** on feat/books-phase1 — Stream A
-- Current task: P5-2 (next — after P5-1 PASS)
+- Current task: P5-3 (next — after P5-2 PASS)
+- 2026-10-07: P5-2 PASS — fixed assets + straight-line depreciation + close gate (db/58); unit 240p/0f/1s; e2e 7/7
 - 2026-10-07: P5-1 PASS — close checklist + waive/lock/unlock + changed-since-close (db/57); unit 237p/0f/1s; e2e 7/7
 - 2026-10-07: P5-1 — books close checklist + waive/lock/unlock + changed-since-close (db/57)
 - 2026-10-07: Phase 3/4 critical bugfixes (expenses double-post, dual-control, period/AED/VAT; accrual auto-reverse next month; sheet reset; draft auto-reverse; drawer race; expense VAT→VAT201)
@@ -130,3 +131,4 @@
 - 2026-10-07 | P4-5 | PASS | reverse reason+date required; drawer Reverse; dual-control; e2e
 - 2026-10-07 | Phase 4 | CLOSED | P4-1..P4-5 on feat/books-phase1
 - 2026-10-07 | P5-1 | PASS | db/57 close waivers/events; /books/close; lock gate; unit 237p e2e 7/7
+- 2026-10-07 | P5-2 | PASS | db/58 fixed assets + depr runs; /books/fixed-assets; close Depreciation gate; unit 240p/1s e2e 7/7

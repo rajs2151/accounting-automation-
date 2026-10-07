@@ -550,6 +550,15 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
   });
 }
 
+const BOOKS_ENTRY_TYPES = new Set([
+  "manual",
+  "auto",
+  "closing",
+  "opening",
+  "reversal",
+  "depreciation",
+]);
+
 export async function createBooksJournal(
   userId: string,
   clientId: string,
@@ -560,6 +569,8 @@ export async function createBooksJournal(
     reference?: string;
     tags?: string[];
     voucherType?: string;
+    /** Defaults to manual. P5-2 depreciation runs use entry_type=depreciation. */
+    entryType?: string;
     correctsEntryId?: string | null;
     lines: BooksLineInput[];
     post?: boolean;
@@ -579,6 +590,8 @@ export async function createBooksJournal(
   const voucherType: VoucherType = isVoucherType(body.voucherType || "")
     ? (body.voucherType as VoucherType)
     : "Journal";
+  const entryType =
+    body.entryType && BOOKS_ENTRY_TYPES.has(body.entryType) ? body.entryType : "manual";
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -602,9 +615,9 @@ export async function createBooksJournal(
 
     await db.query(
       `INSERT INTO books_journal_entries (
-         id, client_id, period_id, memo, reference, entry_date, status, content_hash, created_by,
+         id, client_id, period_id, memo, reference, entry_date, status, entry_type, content_hash, created_by,
          scheduled_for, auto_reverse_next_period, template_key, voucher_type, tags, corrects_entry_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::text[],$15)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::text[],$16)`,
       [
         id,
         clientId,
@@ -613,6 +626,7 @@ export async function createBooksJournal(
         reference,
         body.entryDate,
         initialStatus,
+        entryType,
         hash,
         userId,
         wantSchedule ? scheduleDate : null,
