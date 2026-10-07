@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
 import {
@@ -42,6 +43,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
 import { formatMinor } from "@/lib/money";
 
@@ -76,6 +78,7 @@ type JournalRow = {
 type JournalDetail = {
   id: string;
   memo: string;
+  reference?: string | null;
   entryDate: string;
   status: string;
   entryNo?: string | null;
@@ -156,6 +159,8 @@ export default function BooksJournalsPage() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [meId, setMeId] = useState("");
+  const [posting, setPosting] = useState(false);
   const [editMemo, setEditMemo] = useState("");
   const [editNote, setEditNote] = useState("");
   const [editTags, setEditTags] = useState("");
@@ -200,6 +205,7 @@ export default function BooksJournalsPage() {
       .then((users) => {
         if (!Array.isArray(users)) return;
         const uid = readUserCookie();
+        setMeId(uid);
         const me = users.find((u: { id: string; role?: string }) => u.id === uid);
         setIsAdmin(me?.role === "admin" || me?.role === "approver");
       })
@@ -292,9 +298,11 @@ export default function BooksJournalsPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(String(data.error || "reverse_failed"));
+        setError(apiErrorMessage(data));
+        toast.error(apiErrorMessage(data));
         return;
       }
+      toast.success(`Reversed${data.entryNo ? ` — reversal ${data.entryNo} posted` : ""}`);
       setReverseOpen(false);
       setReverseReason("");
       const origId = detail.id;
@@ -302,6 +310,25 @@ export default function BooksJournalsPage() {
       await openRow({ id: origId } as JournalRow);
     } finally {
       setReversing(false);
+    }
+  }
+
+  async function postDraft() {
+    if (!detail) return;
+    setPosting(true);
+    try {
+      const res = await fetch(`/api/books/journals/${detail.id}/post`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(apiErrorMessage(data));
+        return;
+      }
+      toast.success(`Posted${data.entryNo ? ` as ${data.entryNo}` : ""}`);
+      const id = detail.id;
+      await reload();
+      await openRow({ id } as JournalRow);
+    } finally {
+      setPosting(false);
     }
   }
 
@@ -339,6 +366,8 @@ export default function BooksJournalsPage() {
     setCreatePrefill({
       entryDate: detail.entryDate,
       memo: detail.memo,
+      // Keep the draft's voucher reference (e.g. DRAFT-0010) on save.
+      reference: detail.reference || "",
       voucherType: detail.voucherType || "Journal",
       tags: detail.tags || [],
       autoReverseNextPeriod: Boolean(detail.autoReverseNextPeriod),
@@ -361,6 +390,16 @@ export default function BooksJournalsPage() {
   const periodLocked = detail?.periodStatus === "LOCKED";
   const isDraftLike = detail?.status === "draft" || detail?.status === "scheduled";
   const isPostedOpen = detail?.status === "posted" && !periodLocked;
+  // Dual control: the approver posting a draft must not be its creator or have edited it.
+  const postBlockedReason: string | null = !detail
+    ? null
+    : !isAdmin
+      ? "Only an approver or admin can post"
+      : detail.createdBy && detail.createdBy === meId
+        ? "You prepared this entry, so someone else must post it"
+        : audit.some((e) => e.action === "update" && e.actor === meId)
+          ? "You edited this entry, so someone else must post it"
+          : null;
 
   const columns: BooksGridColumn<JournalRow>[] = [
     {
@@ -666,14 +705,30 @@ export default function BooksJournalsPage() {
                 <h3 className="mb-1 text-sm font-medium">Description</h3>
                 <p className="text-sm">{detail.memo || "—"}</p>
                 {isDraftLike && !periodLocked ? (
-                  <Button
-                    className="mt-2"
-                    size="sm"
-                    onClick={() => openDraftEditor()}
-                    data-testid="drawer-edit-draft"
-                  >
-                    Edit entry
-                  </Button>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openDraftEditor()}
+                      data-testid="drawer-edit-draft"
+                    >
+                      Edit entry
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={posting || Boolean(postBlockedReason)}
+                      title={postBlockedReason || undefined}
+                      onClick={() => void postDraft()}
+                      data-testid="drawer-post-draft"
+                    >
+                      {posting ? "Posting…" : "Post"}
+                    </Button>
+                    {postBlockedReason ? (
+                      <span className="text-xs text-muted-foreground" data-testid="drawer-post-blocked">
+                        {postBlockedReason}
+                      </span>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             )}
@@ -860,7 +915,13 @@ export default function BooksJournalsPage() {
                           className="mt-0.5 text-xs text-primary underline"
                           onClick={() => openLinked(String(event.after!.reversalId))}
                         >
-                          Open reversal {String(event.after.reversalId).slice(0, 8)}…
+                          Open reversal{" "}
+                          {event.after.reversalNo
+                            ? String(event.after.reversalNo)
+                            : detail?.reversedByEntryId === String(event.after.reversalId) &&
+                                detail?.reversedByEntryNo
+                              ? detail.reversedByEntryNo
+                              : `${String(event.after.reversalId).slice(0, 8)}…`}
                         </button>
                       ) : null}
                     </li>

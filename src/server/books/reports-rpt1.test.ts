@@ -365,21 +365,23 @@ test("RPT-1: Day Book lists posted vouchers with type, particulars, side; filter
     });
 
     const book = await booksDayBook(OMAR, clientId, { from: "2026-05-01", to: "2026-05-31" });
+    // Each voucher carries its own debit and credit totals (equal), and the party's side separately
+    // (was: one amount in the party's column, which left the book's totals unequal).
     assert.deepEqual(
-      book.rows.map((r) => [r.date, r.type, r.particulars, r.debitMinor, r.creditMinor]),
+      book.rows.map((r) => [r.date, r.type, r.particulars, r.partySide, r.debitMinor, r.creditMinor]),
       [
-        ["2026-05-02", "Sales", cName, 105000, 0],
-        ["2026-05-03", "Purchase", sName, 0, 21000],
-        ["2026-05-04", "Receipt", cName, 0, 105000],
-        ["2026-05-05", "Journal", "Bank charges", 1500, 0],
-        ["2026-05-06", "Sales", cName, 10500, 0],
-        ["2026-05-06", "Reversal", cName, 0, 10500],
+        ["2026-05-02", "Sales", cName, "Dr", 105000, 105000],
+        ["2026-05-03", "Purchase", sName, "Cr", 21000, 21000],
+        ["2026-05-04", "Receipt", cName, "Cr", 105000, 105000],
+        ["2026-05-05", "Journal", "Bank charges", null, 1500, 1500],
+        ["2026-05-06", "Sales", cName, "Dr", 10500, 10500],
+        ["2026-05-06", "Reversal", cName, "Cr", 10500, 10500],
       ],
     );
     assert.ok(book.rows.every((r) => r.number), "every posted voucher has its number");
     assert.equal(book.rows[5].documentId, toVoid.id, "reversal drills to the voided document");
-    assert.equal(book.totalDebitMinor, 117000);
-    assert.equal(book.totalCreditMinor, 136500);
+    assert.equal(book.totalDebitMinor, 253500);
+    assert.equal(book.totalCreditMinor, 253500);
 
     const sales = await booksDayBook(OMAR, clientId, { from: "2026-05-01", to: "2026-05-31", type: "Sales" });
     assert.deepEqual(sales.rows.map((r) => [r.date, r.debitMinor]), [["2026-05-02", 105000], ["2026-05-06", 10500]]);

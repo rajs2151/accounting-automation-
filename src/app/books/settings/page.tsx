@@ -38,7 +38,7 @@ type Profile = {
   booksStartPeriodId?: string | null;
 };
 type Period = { id: string; label: string; periodStart: string; periodEnd: string; status: string };
-type UserRow = { id: string; name: string; email: string; role: string };
+type UserRow = { id: string; name: string; email: string; role: string; isMe?: boolean };
 type CoaNode = {
   id: string;
   code: string;
@@ -229,7 +229,7 @@ function CoaSection({ periodId }: { periodId: string }) {
                               });
                               if (!res.ok) {
                                 const err = await res.json().catch(() => ({}));
-                                toast.error(err.error || "Cannot deactivate");
+                                toast.error(apiErrorMessage(err, "Cannot deactivate"));
                                 return;
                               }
                               toast.success("Account deactivated");
@@ -352,7 +352,7 @@ function CoaSection({ periodId }: { periodId: string }) {
           <DialogFooter>
             <Button
               onClick={async () => {
-                await fetch("/api/books/accounts", {
+                const res = await fetch("/api/books/accounts", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -361,6 +361,12 @@ function CoaSection({ periodId }: { periodId: string }) {
                     isPostable: true,
                   }),
                 });
+                if (!res.ok) {
+                  // e.g. account_code_exists — keep the dialog open so the code can be changed.
+                  toast.error(apiErrorMessage(await res.json().catch(() => ({})), "Could not create the account."));
+                  return;
+                }
+                toast.success("Account created");
                 setAddOpen(false);
                 setAddParent(null);
                 void reload();
@@ -764,7 +770,8 @@ export default function BooksSettingsPage() {
       body: JSON.stringify({ name, trn: trn || null, fiscalYearStartMonth: fyMonth }),
     });
     if (!res.ok) {
-      setError("Profile save failed.");
+      const data = await res.json().catch(() => ({}));
+      setError(apiErrorMessage(data, "Profile save failed."));
       return;
     }
     setSaved("Company profile saved.");
@@ -825,6 +832,9 @@ export default function BooksSettingsPage() {
               id="co-trn"
               data-testid="company-trn"
               value={trn}
+              inputMode="numeric"
+              maxLength={15}
+              placeholder="15 digits"
               onChange={(e) => setTrn(e.target.value)}
             />
           </div>
@@ -841,13 +851,14 @@ export default function BooksSettingsPage() {
               min={1}
               max={12}
               value={fyMonth}
-              onChange={(e) => setFyMonth(Number(e.target.value) || 1)}
+              onChange={(e) => setFyMonth(Number(e.target.value))}
             />
             <p className="text-xs text-muted-foreground">
               Separate from books-start period. Voucher number series use this fiscal year.
             </p>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">Only an admin can change the company profile.</p>
         <Button onClick={saveProfile}>Save profile</Button>
       </section>
 
@@ -929,32 +940,21 @@ export default function BooksSettingsPage() {
           <tbody>
             {users.map((u) => (
               <tr key={u.id} className="border-t border-border">
-                <td className="py-2">{u.name}</td>
+                <td className="py-2">
+                  {u.name}
+                  {u.isMe ? <span className="text-muted-foreground"> (you)</span> : null}
+                </td>
                 <td>{u.email}</td>
-                <td>
-                  <select
-                    className="h-8 rounded-md border border-border px-2 text-sm capitalize"
-                    value={u.role}
-                    data-testid={`user-role-${u.id}`}
-                    onChange={async (e) => {
-                      await fetch(`/api/books/users/${u.id}/role`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ role: e.target.value }),
-                      });
-                      await reload();
-                    }}
-                  >
-                    <option value="admin">admin</option>
-                    <option value="accountant">accountant</option>
-                    <option value="approver">approver</option>
-                    <option value="viewer">viewer</option>
-                  </select>
+                <td className="capitalize" data-testid={`user-role-${u.id}`}>
+                  {u.role}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        <p className="text-xs text-muted-foreground">
+          Everyone in your firm, with their role. Roles are read-only here for now.
+        </p>
         <div className="flex flex-wrap items-end gap-2 border-t border-border pt-3">
           <div>
             <Label>Invite email</Label>

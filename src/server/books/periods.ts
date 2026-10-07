@@ -16,6 +16,25 @@ function lastDayOfMonth(year: number, month1: number) {
   return new Date(Date.UTC(year, month1, 0)).getUTCDate();
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for a canonical uuid string; ids from URLs/bodies are checked before they reach a uuid column. */
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+/** Throws a 400 BooksError (`message`, e.g. "invalid_period_id") unless `value` is a uuid. */
+export function assertUuid(value: unknown, message: string): asserts value is string {
+  if (!isUuid(value)) throw new BooksError(message, "invalid");
+}
+
+/** True for a real calendar date written YYYY-MM-DD (rejects 2026-02-30, 2026-13-01, "abc"). */
+export function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
 export async function listBooksPeriods(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -35,23 +54,46 @@ export async function createBooksPeriod(
   clientId: string,
   body: { label: string; periodStart: string; periodEnd: string },
 ) {
+  const label = String(body.label || "").trim();
+  const periodStart = String(body.periodStart || "").trim();
+  const periodEnd = String(body.periodEnd || "").trim();
+  if (!label) throw new BooksError("period_label_required", "invalid");
+  if (!isIsoDate(periodStart) || !isIsoDate(periodEnd)) throw new BooksError("invalid_date", "invalid");
+  if (periodStart > periodEnd) throw new BooksError("invalid_date_range", "invalid");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    // Serialise period creation per client so two concurrent requests can't both pass the overlap check.
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext('books_periods:' || $1::text))`, [clientId]);
+    const overlap = await db.query(
+      `SELECT label FROM books_periods
+       WHERE client_id = $1 AND period_start <= $3::date AND period_end >= $2::date
+       ORDER BY period_start LIMIT 1`,
+      [clientId, periodStart, periodEnd],
+    );
+    if (overlap.rowCount) {
+      throw new BooksError(`period_overlaps:${String(overlap.rows[0].label)}`, "conflict");
+    }
+    const sameLabel = await db.query(
+      `SELECT 1 FROM books_periods WHERE client_id = $1 AND label = $2`,
+      [clientId, label],
+    );
+    if (sameLabel.rowCount) throw new BooksError("period_label_exists", "conflict");
     const id = randomUUID();
     await db.query(
       `INSERT INTO books_periods (id, client_id, label, period_start, period_end, status)
        VALUES ($1,$2,$3,$4,$5,'OPEN')`,
-      [id, clientId, body.label, body.periodStart, body.periodEnd],
+      [id, clientId, label, periodStart, periodEnd],
     );
+    const created = { label, periodStart, periodEnd };
     await writeBooksAudit(db, {
       clientId,
       actor: userId,
       action: "create",
       entity: "books_period",
       entityId: id,
-      after: body,
+      after: created,
     });
-    return { id, ...body, status: "OPEN" };
+    return { id, ...created, status: "OPEN" };
   });
 }
 

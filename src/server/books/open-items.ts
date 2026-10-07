@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 
 import { withUser } from "@/lib/db";
 import { BooksError } from "@/server/books/errors";
+import { isUuid } from "@/server/books/periods";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export type OpenItemRow = {
@@ -157,35 +158,52 @@ export type OpenItemKpis = {
  * (draft documents never create open items, so they are excluded automatically).
  * Optional partyId scopes totals to one party; omitted/undefined = company-wide (unchanged).
  */
+/** `side` query param for the KPI endpoint: "ar"/"AR"/"Ap"… accepted; anything else is a 400. */
+export function parseOpenItemKpiSide(raw: string | null | undefined): "AR" | "AP" {
+  const side = String(raw || "").trim().toUpperCase();
+  if (side !== "AR" && side !== "AP") throw new BooksError("invalid_side", "invalid");
+  return side;
+}
+
 export async function getBooksOpenItemKpis(
   userId: string,
   clientId: string,
   side: "AR" | "AP",
   opts?: { partyId?: string },
 ): Promise<OpenItemKpis> {
+  if (side !== "AR" && side !== "AP") throw new BooksError("invalid_side", "invalid");
+  if (opts?.partyId != null && !isUuid(opts.partyId)) throw new BooksError("invalid_party_id", "invalid");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    // Due date = the same rule as AR/AP ageing (ageing.ts): the document's due date, else issue date
+    // + the party's payment terms, else the issue date itself.
     const rows = await db.query(
-      `SELECT
-         COALESCE(SUM(oi.open_aed_minor), 0)::bigint AS total_outstanding,
+      `WITH items AS (
+         SELECT oi.open_aed_minor,
+                COALESCE(d.due_date, d.issue_date + p.payment_terms_days, d.issue_date) AS due
+         FROM books_open_items oi
+         JOIN books_journal_entries e ON e.id = oi.journal_entry_id
+         LEFT JOIN books_documents d ON d.id = oi.document_id
+         LEFT JOIN books_parties p ON p.id = oi.party_id
+         WHERE oi.client_id = $1
+           AND oi.side = $2
+           AND oi.status IN ('open', 'partial')
+           AND e.status = 'posted'
+           AND ($3::uuid IS NULL OR oi.party_id = $3)
+       )
+       SELECT
+         COALESCE(SUM(open_aed_minor), 0)::bigint AS total_outstanding,
          COALESCE(SUM(
-           CASE WHEN d.due_date IS NOT NULL AND d.due_date < (CURRENT_DATE)
-             THEN oi.open_aed_minor ELSE 0 END
+           CASE WHEN due IS NOT NULL AND due < (CURRENT_DATE)
+             THEN open_aed_minor ELSE 0 END
          ), 0)::bigint AS overdue,
          COALESCE(SUM(
-           CASE WHEN d.due_date IS NOT NULL
-                 AND d.due_date >= (CURRENT_DATE)
-                 AND d.due_date <= (CURRENT_DATE + INTERVAL '7 days')
-             THEN oi.open_aed_minor ELSE 0 END
+           CASE WHEN due IS NOT NULL
+                 AND due >= (CURRENT_DATE)
+                 AND due <= (CURRENT_DATE + INTERVAL '7 days')
+             THEN open_aed_minor ELSE 0 END
          ), 0)::bigint AS due_7
-       FROM books_open_items oi
-       JOIN books_journal_entries e ON e.id = oi.journal_entry_id
-       LEFT JOIN books_documents d ON d.id = oi.document_id
-       WHERE oi.client_id = $1
-         AND oi.side = $2
-         AND oi.status IN ('open', 'partial')
-         AND e.status = 'posted'
-         AND ($3::uuid IS NULL OR oi.party_id = $3)`,
+       FROM items`,
       [clientId, side, opts?.partyId || null],
     );
     const r = rows.rows[0];

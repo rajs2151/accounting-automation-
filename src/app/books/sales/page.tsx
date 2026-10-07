@@ -31,6 +31,7 @@ import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/statu
 
 type Doc = {
   id: string;
+  docType?: string;
   documentNumber: string | null;
   partyName: string;
   issueDate: string;
@@ -71,6 +72,12 @@ export default function SalesPage() {
   const [parties, setParties] = useState<Party[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
+  const [myRole, setMyRole] = useState("");
+  // Approving posts the document: approver/admin only, and never the preparer (server-enforced).
+  const approveBlocked =
+    myRole && myRole !== "admin" && myRole !== "approver"
+      ? "Only an approver or admin can approve — the preparer can't post their own document"
+      : null;
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [selectedUploads, setSelectedUploads] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({
@@ -89,12 +96,20 @@ export default function SalesPage() {
   });
 
   const reload = useCallback(async () => {
-    const [docs, pts, inbox] = await Promise.all([
+    const [docs, pts, inbox, notes, sess] = await Promise.all([
       fetch("/api/books/documents?docType=sales_invoice").then((r) => r.json()),
       fetch("/api/books/parties?partyType=customer").then((r) => r.json()),
       fetch("/api/books/inbox").then((r) => r.json()),
+      fetch("/api/books/documents?docType=credit_note").then((r) => r.json()),
+      fetch("/api/session").then((r) => r.json()).catch(() => null),
     ]);
-    if (Array.isArray(docs)) setRows(docs);
+    if (Array.isArray(docs)) {
+      // Credit notes are listed with the documents they adjust (type badge in the number column).
+      const all = [...docs, ...(Array.isArray(notes) ? notes : [])] as Doc[];
+      all.sort((a, b) => String(b.issueDate || "").localeCompare(String(a.issueDate || "")));
+      setRows(all);
+    }
+    if (sess?.me?.role) setMyRole(String(sess.me.role));
     if (Array.isArray(pts)) {
       setParties(pts);
       if (!form.partyId && pts[0]) setForm((f) => ({ ...f, partyId: pts[0].id }));
@@ -641,7 +656,14 @@ export default function SalesPage() {
                           aria-label={`Select ${r.documentNumber || r.id}`}
                         />
                       </td>
-                      <td className="px-3 py-2">{r.documentNumber || "—"}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>{r.documentNumber || "—"}</span>
+                          {r.docType && r.docType !== "sales_invoice" ? (
+                            <StatusBadge meta={docTypeLabel(r.docType)} />
+                          ) : null}
+                        </div>
+                      </td>
                       <td className="px-3 py-2">{r.partyName || "—"}</td>
                       <td className="px-3 py-2">
                         {formatDateUae(String(r.issueDate).slice(0, 10))}
@@ -674,8 +696,8 @@ export default function SalesPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={!r.partyName}
-                            title={!r.partyName ? "Customer required" : undefined}
+                            disabled={!r.partyName || Boolean(approveBlocked)}
+                            title={!r.partyName ? "Customer required" : approveBlocked || undefined}
                             onClick={() => void approve(r.id)}
                           >
                             Approve

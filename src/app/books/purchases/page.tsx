@@ -30,11 +30,14 @@ import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/statu
 
 type Doc = {
   id: string;
+  docType?: string;
   documentNumber: string | null;
   partyName: string;
   issueDate: string;
+  dueDate?: string | null;
   status: string;
   grossMinor: number;
+  outstandingMinor?: number | null;
 };
 
 type Party = { id: string; name: string; trn: string | null };
@@ -67,6 +70,12 @@ export default function PurchasesPage() {
   const [parties, setParties] = useState<Party[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
+  const [myRole, setMyRole] = useState("");
+  // Approving posts the document: approver/admin only, and never the preparer (server-enforced).
+  const approveBlocked =
+    myRole && myRole !== "admin" && myRole !== "approver"
+      ? "Only an approver or admin can approve — the preparer can't post their own document"
+      : null;
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [selectedUploads, setSelectedUploads] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({
@@ -79,12 +88,20 @@ export default function PurchasesPage() {
   });
 
   const reload = useCallback(async () => {
-    const [docs, pts, inbox] = await Promise.all([
+    const [docs, pts, inbox, notes, sess] = await Promise.all([
       fetch("/api/books/documents?docType=purchase_bill").then((r) => r.json()),
       fetch("/api/books/parties?partyType=supplier").then((r) => r.json()),
       fetch("/api/books/inbox").then((r) => r.json()),
+      fetch("/api/books/documents?docType=debit_note").then((r) => r.json()),
+      fetch("/api/session").then((r) => r.json()).catch(() => null),
     ]);
-    if (Array.isArray(docs)) setRows(docs);
+    if (Array.isArray(docs)) {
+      // Debit notes are listed with the documents they adjust (type badge in the number column).
+      const all = [...docs, ...(Array.isArray(notes) ? notes : [])] as Doc[];
+      all.sort((a, b) => String(b.issueDate || "").localeCompare(String(a.issueDate || "")));
+      setRows(all);
+    }
+    if (sess?.me?.role) setMyRole(String(sess.me.role));
     if (Array.isArray(pts)) {
       setParties(pts);
       if (!form.partyId && pts[0]) setForm((f) => ({ ...f, partyId: pts[0].id }));
@@ -285,7 +302,7 @@ export default function PurchasesPage() {
             className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
             data-testid="purchase-upload"
           >
-            Upload Invoices
+            Upload bills
             <input
               type="file"
               multiple
@@ -456,7 +473,7 @@ export default function PurchasesPage() {
             {!uploads.length ? (
               <tr>
                 <td colSpan={5} className="py-6 text-muted-foreground">
-                  No uploads yet — use Upload Invoices.
+                  No uploads yet — use Upload bills.
                 </td>
               </tr>
             ) : null}
@@ -560,7 +577,9 @@ export default function PurchasesPage() {
                 <th>Number</th>
                 <th>Supplier</th>
                 <th>Date</th>
-                <th>Gross</th>
+                <th>Due</th>
+                <th className="text-end">Outstanding</th>
+                <th className="text-end">Gross</th>
                 <th>Status</th>
                 <th />
               </tr>
@@ -577,9 +596,20 @@ export default function PurchasesPage() {
                       aria-label={`Select ${r.documentNumber || r.id}`}
                     />
                   </td>
-                  <td>{r.documentNumber || "—"}</td>
+                  <td>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span>{r.documentNumber || "—"}</span>
+                      {r.docType && r.docType !== "purchase_bill" ? (
+                        <StatusBadge meta={docTypeLabel(r.docType)} />
+                      ) : null}
+                    </div>
+                  </td>
                   <td>{r.partyName}</td>
                   <td>{r.issueDate?.slice(0, 10).split("-").reverse().join("/")}</td>
+                  <td>{r.dueDate ? String(r.dueDate).slice(0, 10).split("-").reverse().join("/") : "—"}</td>
+                  <td className="text-end tabular-nums" data-testid={`bill-outstanding-${r.id}`}>
+                    {r.outstandingMinor == null ? "—" : <CellAmount minor={Number(r.outstandingMinor)} />}
+                  </td>
                   <td className="text-end tabular-nums">
                     {r.grossMinor != null ? <CellAmount minor={r.grossMinor} /> : "—"}
                   </td>
@@ -591,7 +621,13 @@ export default function PurchasesPage() {
                       Review
                     </Button>
                     {r.status === "draft" ? (
-                      <Button size="sm" variant="outline" onClick={() => void approve(r.id)}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={Boolean(approveBlocked)}
+                        title={approveBlocked || undefined}
+                        onClick={() => void approve(r.id)}
+                      >
                         Approve
                       </Button>
                     ) : null}
@@ -600,7 +636,7 @@ export default function PurchasesPage() {
               ))}
               {!visibleDocs.length ? (
                 <tr>
-                  <td colSpan={7} className="py-6 text-muted-foreground">
+                  <td colSpan={9} className="py-6 text-muted-foreground">
                     {tab === "needs_review" ? "No bills need review." : "No bills yet."}
                   </td>
                 </tr>

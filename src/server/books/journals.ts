@@ -828,6 +828,15 @@ export async function postBooksJournalInTx(
     throw new BooksError("not_draft", "conflict");
   }
   await requireDualControlActor(db, userId, String(entry.rows[0].created_by), "post");
+  // Dual control: whoever replaced the draft's lines/header is also its preparer and cannot post it.
+  const edited = await db.query(
+    `SELECT 1 FROM books_audit_events
+     WHERE client_id = $1 AND entity = 'books_journal_entry' AND entity_id = $2::uuid
+       AND action = 'update' AND actor = $3
+     LIMIT 1`,
+    [clientId, entryId, userId],
+  );
+  if (edited.rowCount) throw new BooksError("post_preparer_cannot_approve", "forbidden");
   await requireWritablePeriod(
     db,
     clientId,
@@ -1304,7 +1313,8 @@ export async function replaceBooksJournalDraft(
         periodId,
         memo,
         body.note ?? null,
-        body.reference ?? null,
+        // A blank reference keeps the draft's own (e.g. DRAFT-0010) instead of wiping it.
+        body.reference?.trim() ? body.reference.trim() : null,
         body.entryDate,
         hash,
         voucherType,

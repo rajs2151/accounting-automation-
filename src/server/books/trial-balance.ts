@@ -1,6 +1,7 @@
 import { withUser } from "@/lib/db";
 import { assertSyntheticTenant } from "@/server/security-gate";
 import { BooksError } from "@/server/books/errors";
+import { assertUuid } from "@/server/books/periods";
 
 export type TbAccountRow = {
   id: string;
@@ -39,6 +40,7 @@ export async function booksTrialBalance(
   periodId: string,
   opts?: { includeZeroBalances?: boolean },
 ) {
+  assertUuid(periodId, "invalid_period_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const period = await db.query(
@@ -155,6 +157,8 @@ export async function booksAccountLedger(
   periodId: string,
   accountId: string,
 ) {
+  assertUuid(periodId, "invalid_period_id");
+  assertUuid(accountId, "invalid_account_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const period = await db.query(

@@ -382,6 +382,8 @@ export async function createBooksDocument(userId: string, clientId: string, body
         : reason && body.memo
           ? `${body.memo}\nManual record: ${reason}`
           : body.memo || "";
+    // Two concurrent saves of the same document (double-click) both pass the duplicate check above;
+    // the dedupe unique index stops the second one — report it as the same duplicate_document.
     await db.query(
       `INSERT INTO books_documents (
          id, client_id, doc_type, doc_kind, status, document_number, party_id,
@@ -426,7 +428,13 @@ export async function createBooksDocument(userId: string, clientId: string, body
         body.fileId || null,
         checkVatReason,
       ],
-    );
+    ).catch((error: unknown) => {
+      const pgErr = error as { code?: string; constraint?: string };
+      if (pgErr?.code === "23505" && pgErr.constraint === "books_documents_dedupe_uidx") {
+        throw new BooksError("duplicate_document", "conflict");
+      }
+      throw error;
+    });
 
     for (const line of lines) {
       await db.query(
@@ -836,6 +844,11 @@ export async function approveAndPostBooksDocument(
     if (!docRes.rowCount) throw new BooksError("document_not_found", "not_found");
     const doc = docRes.rows[0];
     if (doc.status !== "draft") throw new BooksError("not_draft", "conflict");
+    // Receipt / payment drafts are posted through the settlements flow (allocations, advances, dual
+    // control) — never through the generic document approve.
+    if (["receipt", "payment"].includes(String(doc.doc_type))) {
+      throw new BooksError("settlement_post_via_receipts", "invalid");
+    }
     await requireDualControlActor(db, userId, String(doc.created_by), "post");
 
     if (doc.check_vat_reason && !doc.check_vat_ack_at) {

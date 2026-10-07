@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +84,7 @@ export default function BooksClosePage() {
   const [waiveGate, setWaiveGate] = useState<CloseGate | null>(null);
   const [waiveReason, setWaiveReason] = useState("");
   const [unlockOpen, setUnlockOpen] = useState(false);
+  const [lockConfirmOpen, setLockConfirmOpen] = useState(false);
   const [unlockReason, setUnlockReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
@@ -141,15 +143,20 @@ export default function BooksClosePage() {
       const data = await res.json();
       if (!res.ok) {
         const failList = Array.isArray(data.failingGates)
-          ? data.failingGates.map((g: { key: string }) => g.key).join(", ")
+          ? data.failingGates.map((g: { key: string; label?: string }) => g.label || g.key).join(", ")
           : "";
         throw new Error(
           apiErrorMessage(data) + (failList ? ` (${failList})` : ""),
         );
       }
+      setLockConfirmOpen(false);
+      toast.success(`${periodLabel} locked`);
       await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "lock_failed");
+      setLockConfirmOpen(false);
+      const msg = err instanceof Error ? err.message : apiErrorMessage({ error: "lock_failed" });
+      setError(msg);
+      toast.error(msg);
     } finally {
       setBusy(false);
     }
@@ -193,6 +200,7 @@ export default function BooksClosePage() {
       if (!res.ok) throw new Error(apiErrorMessage(data) || data.error);
       setUnlockOpen(false);
       setUnlockReason("");
+      toast.success(`${periodLabel} unlocked`);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "unlock_failed");
@@ -326,7 +334,7 @@ export default function BooksClosePage() {
               Unlock
             </Button>
           ) : (
-            <Button disabled={!canApprove || busy || !checklist?.ready} onClick={() => void lockPeriod()}>
+            <Button disabled={!canApprove || busy || !checklist?.ready} onClick={() => setLockConfirmOpen(true)}>
               Lock period
             </Button>
           )}
@@ -427,6 +435,35 @@ export default function BooksClosePage() {
             </Button>
             <Button disabled={!waiveReason.trim() || busy} onClick={() => void confirmWaive()}>
               Waive gate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={lockConfirmOpen} onOpenChange={(o) => !busy && setLockConfirmOpen(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Lock {periodLabel}?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Nothing can be posted, changed or reversed in {periodLabel} once it is locked. Unlocking later needs an
+            approver or admin and a reason, and is recorded in the close history.
+          </p>
+          {checklist?.gates.some((g) => g.status === "waived") ? (
+            <p className="text-sm text-amber-700">
+              Waived gates:{" "}
+              {checklist.gates
+                .filter((g) => g.status === "waived")
+                .map((g) => g.label)
+                .join(", ")}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setLockConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={busy} onClick={() => void lockPeriod()} data-testid="close-lock-confirm">
+              {busy ? "Locking…" : "Lock period"}
             </Button>
           </DialogFooter>
         </DialogContent>

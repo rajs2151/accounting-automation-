@@ -14,8 +14,9 @@ import {
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
 
+// Same list as DAY_BOOK_TYPES (server/books/day-book.ts = vouchers.ts VOUCHER_TYPES + Reversal).
 const TYPES = [
-  "Sales", "Purchase", "Receipt", "Payment", "Contra", "Journal", "Credit Note", "Debit Note", "Opening", "Closing", "Reversal",
+  "Sales", "Purchase", "Receipt", "Payment", "Contra", "Journal", "Expense", "Credit Note", "Debit Note", "Opening", "Closing", "Reversal",
 ];
 
 type DayBook = {
@@ -25,10 +26,13 @@ type DayBook = {
     entryId: string;
     date: string;
     particulars: string;
+    party: string | null;
+    partySide: "Dr" | "Cr" | null;
     type: string;
     number: string | null;
     debitMinor: number;
     creditMinor: number;
+    lines?: Array<{ accountCode: string; accountName: string; debitMinor: number; creditMinor: number }>;
   }>;
   totalDebitMinor: number;
   totalCreditMinor: number;
@@ -38,9 +42,16 @@ const COLUMNS: ReportColumn[] = [
   { key: "date", label: "Date", kind: "text" },
   { key: "type", label: "Type", kind: "text" },
   { key: "number", label: "Number", kind: "text" },
+  { key: "party", label: "Party", kind: "text" },
   { key: "debit", label: "Debit" },
   { key: "credit", label: "Credit" },
 ];
+
+/** "Customer A · Cr" — the party and whether it was debited or credited by the voucher. */
+function partyText(r: { party: string | null; partySide: "Dr" | "Cr" | null }): string {
+  if (!r.party) return "";
+  return r.partySide ? `${r.party} · ${r.partySide}` : r.party;
+}
 
 function DayBookInner() {
   const router = useRouter();
@@ -94,7 +105,9 @@ function DayBookInner() {
       <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Day book</h1>
-          <p className="text-sm text-muted-foreground">Every posted voucher in the range, in date order.</p>
+          <p className="text-sm text-muted-foreground">
+            Every posted voucher in the range, in date order, with its debit and credit totals. Expand a voucher for its lines.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <label className="text-xs text-muted-foreground">
@@ -132,8 +145,16 @@ function DayBookInner() {
           id: r.entryId,
           label: r.particulars,
           values: { debit: r.debitMinor, credit: r.creditMinor },
-          text: { date: formatDateUae(r.date), type: r.type, number: r.number || "" },
+          text: { date: formatDateUae(r.date), type: r.type, number: r.number || "", party: partyText(r) },
           drill: { entryId: r.entryId },
+          // Expand a voucher to see which accounts were debited and credited.
+          children: (r.lines || []).map((l, i) => ({
+            id: `${r.entryId}:${i}`,
+            label: l.accountName,
+            code: l.accountCode,
+            values: { debit: l.debitMinor, credit: l.creditMinor },
+            drill: { entryId: r.entryId },
+          })),
         }))}
         footer={
           data

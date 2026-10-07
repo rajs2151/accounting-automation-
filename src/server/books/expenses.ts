@@ -16,6 +16,17 @@ export type ExpenseStatus = (typeof EXPENSE_STATUSES)[number];
 export const PAID_FROM_KINDS = ["bank", "card", "petty_cash", "employee_reimbursable"] as const;
 export type PaidFromKind = (typeof PAID_FROM_KINDS)[number];
 
+/**
+ * Default credit account per paid-from kind (COA v2 codes). Bank has no single code: the first
+ * active postable bank account (not petty cash) is used.
+ */
+export const PAID_FROM_DEFAULT_CODES: Record<PaidFromKind, string | null> = {
+  bank: null,
+  card: "2150",
+  petty_cash: "1110",
+  employee_reimbursable: "2130",
+};
+
 export type ExpenseLineInput = {
   description?: string;
   accountId: string;
@@ -37,6 +48,9 @@ export type ExpenseRow = {
   paidFromKind: PaidFromKind | null;
   paidFromAccountId: string | null;
   paidFromAccountCode: string | null;
+  paidFromAccountName: string | null;
+  /** TRN of the linked supplier party (null for a free-text vendor or a party without TRN). */
+  vendorTrn: string | null;
   bankTxnId: string | null;
   netMinor: number;
   vatMinor: number;
@@ -120,6 +134,63 @@ async function assertCompanyPostableAccount(
     [accountId, clientId],
   );
   if (!acc.rowCount) throw new BooksError(errorCode, "not_found");
+}
+
+/** Default credit account for a paid-from kind, or null when the company has none. */
+export async function defaultPaidFromAccountId(
+  db: PoolClient,
+  clientId: string,
+  kind: PaidFromKind,
+): Promise<string | null> {
+  const code = PAID_FROM_DEFAULT_CODES[kind];
+  const res = code
+    ? await db.query(
+        `SELECT id FROM books_accounts
+         WHERE client_id = $1 AND code = $2 AND active = true AND is_postable = true`,
+        [clientId, code],
+      )
+    : await db.query(
+        `SELECT id FROM books_accounts
+         WHERE client_id = $1 AND active = true AND is_postable = true
+           AND account_type = 'asset' AND is_bank = true AND COALESCE(sub_type, '') <> 'cash'
+         ORDER BY code LIMIT 1`,
+        [clientId],
+      );
+  return res.rowCount ? String(res.rows[0].id) : null;
+}
+
+/**
+ * The paid-from account must fit the kind: petty cash → a cash asset (1110), bank → a bank asset,
+ * card → a card payable (2150) or a bank asset, employee → a plain liability (2130). Stops
+ * "Petty cash" from crediting 2130 Employee reimbursable.
+ */
+async function assertPaidFromAccountMatchesKind(
+  db: PoolClient,
+  clientId: string,
+  kind: string | null | undefined,
+  accountId: string | null | undefined,
+) {
+  if (!kind || !accountId) return;
+  const r = await db.query(
+    `SELECT account_type, is_bank, is_ap, is_vat_control, COALESCE(is_card, false) AS is_card,
+            COALESCE(sub_type, '') AS sub_type
+     FROM books_accounts WHERE id = $1 AND client_id = $2`,
+    [accountId, clientId],
+  );
+  if (!r.rowCount) throw new BooksError("account_not_found", "not_found");
+  const a = r.rows[0];
+  const type = String(a.account_type);
+  const isBankAsset = type === "asset" && a.is_bank === true;
+  const isCash = type === "asset" && a.sub_type === "cash";
+  const isCard = a.is_card === true || a.sub_type === "card";
+  let ok = false;
+  if (kind === "petty_cash") ok = isCash;
+  else if (kind === "bank") ok = isBankAsset && !isCash;
+  else if (kind === "card") ok = isCard || (isBankAsset && !isCash);
+  else if (kind === "employee_reimbursable") {
+    ok = type === "liability" && !isCard && a.is_ap !== true && a.is_vat_control !== true;
+  }
+  if (!ok) throw new BooksError("paid_from_account_mismatch", "invalid");
 }
 
 /** VAT amount is only allowed with standard-rated (SR) treatment. */
@@ -213,6 +284,8 @@ function mapExpense(r: Record<string, unknown>): ExpenseRow {
       : r.paidFromAccountCode
         ? String(r.paidFromAccountCode)
         : null,
+    paidFromAccountName: r.paid_from_account_name ? String(r.paid_from_account_name) : null,
+    vendorTrn: r.vendor_trn && String(r.vendor_trn).trim() ? String(r.vendor_trn).trim() : null,
     bankTxnId: r.bank_txn_id || r.bankTxnId ? String(r.bank_txn_id ?? r.bankTxnId) : null,
     netMinor: Number(r.net_minor ?? r.netMinor ?? 0),
     vatMinor: Number(r.vat_minor ?? r.vatMinor ?? 0),
@@ -242,9 +315,11 @@ export async function listBooksExpenses(
         : null;
     const q = opts?.q?.trim() || null;
     const rows = await db.query(
-      `SELECT e.*, a.code AS paid_from_account_code
+      `SELECT e.*, a.code AS paid_from_account_code, a.name AS paid_from_account_name,
+              vp.trn AS vendor_trn
        FROM books_expenses e
        LEFT JOIN books_accounts a ON a.id = e.paid_from_account_id
+       LEFT JOIN books_parties vp ON vp.id = e.vendor_party_id AND vp.client_id = e.client_id
        WHERE e.client_id = $1 AND e.deleted_at IS NULL
          AND ($2::text IS NULL OR e.status = $2)
          AND (
@@ -267,9 +342,11 @@ export async function getBooksExpense(userId: string, clientId: string, id: stri
       throw new BooksError("p3_expenses_migration_required", "invalid");
     }
     const head = await db.query(
-      `SELECT e.*, a.code AS paid_from_account_code
+      `SELECT e.*, a.code AS paid_from_account_code, a.name AS paid_from_account_name,
+              vp.trn AS vendor_trn
        FROM books_expenses e
        LEFT JOIN books_accounts a ON a.id = e.paid_from_account_id
+       LEFT JOIN books_parties vp ON vp.id = e.vendor_party_id AND vp.client_id = e.client_id
        WHERE e.id = $1 AND e.client_id = $2 AND e.deleted_at IS NULL`,
       [id, clientId],
     );
@@ -347,8 +424,13 @@ export async function createBooksExpense(
       if (!vendorName) vendorName = String(p.rows[0].name);
     }
 
-    if (body.paidFromAccountId) {
-      await assertCompanyPostableAccount(db, clientId, body.paidFromAccountId);
+    let paidFromAccountId: string | null = body.paidFromAccountId || null;
+    if (body.paidFromKind && !paidFromAccountId) {
+      paidFromAccountId = await defaultPaidFromAccountId(db, clientId, body.paidFromKind);
+    }
+    if (paidFromAccountId) {
+      await assertCompanyPostableAccount(db, clientId, paidFromAccountId);
+      await assertPaidFromAccountMatchesKind(db, clientId, body.paidFromKind, paidFromAccountId);
     }
 
     const preparedLines: Array<{
@@ -397,7 +479,7 @@ export async function createBooksExpense(
         vendorName,
         currency,
         body.paidFromKind || null,
-        body.paidFromAccountId || null,
+        paidFromAccountId,
         netTotal,
         vatTotal,
         grossTotal,
@@ -489,8 +571,19 @@ export async function updateBooksExpenseDraft(
 
     const paidFromKind =
       body.paidFromKind !== undefined ? body.paidFromKind : (row.paid_from_kind as PaidFromKind | null);
-    const paidFromAccountId =
+    let paidFromAccountId =
       body.paidFromAccountId !== undefined ? body.paidFromAccountId : row.paid_from_account_id;
+    // Kind changed without a new account: re-default the account for the new kind.
+    if (
+      body.paidFromKind !== undefined &&
+      body.paidFromAccountId === undefined &&
+      paidFromKind !== row.paid_from_kind
+    ) {
+      paidFromAccountId =
+        paidFromKind && (PAID_FROM_KINDS as readonly string[]).includes(String(paidFromKind))
+          ? await defaultPaidFromAccountId(db, clientId, paidFromKind as PaidFromKind)
+          : null;
+    }
 
     if (
       paidFromKind &&
@@ -500,6 +593,7 @@ export async function updateBooksExpenseDraft(
     }
     if (paidFromAccountId) {
       await assertCompanyPostableAccount(db, clientId, String(paidFromAccountId));
+      await assertPaidFromAccountMatchesKind(db, clientId, paidFromKind, String(paidFromAccountId));
     }
 
     let netTotal = Number(row.net_minor);
@@ -650,6 +744,12 @@ export async function submitBooksExpense(userId: string, clientId: string, id: s
     if (!row.paid_from_account_id || !row.paid_from_kind) {
       throw new BooksError("paid_from_required", "invalid");
     }
+    await assertPaidFromAccountMatchesKind(
+      db,
+      clientId,
+      String(row.paid_from_kind),
+      String(row.paid_from_account_id),
+    );
     const lines = await loadExpenseLines(db, clientId, id);
     if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
     await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
@@ -752,6 +852,12 @@ export async function resubmitBooksExpense(userId: string, clientId: string, id:
     if (!row.paid_from_account_id || !row.paid_from_kind) {
       throw new BooksError("paid_from_required", "invalid");
     }
+    await assertPaidFromAccountMatchesKind(
+      db,
+      clientId,
+      String(row.paid_from_kind),
+      String(row.paid_from_account_id),
+    );
     const lines = await loadExpenseLines(db, clientId, id);
     if (!lines.length) throw new BooksError("expense_lines_required", "invalid");
     await assertReceiptIfRequired(db, clientId, id, Number(row.gross_minor));
@@ -927,6 +1033,12 @@ export async function approveAndPostBooksExpense(
 
     await assertExpenseApproverAllowed(db, clientId, id, userId, row);
     if (!row.paid_from_account_id) throw new BooksError("paid_from_required", "invalid");
+    await assertPaidFromAccountMatchesKind(
+      db,
+      clientId,
+      row.paid_from_kind == null ? null : String(row.paid_from_kind),
+      String(row.paid_from_account_id),
+    );
     assertExpenseCurrency(String(row.currency || "AED"));
     await assertOpenPeriodContainingDate(
       db,

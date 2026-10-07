@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 
 import { withUser } from "@/lib/db";
+import { formatMinor } from "@/lib/money";
 import { writeBooksAudit } from "@/server/books/audit";
 import { listBankReconciliations } from "@/server/books/bank-recon";
 import { getBooksMonthChecklist, vatPeriodForMonth, type VatFrequency } from "@/server/books/dashboard";
@@ -28,6 +29,7 @@ export const CLOSE_GATE_KEYS = [
   "clearing_gateway",
   "clearing_info",
   "scheduled",
+  "unposted_drafts",
   "vat_control",
   "missing_documents",
   "depreciation",
@@ -75,7 +77,29 @@ export class CloseGatesFailingError extends BooksError {
 }
 
 const GATEWAY_CLEARING = ["1310", "1320", "1330", "1340"] as const;
-const INFO_CLEARING = ["1220", "1300", "1130"] as const;
+// Info only: client disbursements recoverable (1220) and credit-card clearing (1130). 1300 is the
+// non-postable Clearing header (its children are the gateway/suspense gates). Customer advances
+// (2320) are an ordinary liability, not a clearing account, so they are not checked here.
+const INFO_CLEARING = ["1220", "1130"] as const;
+
+const RECON_STATUS_TEXT: Record<string, string> = {
+  no_statement: "no statement",
+  difference: "statement doesn't match the ledger",
+};
+const COVERAGE_STATE_TEXT: Record<string, string> = {
+  gap: "statements have a gap",
+  missing: "no statement",
+};
+
+/** "1310 Payment gateway clearing (Stripe) — AED 12.50 Dr" for a non-zero closing balance. */
+function balanceText(
+  tb: Awaited<ReturnType<typeof booksTrialBalance>>,
+  code: string,
+  netMinor: number,
+): string {
+  const name = tb.accounts[code]?.name;
+  return `${code}${name ? ` ${name}` : ""} — AED ${formatMinor(Math.abs(netMinor))} ${netMinor > 0 ? "Dr" : "Cr"}`;
+}
 
 function iso(v: unknown): string {
   if (v instanceof Date) return v.toISOString().slice(0, 10);
@@ -188,7 +212,9 @@ export async function getBooksCloseChecklist(
       count: uncovered.length,
       href: "/books/banking",
       detail: uncovered.length
-        ? uncovered.map((a) => `${a.code} (${a.state})`).join(", ")
+        ? uncovered
+            .map((a) => `${a.code} ${a.name} — ${COVERAGE_STATE_TEXT[a.state] || a.state}`)
+            .join("; ")
         : undefined,
     };
 
@@ -219,7 +245,10 @@ export async function getBooksCloseChecklist(
       blocking: true,
       count: reconDiffs.length,
       href: "/books/banking",
-      detail: reconDiffs.map((r) => `${r.code}:${r.status}`).join(", ") || undefined,
+      detail:
+        reconDiffs
+          .map((r) => `${r.code} ${r.name} — ${RECON_STATUS_TEXT[r.status] || r.status}`)
+          .join("; ") || undefined,
     };
 
     // 4. Suspense 1390
@@ -256,7 +285,7 @@ export async function getBooksCloseChecklist(
       const bal = closingNetMinor(tb, code);
       if (bal !== 0) {
         gatewayFail += 1;
-        gatewayParts.push(`${code}=${bal}`);
+        gatewayParts.push(balanceText(tb, code, bal));
       }
     }
     const clearingGateway: CloseGate = {
@@ -266,23 +295,23 @@ export async function getBooksCloseChecklist(
       blocking: true,
       count: gatewayFail,
       href: "/books/reports/trial-balance",
-      detail: gatewayParts.join(", ") || undefined,
+      detail: gatewayParts.join("; ") || undefined,
     };
 
     // 5b. Info clearing — never auto-fail
     const infoParts: string[] = [];
     for (const code of INFO_CLEARING) {
       const bal = closingNetMinor(tb, code);
-      if (bal !== 0) infoParts.push(`${code}=${bal}`);
+      if (bal !== 0) infoParts.push(balanceText(tb, code, bal));
     }
     const clearingInfo: CloseGate = {
       key: "clearing_info",
-      label: "Disbursements / advances clearing (info)",
+      label: "Disbursements recoverable (1220) and card clearing (1130) — info",
       status: "info",
       blocking: false,
       count: infoParts.length,
       href: "/books/reports/trial-balance",
-      detail: infoParts.join(", ") || "All zero",
+      detail: infoParts.join("; ") || "1220 and 1130 are both zero",
     };
 
     // 6. Scheduled / recurring due in period still unposted
@@ -315,6 +344,41 @@ export async function getBooksCloseChecklist(
       blocking: true,
       count: dueN,
       href: "/books/journals?status=scheduled",
+    };
+
+    // 6b. Unposted drafts — draft / scheduled journals dated inside the period that the scheduled
+    // gate above does not already count (a draft dated 25/05 must not slip past a May lock).
+    // The year-end closing draft is excluded: its two-step post (year-end.ts) needs this checklist
+    // ready, and the Close page tracks it separately ("Post year-end entry").
+    const drafts = await db.query(
+      `SELECT entry_no, entry_date, memo FROM books_journal_entries
+       WHERE client_id = $1 AND deleted_at IS NULL
+         AND status IN ('draft', 'scheduled')
+         AND entry_type <> 'closing'
+         AND entry_date BETWEEN $2::date AND $3::date
+         AND NOT (
+           (scheduled_for IS NOT NULL AND scheduled_for::date BETWEEN $2::date AND $3::date)
+           OR status = 'scheduled'
+         )
+       ORDER BY entry_date, created_at`,
+      [clientId, start, end],
+    );
+    const draftN = drafts.rowCount ?? 0;
+    const draftList = drafts.rows
+      .slice(0, 5)
+      .map((r) => {
+        const what = r.entry_no ? String(r.entry_no) : String(r.memo || "").trim() || "Draft";
+        return `${what} (${iso(r.entry_date)})`;
+      })
+      .join("; ");
+    const unpostedDrafts: CloseGate = {
+      key: "unposted_drafts",
+      label: "Unposted drafts dated in the period",
+      status: draftN === 0 ? "pass" : "fail",
+      blocking: true,
+      count: draftN,
+      href: "/books/journals",
+      detail: draftN ? `${draftList}${draftN > 5 ? `; and ${draftN - 5} more` : ""}` : undefined,
     };
 
     // 7. VAT control
@@ -453,6 +517,7 @@ export async function getBooksCloseChecklist(
       clearingGateway,
       clearingInfo,
       scheduledGate,
+      unpostedDrafts,
       vatGate,
       missingDocuments,
       depreciation,

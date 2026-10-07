@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { apiErrorMessage } from "@/lib/api-error";
 import { csvCell } from "@/lib/csv";
 
 type TagRow = { id: string; name: string; colour: string; usageCount?: number };
@@ -631,6 +632,8 @@ export function LedgerToolbar({
             </Button>
             <Button
               size="sm"
+              disabled={!isAdmin}
+              title={isAdmin ? undefined : "Approver or admin only"}
               onClick={async () => {
                 const res = await fetch("/api/books/journals/bulk/post", {
                   method: "POST",
@@ -638,9 +641,21 @@ export function LedgerToolbar({
                   body: JSON.stringify({ entryIds: selectedIds }),
                 });
                 const data = await res.json();
-                if (!res.ok) toast.error(String(data.error || "Post failed"));
+                if (!res.ok) toast.error(apiErrorMessage(data, "Post failed"));
                 else {
-                  toast.success("Drafts posted");
+                  // Per-entry results: dual control can refuse some (e.g. ones you prepared or edited).
+                  const results: Array<{ ok: boolean; error?: string }> = Array.isArray(data.results)
+                    ? data.results
+                    : [];
+                  const failed = results.filter((r) => !r.ok);
+                  const posted = results.length - failed.length;
+                  if (failed.length) {
+                    toast.error(
+                      `${posted} posted, ${failed.length} not posted: ${apiErrorMessage({ error: failed[0]!.error })}`,
+                    );
+                  } else {
+                    toast.success(`${posted} draft${posted === 1 ? "" : "s"} posted`);
+                  }
                   onBulkDone();
                 }
               }}

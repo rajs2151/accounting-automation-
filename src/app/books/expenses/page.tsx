@@ -5,7 +5,9 @@ import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { CellAmount, CellDate } from "@/components/books/cells";
+import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { StatusBadge } from "@/components/books/status-badge";
+import { rowOpenProps } from "@/components/books/table-peek";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,14 +30,34 @@ type Expense = {
   expenseDate: string;
   description: string;
   vendorName: string;
+  vendorPartyId?: string | null;
+  vendorTrn?: string | null;
   paidFromKind: string | null;
   paidFromAccountCode: string | null;
+  paidFromAccountName?: string | null;
   bankTxnId: string | null;
   netMinor: number;
   vatMinor: number;
   grossMinor: number;
   rejectionReason: string | null;
+  createdBy?: string;
+  submittedBy?: string | null;
+  entryNo?: string | null;
+  lines?: Array<{
+    id: string;
+    description: string;
+    accountCode: string | null;
+    accountName: string | null;
+    vatCode: string | null;
+    netMinor: number;
+    vatMinor: number;
+    grossMinor: number;
+  }>;
 };
+
+type Supplier = { id: string; name: string; trn: string | null };
+
+type Me = { id: string; role: string } | null;
 
 type BankCandidate = {
   id: string;
@@ -46,7 +68,17 @@ type BankCandidate = {
   reviewStatus: string;
 };
 
-type Account = { id: string; code: string; name: string; accountType: string; isPostable: boolean };
+type Account = {
+  id: string;
+  code: string;
+  name: string;
+  accountType: string;
+  isPostable: boolean;
+  isBank?: boolean;
+};
+
+const NO_TRN_VAT_WARNING =
+  "VAT will be added to the expense because the supplier has no TRN — choose a supplier with a TRN to recover it.";
 
 const STATUS_META: Record<string, StatusLabel> = {
   draft: { label: "Draft", tone: "neutral" },
@@ -57,10 +89,29 @@ const STATUS_META: Record<string, StatusLabel> = {
 
 const PAID_FROM_OPTIONS = [
   { value: "bank", label: "Bank" },
-  { value: "card", label: "Card" },
+  { value: "card", label: "Company card" },
   { value: "petty_cash", label: "Petty cash" },
-  { value: "employee_reimbursable", label: "Employee reimbursable" },
+  { value: "employee_reimbursable", label: "Employee (reimbursable)" },
 ] as const;
+
+function paidFromLabel(kind: string | null | undefined): string {
+  return PAID_FROM_OPTIONS.find((o) => o.value === kind)?.label || "—";
+}
+
+function accountLabel(a: Pick<Account, "code" | "name"> | undefined | null): string {
+  return a ? `${a.code} · ${a.name}` : "";
+}
+
+/** Same defaults as the server (expenses.ts PAID_FROM_DEFAULT_CODES). */
+function defaultPaidFromAccount(accounts: Account[], kind: string): Account | undefined {
+  if (kind === "petty_cash") return accounts.find((a) => a.code === "1110");
+  if (kind === "employee_reimbursable") return accounts.find((a) => a.code === "2130");
+  if (kind === "card") return accounts.find((a) => a.code === "2150");
+  if (kind === "bank") {
+    return accounts.find((a) => a.accountType === "asset" && a.isBank && a.code !== "1110");
+  }
+  return undefined;
+}
 
 type StatusTab = "all" | "draft" | "pending" | "approved" | "rejected";
 
@@ -96,6 +147,11 @@ export default function BooksExpensesPage() {
   }, [periodId]);
   const [description, setDescription] = useState("");
   const [vendorName, setVendorName] = useState("");
+  const [vendorPartyId, setVendorPartyId] = useState("");
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [me, setMe] = useState<Me>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [openDetail, setOpenDetail] = useState<Expense | null>(null);
   const [paidFromKind, setPaidFromKind] = useState<string>("");
   const [paidFromAccountId, setPaidFromAccountId] = useState("");
   const [lineAccountId, setLineAccountId] = useState("");
@@ -137,13 +193,46 @@ export default function BooksExpensesPage() {
         const opex =
           data.find((a: Account) => a.code === "6600") ||
           data.find((a: Account) => a.accountType === "expense");
-        const reimb = data.find((a: Account) => a.code === "2130");
         if (opex && !lineAccountId) setLineAccountId(String(opex.id));
-        if (reimb && !paidFromAccountId) setPaidFromAccountId(String(reimb.id));
+        // The paid-from account is set when the user picks "Paid from" (no silent 2130 default).
+      })
+      .catch(() => undefined);
+    void fetch("/api/books/parties?partyType=supplier")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) setSuppliers(data);
+      })
+      .catch(() => undefined);
+    void fetch("/api/session")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.me?.id) setMe({ id: String(data.me.id), role: String(data.me.role || "") });
       })
       .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed defaults once
   }, []);
+
+  useEffect(() => {
+    if (!openId) {
+      setOpenDetail(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/api/books/expenses/${openId}`)
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (cancelled) return;
+        if (!ok) {
+          toast.error(apiErrorMessage(d));
+          return;
+        }
+        setOpenDetail(d);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [openId]);
 
   const counts = useMemo(() => {
     const by = (s: string) => rows.filter((r) => r.status === s).length;
@@ -180,10 +269,31 @@ export default function BooksExpensesPage() {
       return accounts.filter((a) => a.code === "2150" || /card/i.test(a.name));
     }
     if (paidFromKind === "bank") {
-      return accounts.filter((a) => a.code.startsWith("11") && a.code !== "1110");
+      return accounts.filter(
+        (a) => a.accountType === "asset" && (a.isBank ?? a.code.startsWith("11")) && a.code !== "1110",
+      );
     }
     return accounts;
   }, [accounts, paidFromKind]);
+
+  const selectedSupplier = suppliers.find((s) => s.id === vendorPartyId);
+  const formVatNotRecoverable = (() => {
+    try {
+      return (displayToMinor(lineVat) ?? 0) > 0 && !selectedSupplier?.trn;
+    } catch {
+      return false;
+    }
+  })();
+
+  /** Why the current user can't approve/reject this expense (null = they can). */
+  function approveBlockedReason(r: Expense): string | null {
+    if (!me) return null;
+    if (me.role !== "admin" && me.role !== "approver") return "Only an approver or admin can approve";
+    if (r.createdBy === me.id || r.submittedBy === me.id) {
+      return "You prepared this expense, so someone else must approve it";
+    }
+    return null;
+  }
 
   async function createDraft() {
     if (!periodId) {
@@ -203,6 +313,10 @@ export default function BooksExpensesPage() {
       toast.error("Pick a debit account");
       return;
     }
+    if (!paidFromKind || !paidFromAccountId) {
+      toast.error("Choose what the expense was paid from");
+      return;
+    }
     setSaving(true);
     const res = await fetch("/api/books/expenses", {
       method: "POST",
@@ -211,7 +325,8 @@ export default function BooksExpensesPage() {
         expenseDate,
         periodId,
         description,
-        vendorName,
+        vendorName: selectedSupplier ? selectedSupplier.name : vendorName,
+        vendorPartyId: vendorPartyId || null,
         paidFromKind: paidFromKind || null,
         paidFromAccountId: paidFromAccountId || null,
         lines: [
@@ -235,6 +350,7 @@ export default function BooksExpensesPage() {
     setFormOpen(false);
     setDescription("");
     setVendorName("");
+    setVendorPartyId("");
     setLineNet("100.00");
     setLineVat("5.00");
     void reload();
@@ -363,7 +479,7 @@ export default function BooksExpensesPage() {
         <div className="grid max-w-2xl gap-3 rounded-lg border border-border p-4" data-testid="expenses-create">
           <p className="text-sm font-medium">New expense draft</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
+            <div className="min-w-0">
               <Label>Date</Label>
               <Input
                 className="mt-1"
@@ -373,14 +489,40 @@ export default function BooksExpensesPage() {
                 data-testid="expenses-date"
               />
             </div>
-            <div>
-              <Label>Vendor</Label>
-              <Input
-                className="mt-1"
-                value={vendorName}
-                onChange={(e) => setVendorName(e.target.value)}
-                data-testid="expenses-vendor"
-              />
+            <div className="min-w-0">
+              <Label>Supplier</Label>
+              <Select
+                value={vendorPartyId || "__free__"}
+                onValueChange={(v) => setVendorPartyId(!v || v === "__free__" ? "" : String(v))}
+              >
+                <SelectTrigger className="mt-1 w-full" data-testid="expenses-supplier">
+                  <SelectValue>
+                    {(v: string | null) =>
+                      !v || v === "__free__"
+                        ? "Other (type a name)"
+                        : suppliers.find((s) => s.id === v)?.name || "Supplier"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__free__">Other (type a name)</SelectItem>
+                  {suppliers.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {s.name}
+                      {s.trn ? ` · TRN ${s.trn}` : " · no TRN"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!vendorPartyId ? (
+                <Input
+                  className="mt-2"
+                  placeholder="Vendor name"
+                  value={vendorName}
+                  onChange={(e) => setVendorName(e.target.value)}
+                  data-testid="expenses-vendor"
+                />
+              ) : null}
             </div>
           </div>
           <div>
@@ -393,11 +535,15 @@ export default function BooksExpensesPage() {
             />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
+            <div className="min-w-0">
               <Label>Debit account</Label>
               <Select value={lineAccountId || undefined} onValueChange={(v) => setLineAccountId(v ?? "")}>
-                <SelectTrigger className="mt-1" data-testid="expenses-debit-account">
-                  <SelectValue placeholder="Account" />
+                <SelectTrigger className="mt-1 w-full" data-testid="expenses-debit-account">
+                  <SelectValue placeholder="Account">
+                    {(v: string | null) =>
+                      accountLabel(accounts.find((a) => a.id === v)) || "Account"
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {expenseAccounts.map((a) => (
@@ -408,21 +554,22 @@ export default function BooksExpensesPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+            <div className="min-w-0">
               <Label>Paid from</Label>
               <Select
                 value={paidFromKind || undefined}
                 onValueChange={(v) => {
                   const next = v ?? "";
                   setPaidFromKind(next);
-                  if (next === "employee_reimbursable") {
-                    const reimb = accounts.find((a) => a.code === "2130");
-                    if (reimb) setPaidFromAccountId(reimb.id);
-                  }
+                  // Each source has its own default account (petty cash → 1110, employee → 2130,
+                  // card → 2150, bank → the first bank account).
+                  setPaidFromAccountId(defaultPaidFromAccount(accounts, next)?.id || "");
                 }}
               >
-                <SelectTrigger className="mt-1" data-testid="expenses-paid-from-kind">
-                  <SelectValue placeholder="Source" />
+                <SelectTrigger className="mt-1 w-full" data-testid="expenses-paid-from-kind">
+                  <SelectValue placeholder="Choose source">
+                    {(v: string | null) => (v ? paidFromLabel(v) : "Choose source")}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {PAID_FROM_OPTIONS.map((o) => (
@@ -435,14 +582,18 @@ export default function BooksExpensesPage() {
             </div>
           </div>
           {paidFromKind ? (
-            <div>
+            <div className="min-w-0">
               <Label>Paid-from account</Label>
               <Select
                 value={paidFromAccountId || undefined}
                 onValueChange={(v) => setPaidFromAccountId(v ?? "")}
               >
-                <SelectTrigger className="mt-1" data-testid="expenses-paid-from-account">
-                  <SelectValue placeholder="Account" />
+                <SelectTrigger className="mt-1 w-full" data-testid="expenses-paid-from-account">
+                  <SelectValue placeholder="Account">
+                    {(v: string | null) =>
+                      accountLabel(accounts.find((a) => a.id === v)) || "Account"
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {paidFromAccounts.map((a) => (
@@ -483,7 +634,20 @@ export default function BooksExpensesPage() {
               />
             </div>
           </div>
-          <Button data-testid="expenses-save" disabled={saving} onClick={() => void createDraft()}>
+          {formVatNotRecoverable ? (
+            <p
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+              data-testid="expenses-vat-no-trn"
+            >
+              {NO_TRN_VAT_WARNING}
+            </p>
+          ) : null}
+          <Button
+            data-testid="expenses-save"
+            disabled={saving || !paidFromKind || !paidFromAccountId}
+            title={!paidFromKind ? "Choose what the expense was paid from" : undefined}
+            onClick={() => void createDraft()}
+          >
             {saving ? "Saving…" : "Save draft"}
           </Button>
         </div>
@@ -525,6 +689,7 @@ export default function BooksExpensesPage() {
                       : "border-b last:border-0"
                   }
                   data-testid={`expense-row-${r.expenseNo}`}
+                  {...rowOpenProps(() => setOpenId(r.id))}
                 >
                   <td className="px-3 py-2 font-mono text-xs">{r.expenseNo}</td>
                   <td className="px-3 py-2">
@@ -533,12 +698,23 @@ export default function BooksExpensesPage() {
                   <td className="px-3 py-2">
                     <div className="font-medium">{r.description || "—"}</div>
                     <div className="text-xs text-muted-foreground">{r.vendorName || "—"}</div>
+                    {r.vatMinor > 0 && !r.vendorTrn ? (
+                      <div className="text-[11px] text-amber-700" title={NO_TRN_VAT_WARNING}>
+                        VAT not recoverable (no supplier TRN)
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-right">
                     <CellAmount minor={r.grossMinor} />
                   </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">
-                    <div>{r.paidFromAccountCode || r.paidFromKind || "—"}</div>
+                    <div>{paidFromLabel(r.paidFromKind)}</div>
+                    {r.paidFromAccountCode ? (
+                      <div className="text-[11px]">
+                        {r.paidFromAccountCode}
+                        {r.paidFromAccountName ? ` · ${r.paidFromAccountName}` : ""}
+                      </div>
+                    ) : null}
                     {r.bankTxnId ? (
                       <div className="text-[11px] text-emerald-700" data-testid={`expense-matched-${r.id}`}>
                         Matched to bank
@@ -583,7 +759,15 @@ export default function BooksExpensesPage() {
                           </Button>
                         </>
                       ) : null}
-                      {r.status === "pending" ? (
+                      {r.status === "pending" && approveBlockedReason(r) ? (
+                        <span
+                          className="text-xs text-muted-foreground"
+                          data-testid={`expense-approve-blocked-${r.id}`}
+                        >
+                          {approveBlockedReason(r)}
+                        </span>
+                      ) : null}
+                      {r.status === "pending" && !approveBlockedReason(r) ? (
                         <>
                           <Button
                             size="sm"
@@ -679,6 +863,99 @@ export default function BooksExpensesPage() {
           </tbody>
         </table>
       </div>
+
+      <BooksSideDrawer
+        open={Boolean(openId)}
+        onOpenChange={(o) => {
+          if (!o) setOpenId(null);
+        }}
+        title="Expense"
+        entryNo={openDetail?.expenseNo || rows.find((x) => x.id === openId)?.expenseNo}
+        status={openDetail?.status}
+      >
+        {openDetail ? (
+          <div className="space-y-4 p-4 text-sm" data-testid="expense-detail">
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
+              <dt className="text-muted-foreground">Date</dt>
+              <dd>
+                <CellDate value={openDetail.expenseDate} />
+              </dd>
+              <dt className="text-muted-foreground">Description</dt>
+              <dd>{openDetail.description || "—"}</dd>
+              <dt className="text-muted-foreground">Supplier</dt>
+              <dd>
+                {openDetail.vendorName || "—"}
+                {openDetail.vendorTrn ? (
+                  <span className="text-xs text-muted-foreground"> · TRN {openDetail.vendorTrn}</span>
+                ) : null}
+              </dd>
+              <dt className="text-muted-foreground">Paid from</dt>
+              <dd>
+                {paidFromLabel(openDetail.paidFromKind)}
+                {openDetail.paidFromAccountCode
+                  ? ` · ${openDetail.paidFromAccountCode}${openDetail.paidFromAccountName ? ` ${openDetail.paidFromAccountName}` : ""}`
+                  : ""}
+              </dd>
+              <dt className="text-muted-foreground">Status</dt>
+              <dd>
+                <StatusBadge meta={STATUS_META[openDetail.status] || STATUS_META.draft} />
+              </dd>
+              {openDetail.rejectionReason ? (
+                <>
+                  <dt className="text-muted-foreground">Rejected because</dt>
+                  <dd className="text-red-700">{openDetail.rejectionReason}</dd>
+                </>
+              ) : null}
+            </dl>
+            {openDetail.vatMinor > 0 && !openDetail.vendorTrn ? (
+              <p
+                className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900"
+                data-testid="expense-detail-vat-no-trn"
+              >
+                {NO_TRN_VAT_WARNING}
+              </p>
+            ) : null}
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-muted-foreground">
+                <tr>
+                  <th className="py-1 font-medium">Account</th>
+                  <th className="py-1 font-medium">VAT</th>
+                  <th className="py-1 text-right font-medium">Net</th>
+                  <th className="py-1 text-right font-medium">VAT amt</th>
+                  <th className="py-1 text-right font-medium">Gross</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(openDetail.lines || []).map((l) => (
+                  <tr key={l.id} className="border-t border-border">
+                    <td className="py-1">
+                      {l.accountCode} · {l.accountName}
+                      {l.description ? (
+                        <div className="text-xs text-muted-foreground">{l.description}</div>
+                      ) : null}
+                    </td>
+                    <td className="py-1">{l.vatCode || "—"}</td>
+                    <td className="py-1 text-right">
+                      <CellAmount minor={l.netMinor} />
+                    </td>
+                    <td className="py-1 text-right">
+                      <CellAmount minor={l.vatMinor} />
+                    </td>
+                    <td className="py-1 text-right">
+                      <CellAmount minor={l.grossMinor} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {openDetail.status === "pending" && approveBlockedReason(openDetail) ? (
+              <p className="text-xs text-muted-foreground">{approveBlockedReason(openDetail)}</p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+        )}
+      </BooksSideDrawer>
     </div>
   );
 }

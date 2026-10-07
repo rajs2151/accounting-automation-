@@ -1,26 +1,20 @@
 /**
  * RPT-1: Day Book — every posted voucher in a date range (read-only).
- * Particulars = the party when the entry belongs to a document with a party (a reversal belongs to the
- * document it reverses), else the first line's account; the amount sits in Debit or Credit by that
- * line's side (Tally convention). Entries in date then creation order.
+ * Each voucher row carries its own debit and credit totals (equal for a balanced voucher), so the
+ * column totals of the book agree; the voucher's lines come along for expanding the row.
+ * Particulars = the party when the entry belongs to a document with a party (a reversal belongs to
+ * the document it reverses), else the first line's account. `partySide` says whether the party was
+ * debited or credited: its AR/AP control line, else its advance line (2320 customer / 1410 supplier
+ * advances). Entries in date then creation order.
  */
 import { withUser } from "@/lib/db";
 import { BooksError } from "@/server/books/errors";
+import { isIsoDate } from "@/server/books/periods";
+import { VOUCHER_TYPES } from "@/server/books/vouchers";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
-export const DAY_BOOK_TYPES = [
-  "Sales",
-  "Purchase",
-  "Receipt",
-  "Payment",
-  "Contra",
-  "Journal",
-  "Credit Note",
-  "Debit Note",
-  "Opening",
-  "Closing",
-  "Reversal",
-] as const;
+/** Every voucher type a journal can carry (vouchers.ts), plus reversals as their own type. */
+export const DAY_BOOK_TYPES = [...VOUCHER_TYPES, "Reversal"] as const;
 export type DayBookType = (typeof DAY_BOOK_TYPES)[number];
 
 /** Voucher type label for a journal entry (reversals are their own type). */
@@ -30,15 +24,31 @@ export function dayBookType(voucherType: string | null | undefined, entryType?: 
   return (DAY_BOOK_TYPES as readonly string[]).includes(v) ? (v as DayBookType) : "Journal";
 }
 
+/** Party advance accounts (settlements.ts): customer advances received / supplier advances paid. */
+const PARTY_ADVANCE_CODES = new Set(["2320", "1410"]);
+
+export type DayBookLine = {
+  accountCode: string;
+  accountName: string;
+  debitMinor: number;
+  creditMinor: number;
+};
+
 export type DayBookRow = {
   entryId: string;
   date: string;
   particulars: string;
+  /** The document's party, when there is one. */
+  party: string | null;
+  /** Whether the party was debited ("Dr") or credited ("Cr"); null without a party line. */
+  partySide: "Dr" | "Cr" | null;
   type: DayBookType;
   number: string | null;
+  /** Voucher totals: sum of the debit lines and of the credit lines (equal when balanced). */
   debitMinor: number;
   creditMinor: number;
   documentId: string | null;
+  lines: DayBookLine[];
 };
 
 function iso(v: unknown): string {
@@ -53,7 +63,7 @@ export async function booksDayBook(
   clientId: string,
   opts: { from: string; to: string; type?: string | null },
 ): Promise<{ from: string; to: string; rows: DayBookRow[]; totalDebitMinor: number; totalCreditMinor: number }> {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.from) || !/^\d{4}-\d{2}-\d{2}$/.test(opts.to) || opts.from > opts.to) {
+  if (!isIsoDate(opts.from) || !isIsoDate(opts.to) || opts.from > opts.to) {
     throw new BooksError("invalid_date_range", "invalid");
   }
   if (opts.type && !(DAY_BOOK_TYPES as readonly string[]).includes(opts.type)) {
@@ -79,10 +89,18 @@ export async function booksDayBook(
       [clientId, opts.from, opts.to],
     );
     const ids = entries.rows.map((r) => String(r.id));
-    type LineRow = { entry_id: string; debit_minor: string; credit_minor: string; name: string; is_ar: boolean; is_ap: boolean };
+    type LineRow = {
+      entry_id: string;
+      debit_minor: string;
+      credit_minor: string;
+      code: string;
+      name: string;
+      is_ar: boolean;
+      is_ap: boolean;
+    };
     const lines: { rows: LineRow[] } = ids.length
       ? await db.query<LineRow>(
-          `SELECT l.entry_id, l.debit_minor, l.credit_minor, a.name, a.is_ar, a.is_ap
+          `SELECT l.entry_id, l.debit_minor, l.credit_minor, a.code, a.name, a.is_ar, a.is_ap
            FROM books_journal_lines l JOIN books_accounts a ON a.id = l.account_id
            WHERE l.entry_id = ANY($1::uuid[])
            ORDER BY l.entry_id, l.debit_minor DESC, l.id`,
@@ -103,20 +121,30 @@ export async function booksDayBook(
       const type = dayBookType(e.voucher_type as string | null, e.entry_type as string | null);
       if (opts.type && type !== opts.type) continue;
       const ls = byEntry.get(String(e.id)) || [];
-      const amount = ls.reduce((s, l) => s + Number(l.debit_minor), 0);
-      // The party's own line (AR/AP control) decides the side when a party exists.
-      const partyLine = e.party_name ? ls.find((l) => l.is_ar || l.is_ap) : undefined;
-      const lead = partyLine || ls[0];
-      const isDebit = lead ? Number(lead.debit_minor) > 0 : true;
+      const debitMinor = ls.reduce((sum, l) => sum + Number(l.debit_minor), 0);
+      const creditMinor = ls.reduce((sum, l) => sum + Number(l.credit_minor), 0);
+      // The party's own line decides its side: AR/AP control first, else its advance account.
+      const partyLine = e.party_name
+        ? ls.find((l) => l.is_ar || l.is_ap) || ls.find((l) => PARTY_ADVANCE_CODES.has(String(l.code)))
+        : undefined;
+      const lead = ls[0];
       const row: DayBookRow = {
         entryId: String(e.id),
         date: iso(e.entry_date),
         particulars: String(e.party_name || lead?.name || e.memo || ""),
+        party: e.party_name ? String(e.party_name) : null,
+        partySide: partyLine ? (Number(partyLine.debit_minor) > 0 ? "Dr" : "Cr") : null,
         type,
         number: e.entry_no ? String(e.entry_no) : null,
-        debitMinor: isDebit ? amount : 0,
-        creditMinor: isDebit ? 0 : amount,
+        debitMinor,
+        creditMinor,
         documentId: e.document_id ? String(e.document_id) : null,
+        lines: ls.map((l) => ({
+          accountCode: String(l.code),
+          accountName: String(l.name),
+          debitMinor: Number(l.debit_minor),
+          creditMinor: Number(l.credit_minor),
+        })),
       };
       totalDebitMinor += row.debitMinor;
       totalCreditMinor += row.creditMinor;

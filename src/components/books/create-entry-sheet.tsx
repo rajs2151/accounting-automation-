@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Plus, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
 import { Button } from "@/components/ui/button";
@@ -633,6 +634,7 @@ export function CreateEntrySheet({
           return;
         }
       }
+      if (editEntryId) toast.success("Draft saved — an approver who didn't edit it can post it.");
       onCreated(entryId);
       onOpenChange(false);
       setDescription("");
@@ -1075,12 +1077,26 @@ export function CreateEntrySheet({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button variant="secondary" disabled={submitting || !balanced} onClick={() => void submit(false)}>
-              Save draft
-            </Button>
-            <Button disabled={submitting || !balanced} onClick={() => void submit(true)} data-testid="create-journal">
-              {submitting ? "Saving…" : "Post"}
-            </Button>
+            {editEntryId ? (
+              // Editing a draft only saves it: whoever edits is a preparer and can't also post
+              // (dual control). Post from the entry drawer as a different approver.
+              <Button
+                disabled={submitting || !balanced}
+                onClick={() => void submit(false)}
+                data-testid="create-journal"
+              >
+                {submitting ? "Saving…" : "Save draft"}
+              </Button>
+            ) : (
+              <>
+                <Button variant="secondary" disabled={submitting || !balanced} onClick={() => void submit(false)}>
+                  Save draft
+                </Button>
+                <Button disabled={submitting || !balanced} onClick={() => void submit(true)} data-testid="create-journal">
+                  {submitting ? "Saving…" : "Post"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </SheetContent>

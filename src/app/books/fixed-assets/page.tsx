@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { StatusBadge } from "@/components/books/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,6 +15,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 
@@ -29,7 +37,30 @@ type Asset = {
   lifeMonths: number;
   method: string;
   disposedAt: string | null;
+  costStatus?: "posted" | "draft" | "missing" | "unlinked";
+  sourceEntryNo?: string | null;
+  sourceReference?: string | null;
 };
+
+type Opt = { id: string; code: string; name: string };
+type AccountOptions = {
+  assetAccounts: Array<
+    Opt & { subType: string; defaultAccumulatedAccountId: string | null; defaultExpenseAccountId: string | null }
+  >;
+  accumulatedAccounts: Array<Opt & { subType: string }>;
+  expenseAccounts: Opt[];
+  creditAccounts: Array<Opt & { kind: string }>;
+};
+type Bill = { id: string; documentNumber: string | null; partyName: string | null; grossMinor: number };
+
+const COST_STATUS: Record<string, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+  posted: { label: "Cost posted", tone: "success" },
+  draft: { label: "Cost awaiting approver", tone: "warning" },
+  missing: { label: "Cost entry deleted", tone: "danger" },
+  unlinked: { label: "Cost not linked", tone: "danger" },
+};
+
+const optLabel = (o: Opt | undefined) => (o ? `${o.code} · ${o.name}` : "");
 
 type ScheduleLine = {
   monthIndex: number;
@@ -48,6 +79,14 @@ export default function BooksFixedAssetsPage() {
   const [inService, setInService] = useState("2026-05-01");
   const [lifeMonths, setLifeMonths] = useState("36");
   const [saving, setSaving] = useState(false);
+  const [options, setOptions] = useState<AccountOptions | null>(null);
+  const [bills, setBills] = useState<Bill[]>([]);
+  const [assetAccountId, setAssetAccountId] = useState("");
+  const [accumAccountId, setAccumAccountId] = useState("");
+  const [expenseAccountId, setExpenseAccountId] = useState("");
+  const [costSource, setCostSource] = useState<"draft" | "bill">("draft");
+  const [creditAccountId, setCreditAccountId] = useState("");
+  const [billId, setBillId] = useState("");
   const [running, setRunning] = useState(false);
   const [scheduleFor, setScheduleFor] = useState<Asset | null>(null);
   const [schedule, setSchedule] = useState<ScheduleLine[]>([]);
@@ -71,6 +110,42 @@ export default function BooksFixedAssetsPage() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    if (!addOpen) return;
+    void fetch("/api/books/fixed-assets/account-options")
+      .then((r) => r.json())
+      .then((d: AccountOptions) => {
+        if (!d || !Array.isArray(d.assetAccounts)) return;
+        setOptions(d);
+        setCreditAccountId((cur) => cur || d.creditAccounts.find((c) => c.kind === "bank")?.id || "");
+      })
+      .catch(() => undefined);
+    void fetch("/api/books/documents?docType=purchase_bill")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!Array.isArray(d)) return;
+        setBills(
+          d.filter((b: { status?: string }) =>
+            ["posted", "partially_paid", "paid"].includes(String(b.status)),
+          ),
+        );
+      })
+      .catch(() => undefined);
+  }, [addOpen]);
+
+  function chooseAssetAccount(id: string) {
+    setAssetAccountId(id);
+    const a = options?.assetAccounts.find((x) => x.id === id);
+    setAccumAccountId(a?.defaultAccumulatedAccountId || "");
+    setExpenseAccountId(a?.defaultExpenseAccountId || "");
+  }
+
+  const chosenAsset = options?.assetAccounts.find((a) => a.id === assetAccountId);
+  const canSave =
+    Boolean(name.trim()) &&
+    Boolean(assetAccountId) &&
+    (costSource === "draft" ? Boolean(creditAccountId) : Boolean(billId));
+
   async function addAsset() {
     setSaving(true);
     try {
@@ -85,6 +160,11 @@ export default function BooksFixedAssetsPage() {
           residualMinor,
           inServiceDate: inService,
           lifeMonths: Number(lifeMonths),
+          assetAccountId,
+          accumulatedAccountId: accumAccountId || undefined,
+          expenseAccountId: expenseAccountId || undefined,
+          acquisitionCreditAccountId: costSource === "draft" ? creditAccountId : undefined,
+          sourceDocumentId: costSource === "bill" ? billId : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -92,7 +172,11 @@ export default function BooksFixedAssetsPage() {
         toast.error(apiErrorMessage(data));
         return;
       }
-      toast.success("Asset registered");
+      toast.success(
+        data.acquisitionJournalEntryId
+          ? "Asset registered — acquisition journal saved as a draft for an approver to post"
+          : "Asset registered against the posted purchase",
+      );
       setAddOpen(false);
       setName("");
       await reload();
@@ -131,6 +215,11 @@ export default function BooksFixedAssetsPage() {
       if (!res.ok) {
         toast.error(apiErrorMessage(data));
         return;
+      }
+      if (Array.isArray(data.uncostedAssets) && data.uncostedAssets.length) {
+        toast.warning(
+          `No cost is linked for: ${data.uncostedAssets.join(", ")}. Check the purchase was booked to the asset account.`,
+        );
       }
       if (!data.journalEntryId) {
         toast.message("No depreciation due for this period");
@@ -179,6 +268,7 @@ export default function BooksFixedAssetsPage() {
                 <th className="px-3 py-2 font-medium">Residual</th>
                 <th className="px-3 py-2 font-medium">Life</th>
                 <th className="px-3 py-2 font-medium">Accounts</th>
+                <th className="px-3 py-2 font-medium">Cost booked</th>
                 <th className="px-3 py-2 font-medium" />
               </tr>
             </thead>
@@ -197,6 +287,14 @@ export default function BooksFixedAssetsPage() {
                   <td className="px-3 py-2 tabular-nums">{a.lifeMonths} mo</td>
                   <td className="px-3 py-2 text-muted-foreground">
                     {a.assetAccountCode} / {a.accumulatedAccountCode} / {a.expenseAccountCode}
+                  </td>
+                  <td className="px-3 py-2" data-testid={`asset-cost-${a.id}`}>
+                    <StatusBadge meta={COST_STATUS[a.costStatus || "unlinked"] || COST_STATUS.unlinked} />
+                    {a.sourceEntryNo || a.sourceReference ? (
+                      <div className="text-xs text-muted-foreground">
+                        {a.sourceEntryNo || a.sourceReference}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-right">
                     <Button size="sm" variant="ghost" onClick={() => void showSchedule(a)}>
@@ -253,15 +351,140 @@ export default function BooksFixedAssetsPage() {
                 />
               </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Defaults: asset 1600, accum. 1690, expense 6800. Method: straight-line.
-            </p>
+            <div className="grid gap-1">
+              <Label>Asset account</Label>
+              <Select value={assetAccountId || undefined} onValueChange={(v) => chooseAssetAccount(String(v ?? ""))}>
+                <SelectTrigger className="w-full" data-testid="fa-asset-account">
+                  <SelectValue placeholder="Choose asset account">
+                    {(v: string | null) =>
+                      optLabel(options?.assetAccounts.find((a) => a.id === v)) || "Choose asset account"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {(options?.assetAccounts || []).map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.code} · {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid min-w-0 gap-1">
+                <Label>{chosenAsset?.subType === "ia" ? "Accum. amortisation" : "Accum. depreciation"}</Label>
+                <Select value={accumAccountId || undefined} onValueChange={(v) => setAccumAccountId(String(v ?? ""))}>
+                  <SelectTrigger className="w-full" data-testid="fa-accum-account">
+                    <SelectValue placeholder="Account">
+                      {(v: string | null) =>
+                        optLabel(options?.accumulatedAccounts.find((a) => a.id === v)) || "Account"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(options?.accumulatedAccounts || [])
+                      .filter((a) => !chosenAsset || a.subType === `${chosenAsset.subType}_contra`)
+                      .map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.code} · {a.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid min-w-0 gap-1">
+                <Label>{chosenAsset?.subType === "ia" ? "Amortisation expense" : "Depreciation expense"}</Label>
+                <Select value={expenseAccountId || undefined} onValueChange={(v) => setExpenseAccountId(String(v ?? ""))}>
+                  <SelectTrigger className="w-full" data-testid="fa-expense-account">
+                    <SelectValue placeholder="Account">
+                      {(v: string | null) =>
+                        optLabel(options?.expenseAccounts.find((a) => a.id === v)) || "Account"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(options?.expenseAccounts || []).map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.code} · {a.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-2 rounded-md border border-border p-3">
+              <Label>How is the cost booked?</Label>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="fa-cost-source"
+                  checked={costSource === "draft"}
+                  onChange={() => setCostSource("draft")}
+                  data-testid="fa-cost-draft"
+                />
+                <span>
+                  Create an acquisition journal (draft): Dr asset account / Cr the account below. An
+                  approver posts it.
+                </span>
+              </label>
+              {costSource === "draft" ? (
+                <Select value={creditAccountId || undefined} onValueChange={(v) => setCreditAccountId(String(v ?? ""))}>
+                  <SelectTrigger className="w-full" data-testid="fa-credit-account">
+                    <SelectValue placeholder="Paid from">
+                      {(v: string | null) =>
+                        optLabel(options?.creditAccounts.find((a) => a.id === v)) || "Paid from"
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(options?.creditAccounts || []).map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.code} · {a.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="fa-cost-source"
+                  checked={costSource === "bill"}
+                  onChange={() => setCostSource("bill")}
+                  data-testid="fa-cost-bill"
+                />
+                <span>It was bought on a posted purchase bill (booked to the asset account)</span>
+              </label>
+              {costSource === "bill" ? (
+                <Select value={billId || undefined} onValueChange={(v) => setBillId(String(v ?? ""))}>
+                  <SelectTrigger className="w-full" data-testid="fa-source-bill">
+                    <SelectValue placeholder="Choose the bill">
+                      {(v: string | null) => {
+                        const b = bills.find((x) => x.id === v);
+                        return b ? `${b.documentNumber || "Bill"} · ${b.partyName || ""}` : "Choose the bill";
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {bills.map((b) => (
+                      <SelectItem key={b.id} value={b.id}>
+                        {b.documentNumber || "Bill"} · {b.partyName || "—"} · {formatMinor(b.grossMinor)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              <p className="text-xs text-muted-foreground">
+                Depreciation only runs once the cost is posted. Bought with VAT? Record the purchase bill
+                (VAT recovered there) and link it instead.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>
               Cancel
             </Button>
-            <Button disabled={saving || !name.trim()} onClick={() => void addAsset()}>
+            <Button disabled={saving || !canSave} onClick={() => void addAsset()}>
               {saving ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>

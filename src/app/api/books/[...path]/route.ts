@@ -35,6 +35,7 @@ import {
 import { BooksError } from "@/server/books/errors";
 import {
   listBooksFixedAssets,
+  listFixedAssetAccountOptions,
   previewBooksFixedAssetSchedule,
   registerBooksFixedAsset,
   runBooksDepreciation,
@@ -159,6 +160,7 @@ import {
   assertOpenItemsMatchRebuild,
   getBooksOpenItemKpis,
   listBooksOpenItems,
+  parseOpenItemKpiSide,
 } from "@/server/books/open-items";
 import {
   createBooksParty,
@@ -171,8 +173,11 @@ import { createBooksPeriod, listBooksPeriods } from "@/server/books/periods";
 import {
   allocatePartyAdvance,
   createContra,
-  createReceiptOrPayment,
+  createSettlementDraft,
+  discardSettlementDraft,
   getPartyAdvanceBalance,
+  listSettlementDrafts,
+  postSettlementDraft,
 } from "@/server/books/settlements";
 import {
   listPlaceOfSupplyGaps,
@@ -389,6 +394,9 @@ export async function GET(request: Request, ctx: Ctx) {
         await partyDisbursementNet(session.userId, session.clientId, path[1]),
       );
     }
+    if (path[0] === "settlements" && path[1] === "drafts" && path.length === 2) {
+      return NextResponse.json(await listSettlementDrafts(session.userId, session.clientId));
+    }
     if (path[0] === "parties" && path[2] === "advances" && path.length === 3) {
       return NextResponse.json(
         await getPartyAdvanceBalance(
@@ -562,7 +570,7 @@ export async function GET(request: Request, ctx: Ctx) {
       );
     }
     if (path[0] === "open-items" && path[1] === "kpis" && path.length === 2) {
-      const side = url.searchParams.get("side") === "AR" ? "AR" : "AP";
+      const side = parseOpenItemKpiSide(url.searchParams.get("side"));
       const partyId = url.searchParams.get("partyId") || undefined;
       return NextResponse.json(
         await getBooksOpenItemKpis(session.userId, session.clientId, side, { partyId }),
@@ -612,6 +620,9 @@ export async function GET(request: Request, ctx: Ctx) {
     }
     if (path[0] === "fixed-assets" && path.length === 1) {
       return NextResponse.json(await listBooksFixedAssets(session.userId, session.clientId));
+    }
+    if (path[0] === "fixed-assets" && path[1] === "account-options" && path.length === 2) {
+      return NextResponse.json(await listFixedAssetAccountOptions(session.userId, session.clientId));
     }
     if (path[0] === "fixed-assets" && path[2] === "schedule" && path.length === 3) {
       return NextResponse.json(
@@ -851,6 +862,12 @@ export async function POST(request: Request, ctx: Ctx) {
       );
     }
     if (path[0] === "fixed-assets" && path.length === 1) {
+      // From the app an asset always names a postable asset account and how its cost is booked
+      // (a posted purchase / journal, or a draft acquisition journal for an approver to post).
+      if (!body.assetAccountId) throw new BooksError("asset_account_required", "invalid");
+      if (!body.sourceJournalEntryId && !body.sourceDocumentId && !body.acquisitionCreditAccountId) {
+        throw new BooksError("asset_cost_source_required", "invalid");
+      }
       return NextResponse.json(
         await registerBooksFixedAsset(session.userId, session.clientId, {
           name: String(body.name || ""),
@@ -867,6 +884,9 @@ export async function POST(request: Request, ctx: Ctx) {
             ? String(body.sourceJournalEntryId)
             : null,
           sourceDocumentId: body.sourceDocumentId ? String(body.sourceDocumentId) : null,
+          acquisitionCreditAccountId: body.acquisitionCreditAccountId
+            ? String(body.acquisitionCreditAccountId)
+            : null,
           disposedAt: body.disposedAt ? String(body.disposedAt) : null,
         }),
       );
@@ -1164,11 +1184,11 @@ export async function POST(request: Request, ctx: Ctx) {
           vendorName: body.vendorName != null ? String(body.vendorName) : undefined,
           currency: body.currency != null ? String(body.currency) : undefined,
           paidFromKind:
-            body.paidFromKind === undefined || body.paidFromKind === ""
+            body.paidFromKind == null || body.paidFromKind === ""
               ? null
               : (String(body.paidFromKind) as PaidFromKind),
           paidFromAccountId:
-            body.paidFromAccountId === undefined || body.paidFromAccountId === ""
+            body.paidFromAccountId == null || body.paidFromAccountId === ""
               ? null
               : String(body.paidFromAccountId),
           note: body.note != null ? String(body.note) : undefined,
@@ -1309,32 +1329,46 @@ export async function POST(request: Request, ctx: Ctx) {
       );
     }
     if (path[0] === "settlements" && path.length === 1) {
-      // Approver = session user. Preparer must differ (dual control). Synthetic stub:
-      // default preparer to Omar when the signed-in user is not Omar.
-      const OMAR = "55555555-5555-4555-8555-555555555555";
-      const preparerId = String(
-        body.preparerId || (session.userId === OMAR ? "" : OMAR) || session.userId,
-      );
+      // Step 1 of dual control: the signed-in user records a DRAFT receipt/payment (preparer is
+      // always session.userId; a preparer named in the body is ignored). A different approver/admin posts
+      // it via POST /settlements/:id/post.
       return NextResponse.json(
-        await createReceiptOrPayment(preparerId, session.userId, session.clientId, {
-          docType: body.docType === "payment" ? "payment" : "receipt",
-          partyId: String(body.partyId || ""),
-          issueDate: String(body.issueDate || ""),
-          periodId: String(body.periodId || ""),
-          bankAccountId: String(body.bankAccountId || ""),
-          currency: body.currency ? String(body.currency) : undefined,
-          fxRateScaled: body.fxRateScaled != null ? Number(body.fxRateScaled) : undefined,
-          originalAmountMinor: Number(body.originalAmountMinor || 0),
-          memo: body.memo ? String(body.memo) : undefined,
-          allocations: Array.isArray(body.allocations) ? body.allocations : [],
-        }),
+        await createSettlementDraft(
+          session.userId,
+          session.clientId,
+          {
+            docType: body.docType === "payment" ? "payment" : "receipt",
+            partyId: String(body.partyId || ""),
+            issueDate: String(body.issueDate || ""),
+            periodId: String(body.periodId || ""),
+            bankAccountId: String(body.bankAccountId || ""),
+            currency: body.currency ? String(body.currency) : undefined,
+            fxRateScaled: body.fxRateScaled != null ? Number(body.fxRateScaled) : undefined,
+            originalAmountMinor: Number(body.originalAmountMinor || 0),
+            memo: body.memo ? String(body.memo) : undefined,
+            allocations: Array.isArray(body.allocations) ? body.allocations : [],
+            remainderKind:
+              body.remainderKind === "advance" || body.remainderKind === "on_account"
+                ? body.remainderKind
+                : undefined,
+            remainderOriginalMinor:
+              body.remainderOriginalMinor != null ? Number(body.remainderOriginalMinor) : undefined,
+          },
+          { requestId: body.requestId ? String(body.requestId) : undefined },
+        ),
+      );
+    }
+    if (path[0] === "settlements" && path[2] === "post" && path.length === 3) {
+      // Step 2: approver = session user; preparer = the draft's creator (must differ).
+      return NextResponse.json(
+        await postSettlementDraft(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "settlements" && path[1] === "allocate-advance" && path.length === 2) {
-      const OMAR = "55555555-5555-4555-8555-555555555555";
-      const preparerId = String(
-        body.preparerId || (session.userId === OMAR ? "" : OMAR) || session.userId,
-      );
+      // No draft step here: preparer = approver = session user, so a lone caller is refused
+      // (post_preparer_cannot_approve) before anything is created. Dual-controlled advance
+      // allocation runs at invoice approval (applyAdvanceOriginalMinor).
+      const preparerId = session.userId;
       return NextResponse.json(
         await allocatePartyAdvance(preparerId, session.userId, session.clientId, {
           partyId: String(body.partyId || ""),
@@ -1347,7 +1381,9 @@ export async function POST(request: Request, ctx: Ctx) {
       );
     }
     if (path[0] === "contra" && path.length === 1) {
-      const preparerId = String(body.preparerId || session.userId);
+      // Preparer is always the signed-in user (never a body field): one person can't prepare and post.
+      // Contra transfers normally come through Bank transactions (reviewer + poster).
+      const preparerId = session.userId;
       return NextResponse.json(
         await createContra(preparerId, session.userId, session.clientId, {
           issueDate: String(body.issueDate || ""),
@@ -1805,6 +1841,11 @@ export async function DELETE(request: Request, ctx: Ctx) {
     if (path[0] === "journals" && path.length === 2) {
       return NextResponse.json(
         await softDeleteBooksJournalDraft(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "settlements" && path.length === 2) {
+      return NextResponse.json(
+        await discardSettlementDraft(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "documents" && path.length === 2) {

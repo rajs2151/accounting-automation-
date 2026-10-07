@@ -93,16 +93,25 @@ export async function upsertBooksFxRate(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(rateDate)) {
     throw new BooksError("fx_rate_date_required", "invalid");
   }
+  const rateDay = new Date(`${rateDate}T00:00:00Z`);
+  if (Number.isNaN(rateDay.getTime()) || rateDay.toISOString().slice(0, 10) !== rateDate) {
+    throw new BooksError("invalid_date", "invalid");
+  }
   let rateScaled: number;
   if (body.rateScaled != null) {
     rateScaled = Number(body.rateScaled);
-    if (!Number.isInteger(rateScaled) || rateScaled <= 0) {
+  } else if (body.rate != null && String(body.rate).trim() !== "") {
+    // Zero, negative or malformed rates ("-3.6725", "abc") are refused, never stored.
+    try {
+      rateScaled = Number(parseFxRateToScaled(body.rate));
+    } catch {
       throw new BooksError("invalid_fx_rate", "invalid");
     }
-  } else if (body.rate != null) {
-    rateScaled = Number(parseFxRateToScaled(body.rate));
   } else {
     throw new BooksError("fx_rate_required", "invalid");
+  }
+  if (!Number.isSafeInteger(rateScaled) || rateScaled <= 0) {
+    throw new BooksError("invalid_fx_rate", "invalid");
   }
 
   return withUser(userId, async (db) => {
