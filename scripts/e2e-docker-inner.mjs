@@ -74,9 +74,10 @@ if (phase1Gate) {
     "e2e/books-phase1.spec.ts",
     "e2e/books-close.spec.ts",
     "e2e/books-fs-reports.spec.ts",
+    "e2e/books-health.spec.ts",
   );
   console.log(
-    "+ E2E_PHASE1_GATE: running e2e/books-phase1.spec.ts + e2e/books-close.spec.ts + e2e/books-fs-reports.spec.ts",
+    "+ E2E_PHASE1_GATE: running e2e/books-phase1.spec.ts + e2e/books-close.spec.ts + e2e/books-fs-reports.spec.ts + e2e/books-health.spec.ts",
   );
 }
 run("npx", pwArgs);

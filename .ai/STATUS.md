@@ -1,8 +1,9 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: **6 CLOSED** on feat/books-phase1 — next P7-1 plan (await go)
-- Current task: P7-1 (plan in CURSOR_TASK — wait for go)
+- Phase: **7 (Company Health)** on feat/books-phase1 — Stream A
+- Current task: P7-2 (plan in CURSOR_TASK — after P7-1 PASS)
+- 2026-10-07: P7-1 PASS — health summary (cash, avg CF, runway, L÷A) + /books/health Dashboard; unit 317p/0f/1s; e2e 9/9
 - 2026-10-07: P6-4 PASS — comments/@mentions, CT estimate banner, SVG P&L chart, forecasts layer (db/61); unit 293p/0f/1s; e2e 8/8
 - 2026-10-07: P6-3 PASS — gated FS Excel+PDF export (integrity + audit hash); unit 283p/0f; e2e 8/8
 - 2026-10-07: P6-2 PASS — FS screens (P&L/BS/CF tabs) + drill reclass draft; unit 273p/0f/1s; e2e 8/8

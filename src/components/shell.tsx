@@ -7,6 +7,7 @@ import {
   ArrowLeftRight,
   BookOpen,
   Building2,
+  Activity,
   CalendarCheck,
   ChartColumn,
   FileText,
@@ -67,7 +68,7 @@ type NavItem = {
 /**
  * Books menu in the order work flows: documents come in → sales / purchases / expenses → money in and
  * out → bank → the books themselves. Bank rules and statements live inside Bank transactions / Bank
- * accounts; the placeholder Company Health page is not listed.
+ * accounts. Company Health (Phase 7) sits with Accounting.
  */
 const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
   {
@@ -100,6 +101,7 @@ const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
       { href: "/books/fixed-assets", label: "Fixed assets", icon: Building2 },
       { href: "/books/close", label: "Close", icon: CalendarCheck },
       { href: "/books/reports/trial-balance", label: "Reports", icon: ChartColumn, also: ["/books/reports"] },
+      { href: "/books/health", label: "Company Health", icon: Activity },
     ],
   },
   { items: [{ href: "/books/settings", label: "Settings", icon: Settings }] },
