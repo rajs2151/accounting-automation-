@@ -17,6 +17,8 @@ export type ReportRow = {
   /** Optional hover note and test id for the row. */
   title?: string;
   testId?: string;
+  /** P6-4a: comment badge on account rows. */
+  commentBadge?: { messageCount: number; unreadCount: number; threadId?: string };
 };
 
 export type FlatReportRow = ReportRow & { depth: number; hasChildren: boolean; expanded: boolean };
@@ -179,7 +181,13 @@ export function tbToReportTree(tb: TbLike): { rows: ReportRow[]; totals: Record<
   return { rows, totals };
 }
 
-export type ReportColumn = { key: string; label: string; kind?: "amount" | "text" };
+export type ReportColumn = {
+  key: string;
+  label: string;
+  kind?: "amount" | "text";
+  /** P6-4d: projected (forecast) columns styled differently. */
+  projected?: boolean;
+};
 
 /** Plain amount for exports: no thousands separators, "-" for negatives, "" for zero. */
 function exportAmount(minor: number | undefined): string {

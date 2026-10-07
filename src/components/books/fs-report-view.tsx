@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { FsMetricChart } from "@/components/books/fs-metric-chart";
 import {
   ReportsNav,
   ReportTable,
@@ -23,6 +24,35 @@ import {
   type PnlColumnLike,
 } from "@/lib/fs-report-tree";
 import { formatMinor } from "@/lib/money";
+
+type CtBanner = {
+  taxYearLabel: string;
+  filingDue: string;
+  taxableIncomeMinor: number;
+  estimateMinor: number;
+  disclaimer: string;
+};
+
+type CommentBadge = {
+  accountId: string;
+  threadId: string;
+  messageCount: number;
+  unreadCount: number;
+};
+
+type CommentMsg = {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorName: string;
+};
+
+type ForecastRow = {
+  accountId: string;
+  periodId: string;
+  amountMinor: number;
+  periodLabel: string;
+};
 
 type Mode = "monthly" | "quarterly" | "yearly" | "range";
 type Statement = "pnl" | "bs" | "cf";
@@ -84,6 +114,20 @@ export function FsReportView({ statement }: { statement: Statement }) {
   const [reclassMsg, setReclassMsg] = useState("");
   const [exportMsg, setExportMsg] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [ctBanner, setCtBanner] = useState<CtBanner | null>(null);
+  const [commentBadges, setCommentBadges] = useState<CommentBadge[]>([]);
+  const [commentOpen, setCommentOpen] = useState<{
+    accountId: string;
+    code: string;
+    name: string;
+    threadId?: string;
+  } | null>(null);
+  const [commentMsgs, setCommentMsgs] = useState<CommentMsg[]>([]);
+  const [commentText, setCommentText] = useState("");
+  const [commentErr, setCommentErr] = useState("");
+  const [mentionUsers, setMentionUsers] = useState<Array<{ id: string; name: string }>>([]);
+  const [projectionsOn, setProjectionsOn] = useState(false);
+  const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
 
   useEffect(() => {
     void fetch("/api/books/periods")
@@ -106,6 +150,16 @@ export function FsReportView({ statement }: { statement: Statement }) {
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (statement !== "pnl") return;
+    void fetch("/api/books/users")
+      .then((r) => r.json())
+      .then((list: Array<{ id: string; name: string }>) => {
+        if (Array.isArray(list)) setMentionUsers(list);
+      })
+      .catch(() => undefined);
+  }, [statement]);
 
   const selected = periods.find((p) => p.id === periodId) || null;
 
@@ -153,13 +207,30 @@ export function FsReportView({ statement }: { statement: Statement }) {
         if (!r.ok) throw new Error(apiErrorMessage(j) || "fs_failed");
         return j;
       }),
+      statement === "pnl"
+        ? fetch(`/api/books/reports/ct-estimate?asOf=${encodeURIComponent(query.to)}`).then((r) =>
+            r.json(),
+          )
+        : Promise.resolve(null),
+      statement === "pnl" && periodId
+        ? fetch(`/api/books/comments/badges?periodId=${encodeURIComponent(periodId)}`).then((r) =>
+            r.json(),
+          )
+        : Promise.resolve([]),
+      statement === "pnl"
+        ? fetch("/api/books/forecasts").then((r) => r.json())
+        : Promise.resolve([]),
     ])
-      .then(([pack]) => {
+      .then(([pack, ct, badges, fc]) => {
         if (cancelled) return;
         setPnl(pack.pnl?.columns || []);
         setBs(pack.balanceSheet?.columns || []);
         setCf(pack.cashFlow?.columns || []);
         setIntegrity(pack.integrity || null);
+        if (ct && !ct.error) setCtBanner(ct);
+        else setCtBanner(null);
+        setCommentBadges(Array.isArray(badges) ? badges : []);
+        setForecasts(Array.isArray(fc) ? fc : []);
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
@@ -167,14 +238,89 @@ export function FsReportView({ statement }: { statement: Statement }) {
     return () => {
       cancelled = true;
     };
-  }, [query, mode, asOf]);
+  }, [query, mode, asOf, statement, periodId]);
+
+  const projectedPnl = useMemo(() => {
+    if (!pnl || !projectionsOn || statement !== "pnl" || !selected) return pnl;
+    const selectedEnd = selected.periodEnd;
+    const future = periods
+      .filter((p) => p.periodStart > selectedEnd)
+      .slice(0, 3);
+    if (!future.length) return pnl;
+    const byPeriod = new Map<string, ForecastRow[]>();
+    for (const f of forecasts) {
+      const list = byPeriod.get(f.periodId) || [];
+      list.push(f);
+      byPeriod.set(f.periodId, list);
+    }
+    const extra: Array<PnlColumnLike & { projected?: boolean }> = future.map((p) => {
+      const rows = byPeriod.get(p.id) || [];
+      const revTotal = rows.reduce((s, r) => s + r.amountMinor, 0);
+      return {
+        column: { key: `proj:${p.id}`, label: p.label, from: p.periodStart, to: p.periodEnd },
+        sections: [
+          {
+            key: "PL_revenue",
+            label: "Revenue",
+            totalMinor: revTotal,
+            accounts: rows.map((r) => {
+              const acct = accounts.find((a) => a.id === r.accountId);
+              return {
+                accountId: r.accountId,
+                code: acct?.code || "",
+                name: acct?.name || "Projected",
+                amountMinor: r.amountMinor,
+              };
+            }),
+          },
+        ],
+        grossProfitMinor: revTotal,
+        ebitdaMinor: revTotal,
+        ebitMinor: revTotal,
+        ebtMinor: revTotal,
+        netProfitMinor: revTotal,
+        projected: true,
+      };
+    });
+    return [...pnl, ...extra];
+  }, [pnl, projectionsOn, statement, selected, periods, forecasts, accounts]);
 
   const tree = useMemo(() => {
-    if (statement === "pnl" && pnl) return pnlToReportTree(pnl);
+    if (statement === "pnl" && projectedPnl) {
+      const base = pnlToReportTree(projectedPnl);
+      const badgeByAcct = new Map(commentBadges.map((b) => [b.accountId, b]));
+      const stamp = (rows: ReportRow[]): ReportRow[] =>
+        rows.map((r) => {
+          const drill = r.drill as { kind?: string; accountId?: string } | undefined;
+          const badge =
+            drill?.kind === "account" && drill.accountId
+              ? badgeByAcct.get(drill.accountId)
+              : undefined;
+          return {
+            ...r,
+            commentBadge: badge
+              ? {
+                  messageCount: badge.messageCount,
+                  unreadCount: badge.unreadCount,
+                  threadId: badge.threadId,
+                }
+              : undefined,
+            children: r.children ? stamp(r.children) : undefined,
+          };
+        });
+      return {
+        ...base,
+        columns: base.columns.map((c, i) => ({
+          ...c,
+          projected: Boolean((projectedPnl[i] as { projected?: boolean } | undefined)?.projected),
+        })),
+        rows: stamp(base.rows),
+      };
+    }
     if (statement === "bs" && bs) return bsToReportTree(bs);
     if (statement === "cf" && cf) return cfToReportTree(cf);
     return { columns: [], rows: [] as ReportRow[], footer: [] };
-  }, [statement, pnl, bs, cf]);
+  }, [statement, projectedPnl, bs, cf, commentBadges]);
 
   const columnMeta = useMemo(() => {
     const cols =
@@ -279,6 +425,58 @@ export function FsReportView({ statement }: { statement: Statement }) {
       periods.find((p) => p.periodStart <= today && p.periodEnd >= today) ||
       periods[periods.length - 1];
     if (hit) setPeriodId(hit.id);
+  }
+
+  async function openComments(row: ReportRow) {
+    const d = row.drill as { kind?: string; accountId?: string; code?: string; name?: string } | undefined;
+    if (!d?.accountId || d.kind !== "account") return;
+    const badge = commentBadges.find((b) => b.accountId === d.accountId);
+    setCommentOpen({
+      accountId: d.accountId,
+      code: d.code || row.code || "",
+      name: d.name || row.label,
+      threadId: badge?.threadId,
+    });
+    setCommentText("");
+    setCommentErr("");
+    setCommentMsgs([]);
+    if (badge?.threadId) {
+      const res = await fetch(`/api/books/comments/threads/${badge.threadId}`);
+      const j = await res.json();
+      if (res.ok) setCommentMsgs(j.messages || []);
+    }
+  }
+
+  async function submitComment() {
+    if (!commentOpen || !periodId || !commentText.trim()) return;
+    setCommentErr("");
+    const res = await fetch("/api/books/comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountId: commentOpen.accountId,
+        periodId,
+        text: commentText.trim(),
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      setCommentErr(apiErrorMessage(j) || String(j.error || "comment_failed"));
+      return;
+    }
+    setCommentText("");
+    const threadId = String(j.threadId || commentOpen.threadId || "");
+    setCommentOpen({ ...commentOpen, threadId });
+    if (threadId) {
+      const listed = await fetch(`/api/books/comments/threads/${threadId}`).then((r) => r.json());
+      setCommentMsgs(listed.messages || []);
+    }
+    if (periodId) {
+      const badges = await fetch(
+        `/api/books/comments/badges?periodId=${encodeURIComponent(periodId)}`,
+      ).then((r) => r.json());
+      if (Array.isArray(badges)) setCommentBadges(badges);
+    }
   }
 
   async function exportPack(format: "xlsx" | "pdf") {
@@ -425,8 +623,38 @@ export function FsReportView({ statement }: { statement: Statement }) {
           >
             Export PDF
           </Button>
+          {statement === "pnl" ? (
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={projectionsOn}
+                onChange={(e) => setProjectionsOn(e.target.checked)}
+                data-testid="fs-projections-on"
+              />
+              Projections on
+            </label>
+          ) : null}
         </div>
       </div>
+
+      {statement === "pnl" && ctBanner ? (
+        <div
+          className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm"
+          data-testid="fs-ct-banner"
+        >
+          <div className="font-medium">
+            Corporate tax · {ctBanner.taxYearLabel} · filing due {formatDateUae(ctBanner.filingDue)}
+          </div>
+          <div className="text-muted-foreground">
+            Estimate {formatMinor(ctBanner.estimateMinor)} AED on taxable income{" "}
+            {formatMinor(ctBanner.taxableIncomeMinor)} ({ctBanner.disclaimer})
+          </div>
+        </div>
+      ) : null}
+
+      {statement === "pnl" && projectedPnl?.length ? (
+        <FsMetricChart columns={projectedPnl} />
+      ) : null}
 
       {gateFails.length ? (
         <div
@@ -451,7 +679,7 @@ export function FsReportView({ statement }: { statement: Statement }) {
 
       <ReportTable
         testId={`fs-report-${statement}`}
-        stateKey={`fs-${statement}-${mode}-${query?.from}-${query?.to}`}
+        stateKey={`fs-${statement}-${mode}-${query?.from}-${query?.to}-proj:${projectionsOn ? 1 : 0}`}
         title={title}
         company={meta.company}
         periodLabel={periodLabel}
@@ -462,9 +690,61 @@ export function FsReportView({ statement }: { statement: Statement }) {
         brackets
         abbreviate
         onCellDrill={statement === "cf" ? undefined : openDrill}
+        onCommentClick={statement === "pnl" ? (row) => void openComments(row) : undefined}
         exportName={`${statement}-${periodLabel.replace(/\s+/g, "-").toLowerCase()}`}
         emptyText="No movements in this range."
       />
+
+      <BooksSideDrawer
+        open={Boolean(commentOpen)}
+        onOpenChange={(o) => {
+          if (!o) setCommentOpen(null);
+        }}
+        title={commentOpen ? `Comments · ${commentOpen.code} ${commentOpen.name}` : "Comments"}
+        entryNo={selected?.label}
+      >
+        {commentOpen ? (
+          <div className="flex h-full flex-col gap-3 p-4" data-testid="fs-comment-panel">
+            <p className="text-xs text-muted-foreground">
+              Mentions: {mentionUsers.map((u) => `@${u.name.split(/\s+/)[0]}`).join(", ") || "—"}
+            </p>
+            <ul className="min-h-0 flex-1 space-y-2 overflow-auto text-sm" data-testid="fs-comment-msgs">
+              {commentMsgs.map((m) => (
+                <li key={m.id} className="rounded-md border border-border/60 px-2 py-1.5">
+                  <div className="flex justify-between gap-2 text-xs text-muted-foreground">
+                    <span>{m.authorName}</span>
+                    <span>{formatDateUae(m.createdAt)}</span>
+                  </div>
+                  <div>{m.body}</div>
+                </li>
+              ))}
+              {!commentMsgs.length ? (
+                <li className="text-muted-foreground">No comments yet for this account / period.</li>
+              ) : null}
+            </ul>
+            <textarea
+              className="min-h-20 rounded-md border border-border bg-card px-2 py-1.5 text-sm"
+              placeholder='Add a comment… use @Name or @"Full Name"'
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              data-testid="fs-comment-input"
+            />
+            {commentErr ? (
+              <p className="text-xs text-destructive" data-testid="fs-comment-err">
+                {commentErr}
+              </p>
+            ) : null}
+            <Button
+              size="sm"
+              disabled={!commentText.trim()}
+              onClick={() => void submitComment()}
+              data-testid="fs-comment-submit"
+            >
+              Post comment
+            </Button>
+          </div>
+        ) : null}
+      </BooksSideDrawer>
 
       <BooksSideDrawer
         open={Boolean(drill)}
@@ -480,6 +760,29 @@ export function FsReportView({ statement }: { statement: Statement }) {
               {formatDateUae(drill.from)} – {formatDateUae(drill.to)} · {filteredLines.length} line
               {filteredLines.length === 1 ? "" : "s"}
             </div>
+            {statement === "pnl" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                data-testid="fs-drill-comments"
+                onClick={() =>
+                  void openComments({
+                    id: `acct:${drill.accountId}`,
+                    label: drill.name,
+                    code: drill.code,
+                    values: {},
+                    drill: {
+                      kind: "account",
+                      accountId: drill.accountId,
+                      code: drill.code,
+                      name: drill.name,
+                    },
+                  })
+                }
+              >
+                Comments
+              </Button>
+            ) : null}
             <input
               className="rounded-md border border-border bg-card px-2 py-1.5 text-sm"
               placeholder="Search description / entry…"

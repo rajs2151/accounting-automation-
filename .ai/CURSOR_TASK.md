@@ -1,22 +1,23 @@
-TASK ID: P6-4
-PHASE: Phase 6 - Comments per account/period, Corporate tax banner, Revenue chart, Projections layer
+TASK ID: P7-1
+PHASE: Phase 7 - Company Health (plan first; wait for go)
 
 OBJECTIVE:
-The remaining Phase 6 features on the P&L screen. Split into commits P6-4a..d if large; each sub-part must be green.
+Start Company Health: ledger-backed metrics + firm dashboard foundation.
+Do NOT implement until owner says "go".
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 386-396. Existing: legacy
-src/app/ct/page.tsx (CT logic ideas), P6-1 engine, P6-2 screens.
+READ FIRST: .ai/HOW_TO_WORK.md; docs/plan/arnibooks-cursor-prompts.md Phase 7 (lines 408–434);
+docs/reference/crossval/ health screens (layout only — Arnifi branding).
 
-a) Comments: one thread per (company, account, period) - unique; avatars, timestamps, @mentions of company users;
-   unread count badge on the P&L row. New migration (books table + RLS). Audited.
-b) Corporate tax banner: tax year (company fiscal year), filing due date (9 months after year end), status, and an
-   ESTIMATE = 9% of taxable income above AED 375,000 (taxable income = net profit before CT for the year to date;
-   label clearly "estimate - not a tax computation"; no adjustments engine).
-c) Revenue chart above the P&L: selector Revenue / Expenses / Net profit; bars per column period, current value and
-   % change (like-for-like for MTD), log scale on/off, AED axis. Use the charting approach already in the repo.
-d) Projections: separate books_forecasts table (account, period, amount_minor, method trailing_avg_3|trailing_avg_6|
-   linear|override, growth_pct); "Projections on" shows future months labelled Projected and styled differently;
-   NEVER written to journals and excluded from TB/BS/CT estimate/exports of actuals.
-TESTS: unique thread per row/period; mention notification row created; CT estimate exact for 300,000 (=0),
-   500,000 (=11,250.00) and 375,000 (=0); projections excluded from TB/BS/exports; trailing average exact.
-ACCEPTANCE: each sub-part green and committed; full gates green.
+PROPOSED SLICE P7-1 (for owner approval):
+1. Server module `src/server/books/health.ts`: cash on hand, avg net cash flow (last 3 months),
+   runway (cash / avg monthly net burn; "n/a — cash positive" if no burn), liabilities/assets ratio;
+   each with vs-prior change. Integer fils end-to-end. Journal SoT only.
+2. API GET `/api/books/health/summary?periodId=`
+3. UI: `/books/health` shell with tabs stubbed; Dashboard tab shows the four metrics + formulas on hover.
+4. Unit tests on createTestCompany hand-computed amounts; one e2e smoke that Dashboard loads.
+5. No LLM insights yet (P7-2+); no partner offers; no industry benchmarks.
+
+OUT OF SCOPE THIS SLICE: scorecard, runway charts, AR/AP trackers, DSO/DPO, firm multi-company board,
+Golden v6 (still waiting on owner fixtures).
+
+ACCEPTANCE (when go): exact fils math, full gates green, commit/push on feat/books-phase1.

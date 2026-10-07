@@ -214,6 +214,13 @@ import {
   booksProfitAndLoss,
   parseMode,
 } from "@/server/books/financial-statements";
+import {
+  listCommentMessages,
+  listCommentThreadBadges,
+  postCommentMessage,
+} from "@/server/books/comments";
+import { booksCtEstimateBanner } from "@/server/books/ct-estimate";
+import { listBooksForecasts, upsertBooksForecast } from "@/server/books/forecasts";
 import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
 import { listBooksVatCodes } from "@/server/books/vat-codes";
 import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
@@ -519,6 +526,31 @@ export async function GET(request: Request, ctx: Ctx) {
           from,
           to,
           asOf: url.searchParams.get("asOf") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "reports" && path[1] === "ct-estimate" && path.length === 2) {
+      const asOf = url.searchParams.get("asOf") || new Date().toISOString().slice(0, 10);
+      return NextResponse.json(
+        await booksCtEstimateBanner(session.userId, session.clientId, asOf),
+      );
+    }
+    if (path[0] === "comments" && path[1] === "badges" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await listCommentThreadBadges(session.userId, session.clientId, periodId),
+      );
+    }
+    if (path[0] === "comments" && path[1] === "threads" && path.length === 3) {
+      return NextResponse.json(
+        await listCommentMessages(session.userId, session.clientId, path[2]),
+      );
+    }
+    if (path[0] === "forecasts" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksForecasts(session.userId, session.clientId, {
+          periodId: url.searchParams.get("periodId") || undefined,
         }),
       );
     }
@@ -1098,6 +1130,30 @@ export async function POST(request: Request, ctx: Ctx) {
           toAccountId: String(body.toAccountId || ""),
           amountMinor: Number(body.amountMinor || 0),
           sourceEntryId: String(body.sourceEntryId || ""),
+        }),
+      );
+    }
+    if (path[0] === "comments" && path.length === 1) {
+      return NextResponse.json(
+        await postCommentMessage(session.userId, session.clientId, {
+          accountId: String(body.accountId || ""),
+          periodId: String(body.periodId || ""),
+          text: String(body.text || body.body || ""),
+        }),
+      );
+    }
+    if (path[0] === "forecasts" && path.length === 1) {
+      return NextResponse.json(
+        await upsertBooksForecast(session.userId, session.clientId, {
+          accountId: String(body.accountId || ""),
+          periodId: String(body.periodId || ""),
+          amountMinor: Number(body.amountMinor || 0),
+          method: String(body.method || "override") as
+            | "trailing_avg_3"
+            | "trailing_avg_6"
+            | "linear"
+            | "override",
+          growthPct: body.growthPct == null ? null : Number(body.growthPct),
         }),
       );
     }

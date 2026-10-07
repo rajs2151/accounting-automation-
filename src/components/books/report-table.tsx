@@ -93,6 +93,8 @@ export function ReportTable(props: {
   onDrill?: (row: RowWithText) => void;
   /** When set, amount cells call this with the column key (FS drill-down). */
   onCellDrill?: (row: RowWithText, columnKey: string) => void;
+  /** P6-4a: comment bubble on rows that have a badge. */
+  onCommentClick?: (row: RowWithText) => void;
   onUp?: () => void;
   exportName: string;
   emptyText?: string;
@@ -312,8 +314,16 @@ export function ReportTable(props: {
                 {labelHeader}
               </th>
               {columns.map((c) => (
-                <th key={c.key} className={cn("px-3 py-2 align-bottom font-medium", c.kind === "text" ? "text-start" : "text-end")}>
-                  {c.label}
+                <th
+                  key={c.key}
+                  className={cn(
+                    "px-3 py-2 align-bottom font-medium",
+                    c.kind === "text" ? "text-start" : "text-end",
+                    c.projected && "bg-amber-50/80 italic text-amber-900 dark:bg-amber-950/30 dark:text-amber-100",
+                  )}
+                  data-projected={c.projected ? "1" : undefined}
+                >
+                  {c.projected ? `${c.label} · Projected` : c.label}
                 </th>
               ))}
             </tr>
@@ -351,15 +361,44 @@ export function ReportTable(props: {
                     ) : null}
                     {r.code ? <span className="font-mono text-xs text-muted-foreground">{r.code}</span> : null}
                     <span>{r.label}</span>
+                    {r.commentBadge && (r.commentBadge.messageCount > 0 || props.onCommentClick) ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          "ms-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold print:hidden",
+                          r.commentBadge.unreadCount > 0
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-muted-foreground",
+                        )}
+                        title={
+                          r.commentBadge.unreadCount > 0
+                            ? `${r.commentBadge.unreadCount} unread`
+                            : `${r.commentBadge.messageCount} comments`
+                        }
+                        data-testid={`fs-comment-badge-${r.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          props.onCommentClick?.(r);
+                        }}
+                      >
+                        {r.commentBadge.unreadCount > 0
+                          ? r.commentBadge.unreadCount
+                          : r.commentBadge.messageCount || "…"}
+                      </button>
+                    ) : null}
                   </span>
                 </td>
                 {columns.map((c) => (
                   <td
                     key={c.key}
                     title={c.kind === "text" ? undefined : amountTitle(r.values[c.key]) || undefined}
-                    className={cn("px-3 py-1.5", c.kind === "text" ? "text-start" : "text-end tabular-nums")}
+                    className={cn(
+                      "px-3 py-1.5",
+                      c.kind === "text" ? "text-start" : "text-end tabular-nums",
+                      c.projected && "bg-amber-50/40 dark:bg-amber-950/20",
+                    )}
                     onClick={
-                      props.onCellDrill && c.kind !== "text" && !r.hasChildren
+                      props.onCellDrill && c.kind !== "text" && !r.hasChildren && !c.projected
                         ? (e) => {
                             e.stopPropagation();
                             setFocus(i);
