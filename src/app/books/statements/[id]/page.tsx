@@ -520,7 +520,15 @@ export default function StatementReviewPage() {
             }}
           >
             <SelectTrigger className="mt-1 w-full" data-testid="statement-picker">
-              <SelectValue placeholder="Select statement" />
+              <SelectValue placeholder="Select statement">
+                {(v: unknown) => {
+                  // Show the statement's name, not its id.
+                  const s = pickerRows.find((r) => r.id === v);
+                  return s
+                    ? (s.bankName || s.accountLabel || "Statement") + (s.iban ? ` · ${maskIbanDisplay(s.iban)}` : "")
+                    : "Select statement";
+                }}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {pickerRows.map((s) => (

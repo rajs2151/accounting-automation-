@@ -310,6 +310,9 @@ export async function updateStatementLines(
       );
     }
 
+    // A statement that re-checks clean records "balance_ok" — the flag the bank-line import requires.
+    // Without it a balanced statement showed "Balanced" but never produced bank transactions.
+    const storedFlags = check.flags.length ? check.flags : ["balance_ok"];
     await db.query(
       `UPDATE books_statement_extractions SET
          opening_balance_minor = $3, closing_balance_minor = $4,
@@ -322,7 +325,7 @@ export async function updateStatementLines(
         clientId,
         opening,
         closing,
-        JSON.stringify(check.flags),
+        JSON.stringify(storedFlags),
         check.flags,
       ],
     );

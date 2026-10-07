@@ -422,9 +422,17 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               <Input
                 ref={searchRef}
                 className="h-8 ps-8 pe-16 text-sm"
-                placeholder="Search…"
+                placeholder="Search vouchers, references, amounts…"
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  // Journals holds every posted voucher (invoices, bills, receipts, expenses…) with its
+                  // reference, so Enter anywhere searches there; the query carries over.
+                  if (e.key === "Enter" && globalSearch.trim() && isBooks && pathname !== "/books/journals") {
+                    router.push("/books/journals");
+                  }
+                }}
+                title="Press Enter to search all vouchers"
                 data-testid="topbar-search"
               />
               <kbd className="pointer-events-none absolute end-2 top-1/2 hidden -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">
