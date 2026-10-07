@@ -33,5 +33,11 @@ test("P7-1: Company Health Dashboard shows metric cards", async ({ page, context
   await expect(page.getByTestId("health-metric-avg-cf")).toBeVisible();
   await expect(page.getByTestId("health-metric-runway")).toBeVisible();
   await expect(page.getByTestId("health-metric-la")).toBeVisible();
+  await expect(page.getByTestId("health-metric-dso")).toBeVisible();
   await expect(page.getByTestId("health-error")).toHaveCount(0);
+
+  await page.getByTestId("health-tab-debtors").click();
+  await expect(page.getByTestId("health-debtors-panel")).toBeVisible();
+  await expect(page.getByTestId("health-ar-tracker")).toBeVisible();
+  await expect(page.getByTestId("health-ap-tracker")).toBeVisible();
 });

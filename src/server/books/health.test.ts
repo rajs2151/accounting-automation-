@@ -7,11 +7,20 @@ import pg from "pg";
 
 import {
   avgNetCashFlowMinor,
+  booksHealthDebtorsCreditors,
   booksHealthSummary,
+  cashConversionCycleDays,
   cashRunway,
+  collectionRateBps,
+  dpoDays,
+  dioDays,
+  dsoDays,
   liabilitiesAssetsRatioBps,
+  trackerStatus,
 } from "@/server/books/health";
+import { approveAndPostBooksDocument, createBooksDocument } from "@/server/books/documents";
 import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
+import { createBooksParty } from "@/server/books/parties";
 import { createTestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
@@ -55,6 +64,70 @@ test("P7-1: avgNetCashFlowMinor / runway / L÷A pure", () => {
 
   assert.equal(liabilitiesAssetsRatioBps(45_000, 100_000), 4500);
   assert.equal(liabilitiesAssetsRatioBps(1, 0), null);
+});
+
+test("P7-2: DSO / DPO / DIO / CCC / collection / trackerStatus pure", () => {
+  // AR 100.00, revenue 300.00, 30 days → 10 days DSO
+  assert.equal(dsoDays(100_00, 300_00, 30), 10);
+  assert.equal(dsoDays(100, 0, 30), null);
+
+  assert.equal(dpoDays(50_00, 250_00, 30), 6);
+  assert.equal(dioDays(20_00, 200_00, 30), 3);
+  assert.equal(dioDays(0, 200_00, 30), null);
+
+  assert.equal(cashConversionCycleDays(10, null, 6), 4);
+  assert.equal(cashConversionCycleDays(10, 3, 6), 7);
+  assert.equal(cashConversionCycleDays(null, 3, 6), null);
+
+  assert.equal(collectionRateBps(50_000, 100_000), 5000);
+  assert.equal(collectionRateBps(1, 0), null);
+
+  assert.equal(trackerStatus(5), "overdue");
+  assert.equal(trackerStatus(-3), "pending");
+  assert.equal(trackerStatus(-10), "upcoming");
+});
+
+test("P7-2: debtors API lists posted invoice and computes DSO", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "p7-2-dso");
+    const jun = company.periods["Jun 2026"];
+    assert.ok(jun, "fixtures");
+    const customer = await createBooksParty(OMAR, company.clientId, {
+      partyType: "customer",
+      name: "P7-2 Customer",
+      trn: "100000000000099",
+      force: true,
+    });
+
+    const inv = await createBooksDocument(OMAR, company.clientId, {
+      docType: "sales_invoice",
+      partyId: String(customer.id),
+      issueDate: "2026-06-10",
+      dueDate: "2026-06-20",
+      periodId: jun,
+      lines: [
+        {
+          description: "svc",
+          lineKind: "revenue",
+          vatCode: "SR",
+          netMinor: 300_00,
+          vatMinor: 15_00,
+        },
+      ],
+    });
+    await approveAndPostBooksDocument(LAYLA, company.clientId, String(inv.id));
+
+    const dc = await booksHealthDebtorsCreditors(OMAR, company.clientId, jun);
+    assert.equal(dc.arRows.length, 1);
+    assert.equal(dc.arRows[0].amountMinor, 315_00, "incl VAT 5%");
+    assert.equal(dc.arRows[0].status, "overdue");
+    assert.equal(dc.paymentBehaviour.dsoDays, 31, "31500 AR × 30d ÷ 30000 rev");
+    assert.equal(dc.arOutstandingMinor, 315_00);
+  } finally {
+    await admin.end();
+  }
 });
 
 test("P7-1: hand-computed cash on hand, avg burn, runway months", async (t) => {
