@@ -48,7 +48,7 @@ async function postAsApprover(
   clientId: string,
   body: Parameters<typeof createBooksJournal>[2],
 ) {
-  const draft = await createBooksJournal(OMAR, clientId, { ...body, post: false });
+  const draft = await createBooksJournal(OMAR, clientId, { ...body, post: false, allowControlAccounts: true });
   await postBooksJournal(LAYLA, clientId, draft.id);
   return draft.id;
 }

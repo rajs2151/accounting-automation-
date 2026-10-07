@@ -9,6 +9,7 @@ import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
 import { markPeriodChangedSinceClose } from "@/server/books/close";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
+import { isBooksControlAccountCode } from "@/server/books/control-accounts";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { enqueueBooksJob } from "@/server/books/jobs";
@@ -623,6 +624,11 @@ export async function createBooksJournal(
       occurrences: number;
     } | null;
     attachmentFileIds?: string[];
+    /**
+     * Documents / settlements / expenses may post to AR/AP/VAT controls.
+     * Manual journals and bank categorisation must not (open items would drift).
+     */
+    allowControlAccounts?: boolean;
   },
 ) {
   const entryTags = body.tags ?? [];
@@ -637,6 +643,14 @@ export async function createBooksJournal(
     await assertSyntheticTenant(db, clientId);
     await requireWritablePeriod(db, clientId, body.periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
+    if (!body.allowControlAccounts) {
+      for (const line of lines) {
+        const meta = accountById.get(line.accountId);
+        if (meta && isBooksControlAccountCode(meta.code)) {
+          throw new BooksError(`control_account_forbidden:${meta.code}`, "invalid");
+        }
+      }
+    }
     lines = expandVatCompanionLines(lines, accountById, vatAccountByCode);
     assertBooksBalanced(lines);
 

@@ -57,6 +57,7 @@ async function postJv(
     memo: extra.memo || "p62 test",
     entryType: extra.entryType,
     post: false,
+    allowControlAccounts: true,
     lines,
   });
   await postBooksJournal(LAYLA, co.clientId, d.id);

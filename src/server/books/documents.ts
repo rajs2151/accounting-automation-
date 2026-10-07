@@ -585,6 +585,8 @@ async function buildPostingLines(
     defer_revenue: boolean;
     currency: string;
     fx_rate_scaled: number;
+    aed_total_minor?: number | null;
+    original_total_minor?: number | null;
   },
   lines: Array<{
     line_kind: string;
@@ -792,6 +794,11 @@ async function buildPostingLines(
 
   if (arApTotal !== 0) {
     const control = isSales ? ar : ap;
+    const grossAed = Math.abs(Number(doc.aed_total_minor || 0));
+    const grossOrig = Math.abs(Number(doc.original_total_minor || 0));
+    const controlAedAbs = Math.abs(arApTotal);
+    const controlOrig =
+      grossAed === 0 ? 0 : Math.round((grossOrig * controlAedAbs) / grossAed);
     out.push({
       accountId: control,
       debitMinor: isSales
@@ -809,9 +816,9 @@ async function buildPostingLines(
           ? arApTotal
           : 0,
       lineMemo: isSales ? "Trade receivables" : "Trade payables",
-      aedMinor: Math.abs(arApTotal),
+      aedMinor: controlAedAbs,
       currency: doc.currency,
-      originalMinor: null,
+      originalMinor: controlOrig || null,
       fxRateScaled: doc.fx_rate_scaled,
     });
   }
@@ -927,6 +934,7 @@ export async function approveAndPostBooksDocument(
       isVatCompanion: true,
     })),
     post: false,
+    allowControlAccounts: true,
   });
 
   const posted = await postBooksJournal(userId, clientId, created.id);
@@ -949,6 +957,24 @@ export async function approveAndPostBooksDocument(
       ["sales_invoice", "purchase_bill"].includes(String(prepared.doc.doc_type)) &&
       prepared.doc.party_id
     ) {
+      // Open item must match the AR/AP control line (e.g. reverse-charge bills credit AP at net,
+      // not document gross which includes VAT that never hits 2110).
+      const controlLine = prepared.journalLines.find(
+        (l) => l.lineMemo === "Trade receivables" || l.lineMemo === "Trade payables",
+      );
+      const controlAed = controlLine
+        ? Math.abs(Number(controlLine.aedMinor ?? 0))
+        : Number(prepared.doc.aed_total_minor);
+      const grossAed = Number(prepared.doc.aed_total_minor);
+      const grossOrig = Number(prepared.doc.original_total_minor);
+      // Never fall back to AED as original — FX open items must keep currency units.
+      // Scale original when control ≠ gross (e.g. reverse-charge AP at net).
+      const controlOrig =
+        controlLine?.originalMinor != null
+          ? Math.abs(Number(controlLine.originalMinor))
+          : grossAed === 0
+            ? 0
+            : Math.round((grossOrig * controlAed) / grossAed);
       await upsertOpenItemFromDocument(db, {
         clientId,
         partyId: String(prepared.doc.party_id),
@@ -956,8 +982,8 @@ export async function approveAndPostBooksDocument(
         journalEntryId: created.id,
         side,
         currency: String(prepared.doc.currency),
-        originalMinor: Number(prepared.doc.original_total_minor),
-        aedMinor: Number(prepared.doc.aed_total_minor),
+        originalMinor: controlOrig,
+        aedMinor: controlAed,
         fxRateScaled: Number(prepared.doc.fx_rate_scaled),
       });
     }

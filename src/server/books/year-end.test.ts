@@ -56,7 +56,7 @@ async function postJv(
   clientId: string,
   body: Parameters<typeof createBooksJournal>[2],
 ) {
-  const d = await createBooksJournal(OMAR, clientId, { ...body, post: false });
+  const d = await createBooksJournal(OMAR, clientId, { ...body, post: false, allowControlAccounts: true });
   await postBooksJournal(LAYLA, clientId, d.id);
   return d.id;
 }

@@ -622,6 +622,8 @@ export async function runBooksFxRevaluation(
     autoReverseNextPeriod: true,
     lines,
     post: false,
+    // Revaluation adjusts AR/AP control balances to closing FX rates.
+    allowControlAccounts: true,
   });
 
   await withUser(userId, async (db) => {

@@ -170,10 +170,20 @@ export async function generateVat201Draft(
       const cr = Number(r.credit_minor);
       const treatment = r.treatment ? String(r.treatment) : null;
       if (!r.linked) {
-        if (account === "2210" || account === "1430") {
-          unlinked.lineCount += 1;
-          if (account === "2210") unlinked.outputVatMinor += cr - dr;
-          else unlinked.inputVatMinor += dr - cr;
+        // Only orphan *charges* (output credited / input debited). VAT settlements
+        // (Dr 2210 / Cr 1430) must not cancel the warning to zero.
+        if (account === "2210") {
+          const netOut = cr - dr;
+          if (netOut > 0) {
+            unlinked.lineCount += 1;
+            unlinked.outputVatMinor += netOut;
+          }
+        } else if (account === "1430") {
+          const netIn = dr - cr;
+          if (netIn > 0) {
+            unlinked.lineCount += 1;
+            unlinked.inputVatMinor += netIn;
+          }
         }
         continue;
       }

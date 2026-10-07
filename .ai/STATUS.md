@@ -1,8 +1,17 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: **7 (Company Health)** on feat/books-phase1 — Stream A
-- Current task: Phase 7 CLOSED — next owner pick: Golden v6 / B2 VAT pack / lab script
+- Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
+- Current task: **ING-1 money correctness** shipping; next **ING-2 extraction wiring**
+- 2026-10-07: **ING-1 money correctness** on feat/books-phase1 (no new db migration)
+  - Gates: eslint src+e2e 0 errors / 7 warnings (pre-existing); next build exit 0; local e2e 10/10; unit 341p/0f/1s; typecheck 0
+  - DONE: exchange rate required on bank, receipt/payment and inbox postings; no 1.0 fallback for foreign currency (AED uses identity scale); bank recon still compares account-currency/original amounts (correct once journals store original + AED)
+  - DONE: reverse-charge open item equals the amount credited to 2110 (net, not gross)
+  - DONE: control accounts blocked on bank post without open-item settlement (staging to 1210/2110 allowed for match; categorise-only / bare category JV throws `control_account_requires_open_item`; manual journals throw `control_account_forbidden`)
+  - DONE: control vs open-items check on the issues badge (and month checklist); NOT on the Health page itself
+  - DONE: VAT 201 unlinked VAT counted gross (settlement Dr 2210 ignored); fails VAT control close gate when boxes ≠ control movement
+  - DONE: inbox confirm carries FX rate + due date; missing issue date errors (no silent "today")
+  - NOT DONE: journal and open item written in one transaction (still create journal → post → separate open-item upsert)
 - 2026-10-07: Phase 7 CLOSED (P7-1..P7-4) — Company Health + firm board; unit 336p/0f/1s; e2e 10/10
 - 2026-10-07: P7-3+P7-4 PASS — scorecard, runway/profit tabs, insights, firm board
 - 2026-10-07: P7-2 PASS — AR/AP trackers, DSO/DPO/CCC/collection strip, Debtors tab + GET /health/debtors; unit 324p/0f/1s; e2e 9/9
@@ -66,10 +75,10 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. (done) POC-001 · … · P2A-1..6 · P3-1..3
-2. Phase 4 CLOSED (P4-1..P4-5). Next: Phase 5 close + TB
-3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
-4. Phase 3 backlog (non-blocking): receipt upload UI, golden v3 expenses, SideDrawer polish
+1. **ING-2** extraction wiring (§2 ingestion-review) — images OCR, scanned-PDF OCR→fields, XLSX, error handling, extracting/failed + timeout/retry/stuck recovery, 25 MB + format list, intendedType, preload OCR models, mocked OCR in unit tests. No Textract/AI extraction; no demo seed change.
+2. **ING-3** upload + review UI — layout only from AI Accountant pattern; our wording/colours.
+3. ING-1 follow-up: atomic document journal + open item in one transaction; surface AR/AP control drift on Health.
+4. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 5. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions

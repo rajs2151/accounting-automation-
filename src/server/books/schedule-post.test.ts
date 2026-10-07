@@ -80,6 +80,7 @@ test("schedule_post posts due rent; VAT settlement is two-step", async (t) => {
         { accountId: vatPay, creditMinor: 500 },
       ],
       post: false,
+      allowControlAccounts: true,
     });
     const vatReturnPosted = await postBooksJournal(LAYLA, clientId, vatReturnDraft.id);
 
@@ -93,6 +94,7 @@ test("schedule_post posts due rent; VAT settlement is two-step", async (t) => {
         { accountId: bank, creditMinor: 500 },
       ],
       post: false,
+      allowControlAccounts: true,
     });
     const vatPayPosted = await postBooksJournal(LAYLA, clientId, vatPayDraft.id);
 

@@ -6,13 +6,16 @@ import {
 import { scoreBankOpenItemMatch, subsetSumBundle } from "@/lib/bank-txn-match-score";
 import { BANK_TXN_TYPES, type BooksBankTxnType } from "@/lib/bank-txn-types";
 import { withUser } from "@/lib/db";
+import { aedFromOriginal } from "@/lib/fx";
 import { normalizeIban } from "@/lib/statement-coverage";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
+import { isBooksControlAccountCode } from "@/server/books/control-accounts";
 import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createContra, createReceiptOrPayment } from "@/server/books/settlements";
 import { assertSyntheticTenant } from "@/server/security-gate";
+import type { PoolClient } from "pg";
 
 export type { BooksBankTxnType, BankTxnAllocKind };
 export { BANK_TXN_TYPES, BANK_TXN_ALLOC_KINDS, bankTxnUnallocatedMinor };
@@ -37,6 +40,44 @@ function flagsArray(raw: unknown): string[] {
     }
   }
   return [];
+}
+
+/** Closing FX rate on/before txn date; AED → 1.0. Foreign without a rate → hard fail. */
+async function resolveBankFxRateScaled(
+  db: PoolClient,
+  clientId: string,
+  currency: string,
+  txnDate: string,
+): Promise<number> {
+  const ccy = (currency || "AED").toUpperCase();
+  if (ccy === "AED") return 100_000_000;
+  const row = await db.query(
+    `SELECT rate_scaled FROM books_fx_rates
+     WHERE client_id = $1 AND currency = $2 AND rate_date <= $3::date
+     ORDER BY rate_date DESC LIMIT 1`,
+    [clientId, ccy, txnDate],
+  );
+  if (!row.rowCount) throw new BooksError(`fx_rate_required:${ccy}`, "invalid");
+  return Number(row.rows[0].rate_scaled);
+}
+
+function bankMoneyLine(
+  accountId: string,
+  side: "debit" | "credit",
+  originalMinor: number,
+  currency: string,
+  fxRateScaled: number,
+) {
+  const aed = aedFromOriginal(originalMinor, fxRateScaled);
+  return {
+    accountId,
+    debitMinor: side === "debit" ? aed : 0,
+    creditMinor: side === "credit" ? aed : 0,
+    aedMinor: aed,
+    currency,
+    originalMinor,
+    fxRateScaled,
+  };
 }
 
 /** Only statements with a passing balance check may materialise bank lines. */
@@ -105,6 +146,23 @@ async function accountIdByCode(
     [clientId, code],
   );
   return r.rowCount ? String(r.rows[0].id) : null;
+}
+
+/** Category JV must never hit AR/AP/VAT controls without settling a party open item. */
+async function assertCategoryNotControlWithoutOpenItem(
+  userId: string,
+  clientId: string,
+  categoryAccountId: string,
+) {
+  await withUser(userId, async (db) => {
+    const r = await db.query(
+      `SELECT code FROM books_accounts WHERE id = $1 AND client_id = $2`,
+      [categoryAccountId, clientId],
+    );
+    if (r.rowCount && isBooksControlAccountCode(String(r.rows[0].code))) {
+      throw new BooksError(`control_account_requires_open_item:${r.rows[0].code}`, "invalid");
+    }
+  });
 }
 
 async function hasPayoutGroupColumn(db: {
@@ -566,6 +624,8 @@ export async function updateBooksBankTransaction(
           [body.categoryAccountId, clientId],
         );
         if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
+        // Control codes (1210/2110/…) may be staged as the category for receipt/payment
+        // matching; posting still refuses a bare category JV to those accounts.
         categoryAccountId = acc.rows[0].id;
       }
     }
@@ -1466,9 +1526,13 @@ export async function postBooksBankTransaction(
   const txnType = String(row.txn_type || "");
   const debit = Number(row.debit_minor || 0);
   const credit = Number(row.credit_minor || 0);
-  const currency = String(row.currency || "AED");
+  const currency = String(row.currency || "AED").toUpperCase();
   const bankAccountId = String(row.account_id);
   const memo = String(row.description || txnType || "Bank transaction");
+  const fxRateScaled = await withUser(approverId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    return resolveBankFxRateScaled(db, clientId, currency, txnDate);
+  });
 
   let journalEntryId: string;
   let entryNo: string;
@@ -1490,6 +1554,7 @@ export async function postBooksBankTransaction(
       fromAccountId: String(out.account_id),
       toAccountId: String(inn.account_id),
       currency,
+      fxRateScaled,
       originalAmountMinor: amount,
       memo: memo || "Transfer",
     });
@@ -1551,6 +1616,7 @@ export async function postBooksBankTransaction(
         periodId,
         bankAccountId,
         currency,
+        fxRateScaled,
         originalAmountMinor: amount,
         memo,
         allocations: against.map((l) => ({
@@ -1586,6 +1652,7 @@ export async function postBooksBankTransaction(
         periodId,
         bankAccountId,
         currency,
+        fxRateScaled,
         originalAmountMinor: amount,
         memo,
         allocations: [
@@ -1602,15 +1669,18 @@ export async function postBooksBankTransaction(
       // Categorise-only receipt/payment without match → fall through to category JV.
       if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
       const categoryId = String(row.category_account_id);
+      // Staging may set 1210/2110 for later match; posting without an open-item settlement is blocked.
+      await assertCategoryNotControlWithoutOpenItem(approverId, clientId, categoryId);
+      const amt = credit > 0 ? credit : debit;
       const lines =
         credit > 0
           ? [
-              { accountId: bankAccountId, debitMinor: credit, aedMinor: credit, currency },
-              { accountId: categoryId, creditMinor: credit, aedMinor: credit, currency },
+              bankMoneyLine(bankAccountId, "debit", amt, currency, fxRateScaled),
+              bankMoneyLine(categoryId, "credit", amt, currency, fxRateScaled),
             ]
           : [
-              { accountId: categoryId, debitMinor: debit, aedMinor: debit, currency },
-              { accountId: bankAccountId, creditMinor: debit, aedMinor: debit, currency },
+              bankMoneyLine(categoryId, "debit", amt, currency, fxRateScaled),
+              bankMoneyLine(bankAccountId, "credit", amt, currency, fxRateScaled),
             ];
       const created = await createBooksJournal(preparerId, clientId, {
         periodId,
@@ -1639,8 +1709,8 @@ export async function postBooksBankTransaction(
       memo: memo || "Card repayment",
       voucherType: "Journal",
       lines: [
-        { accountId: payableId, debitMinor: debit, aedMinor: debit, currency },
-        { accountId: bankAccountId, creditMinor: debit, aedMinor: debit, currency },
+        bankMoneyLine(payableId, "debit", debit, currency, fxRateScaled),
+        bankMoneyLine(bankAccountId, "credit", debit, currency, fxRateScaled),
       ],
       post: false,
     });
@@ -1688,8 +1758,8 @@ export async function postBooksBankTransaction(
       memo: memo || "Gateway payout",
       voucherType: "Journal",
       lines: [
-        { accountId: bankAccountId, debitMinor: credit, aedMinor: credit, currency },
-        { accountId: clearingId, creditMinor: credit, aedMinor: credit, currency },
+        bankMoneyLine(bankAccountId, "debit", credit, currency, fxRateScaled),
+        bankMoneyLine(clearingId, "credit", credit, currency, fxRateScaled),
       ],
       post: false,
     });
@@ -1700,16 +1770,18 @@ export async function postBooksBankTransaction(
     if (!row.category_account_id) throw new BooksError("category_account_required", "invalid");
     if (debit <= 0 && credit <= 0) throw new BooksError("zero_amount", "invalid_money");
     const categoryId = String(row.category_account_id);
+    await assertCategoryNotControlWithoutOpenItem(approverId, clientId, categoryId);
+    const amt = credit > 0 ? credit : debit;
     // Money in (credit on statement) → Dr bank / Cr category; money out → Dr category / Cr bank.
     const lines =
       credit > 0
         ? [
-            { accountId: bankAccountId, debitMinor: credit, aedMinor: credit, currency },
-            { accountId: categoryId, creditMinor: credit, aedMinor: credit, currency },
+            bankMoneyLine(bankAccountId, "debit", amt, currency, fxRateScaled),
+            bankMoneyLine(categoryId, "credit", amt, currency, fxRateScaled),
           ]
         : [
-            { accountId: categoryId, debitMinor: debit, aedMinor: debit, currency },
-            { accountId: bankAccountId, creditMinor: debit, aedMinor: debit, currency },
+            bankMoneyLine(categoryId, "debit", amt, currency, fxRateScaled),
+            bankMoneyLine(bankAccountId, "credit", amt, currency, fxRateScaled),
           ];
     const created = await createBooksJournal(preparerId, clientId, {
       periodId,

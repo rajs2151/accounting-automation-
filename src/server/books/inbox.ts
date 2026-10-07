@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { withUser } from "@/lib/db";
+import { parseFxRateToScaled } from "@/lib/fx";
 import { displayToMinor } from "@/lib/money";
 import { getObjectBytes, putObject, signedGetUrl } from "@/lib/storage";
 import { writeBooksAudit } from "@/server/books/audit";
@@ -58,6 +59,16 @@ function fieldStrAlias(fields: Record<string, unknown>, keys: string[]): string 
     if (v) return v;
   }
   return "";
+}
+
+/** Parse YYYY-MM-DD or DD/MM/YYYY from extraction / body. */
+function parseIsoDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return null;
 }
 
 export async function listBooksInbox(
@@ -544,18 +555,42 @@ export async function confirmInboxAsDocument(
     );
   }
 
-  const invoiceDateRaw =
-    fieldStrAlias(fields, ["invoice_date", "document_date"]);
-  let issueDate = body.issueDate;
-  if (!issueDate && invoiceDateRaw) {
-    if (/^\d{4}-\d{2}-\d{2}/.test(invoiceDateRaw)) {
-      issueDate = invoiceDateRaw.slice(0, 10);
+  const issueDate =
+    parseIsoDate(body.issueDate) ||
+    parseIsoDate(fieldStrAlias(fields, ["invoice_date", "document_date", "issue_date"]));
+  if (!issueDate) {
+    throw new BooksError("issue_date_required", "invalid");
+  }
+
+  const dueDate =
+    parseIsoDate(body.dueDate) ||
+    parseIsoDate(fieldStrAlias(fields, ["due_date", "payment_due", "due"]));
+
+  const currency = (fieldStr(fields, "currency") || "AED").toUpperCase();
+  let fxRateScaled = 100_000_000;
+  if (currency !== "AED") {
+    const rateRaw = fieldStrAlias(fields, ["fx_rate", "exchange_rate", "rate"]);
+    if (rateRaw) {
+      try {
+        fxRateScaled = Number(parseFxRateToScaled(rateRaw));
+      } catch {
+        throw new BooksError("invalid_fx_rate", "invalid");
+      }
     } else {
-      const m = invoiceDateRaw.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-      if (m) issueDate = `${m[3]}-${m[2]}-${m[1]}`;
+      const lookedUp = await withUser(userId, async (db) => {
+        await assertSyntheticTenant(db, clientId);
+        const row = await db.query(
+          `SELECT rate_scaled FROM books_fx_rates
+           WHERE client_id = $1 AND currency = $2 AND rate_date <= $3::date
+           ORDER BY rate_date DESC LIMIT 1`,
+          [clientId, currency, issueDate],
+        );
+        return row.rowCount ? Number(row.rows[0].rate_scaled) : null;
+      });
+      if (lookedUp == null) throw new BooksError(`fx_rate_required:${currency}`, "invalid");
+      fxRateScaled = lookedUp;
     }
   }
-  if (!issueDate) issueDate = new Date().toISOString().slice(0, 10);
 
   // Worker fields_json uses net/vat/gross (fils int); legacy aliases kept for fixtures.
   const printedNet = fieldMinorAlias(fields, ["subtotal", "net"]);
@@ -571,10 +606,11 @@ export async function confirmInboxAsDocument(
     partyId: body.partyId,
     periodId: body.periodId,
     issueDate,
-    dueDate: body.dueDate ?? null,
+    dueDate: dueDate ?? null,
     documentNumber:
       fieldStrAlias(fields, ["invoice_no", "document_number"]) || null,
-    currency: fieldStr(fields, "currency") || "AED",
+    currency,
+    fxRateScaled,
     lines,
     printedNetMinor: printedNet,
     printedVatMinor: printedVat,

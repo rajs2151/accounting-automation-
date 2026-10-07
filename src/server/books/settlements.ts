@@ -114,7 +114,11 @@ async function postSettlementJournal<T>(
   journal: Parameters<typeof createBooksJournal>[2],
   finish: (db: PoolClient, journalEntryId: string) => Promise<T>,
 ): Promise<T> {
-  const created = await createBooksJournal(preparerId, clientId, { ...journal, post: false });
+  const created = await createBooksJournal(preparerId, clientId, {
+    ...journal,
+    post: false,
+    allowControlAccounts: true,
+  });
   try {
     return await withUser(approverId, async (db) => {
       await assertSyntheticTenant(db, clientId);

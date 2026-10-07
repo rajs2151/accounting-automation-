@@ -206,6 +206,7 @@ test("P2B-7: draft VAT 201 from posted journals — boxes by emirate and directi
       periodId: company.periods["May 2026"],
       entryDate: "2026-05-30",
       memo: "VAT correction",
+      allowControlAccounts: true,
       lines: [
         { accountId: company.accountIdByCode["2210"], creditMinor: 123 },
         { accountId: company.accountIdByCode["6900"], debitMinor: 123 },

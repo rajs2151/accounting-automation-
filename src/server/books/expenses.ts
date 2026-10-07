@@ -1134,6 +1134,7 @@ export async function approveAndPostBooksExpense(
         isVatCompanion: true,
       })),
       post: false,
+      allowControlAccounts: true,
     });
 
     const claim = await withUser(userId, async (db) => {

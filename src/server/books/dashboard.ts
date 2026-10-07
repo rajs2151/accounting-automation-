@@ -7,10 +7,12 @@
  */
 import { withUser } from "@/lib/db";
 import { computeStatementCoverage, normalizeIban } from "@/lib/statement-coverage";
+import { booksAgeing } from "@/server/books/ageing";
 import { listBooksBankAccounts } from "@/server/books/bank-accounts";
 import { listBankReconciliations } from "@/server/books/bank-recon";
 import { BooksError } from "@/server/books/errors";
 import { statementListBalanceCheck } from "@/server/books/statement-extractions";
+import { booksTrialBalance } from "@/server/books/trial-balance";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 import type { VatFrequency } from "@/server/books/company-vat-settings";
@@ -91,7 +93,12 @@ export type StatementCoverageItem = {
 };
 
 export type BooksIssue = {
-  kind: "failed_extraction" | "statement_balance_check" | "bank_recon_difference";
+  kind:
+    | "failed_extraction"
+    | "statement_balance_check"
+    | "bank_recon_difference"
+    | "ar_control_vs_open_items"
+    | "ap_control_vs_open_items";
   label: string;
   href: string;
   refId: string;
@@ -228,6 +235,39 @@ export async function listBooksIssues(
       href: `/books/banking?recon=${r.accountId}`,
       refId: r.accountId,
     });
+  }
+
+  // AR/AP control (TB) vs open-item ageing — drift means someone posted to 1210/2110 without an open item.
+  try {
+    const [tb, arAge, apAge] = await Promise.all([
+      booksTrialBalance(userId, clientId, period.id, { includeZeroBalances: true }),
+      booksAgeing(userId, clientId, { side: "AR", asOf: period.end }),
+      booksAgeing(userId, clientId, { side: "AP", asOf: period.end }),
+    ]);
+    const arCtrl =
+      (tb.accounts["1210"]?.closingDebitMinor ?? 0) - (tb.accounts["1210"]?.closingCreditMinor ?? 0);
+    const apCtrl =
+      (tb.accounts["2110"]?.closingCreditMinor ?? 0) - (tb.accounts["2110"]?.closingDebitMinor ?? 0);
+    const arOpen = Math.max(0, arAge.totals.total);
+    const apOpen = Math.max(0, apAge.totals.total);
+    if (arCtrl !== arOpen) {
+      issues.push({
+        kind: "ar_control_vs_open_items",
+        label: `AR control (1210) ${arCtrl} fils ≠ open items ${arOpen} fils`,
+        href: "/books/reports/ageing?side=ar",
+        refId: "1210",
+      });
+    }
+    if (apCtrl !== apOpen) {
+      issues.push({
+        kind: "ap_control_vs_open_items",
+        label: `AP control (2110) ${apCtrl} fils ≠ open items ${apOpen} fils`,
+        href: "/books/reports/ageing?side=ap",
+        refId: "2110",
+      });
+    }
+  } catch {
+    /* TB / ageing unavailable — skip drift check */
   }
   return issues;
 }
