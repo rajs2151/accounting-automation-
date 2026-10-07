@@ -1407,6 +1407,16 @@ export async function PATCH(request: Request, ctx: Ctx) {
               : body.scheduledFor == null
                 ? null
                 : String(body.scheduledFor),
+          autoReverseNextPeriod:
+            body.autoReverseNextPeriod === undefined
+              ? undefined
+              : Boolean(body.autoReverseNextPeriod),
+          templateKey:
+            body.templateKey === undefined
+              ? undefined
+              : body.templateKey == null
+                ? null
+                : String(body.templateKey),
           lines: Array.isArray(body.lines) ? body.lines : [],
         }),
       );

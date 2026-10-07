@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
 import {
@@ -97,6 +97,7 @@ type JournalDetail = {
   reversesEntryNo?: string | null;
   reversedByEntryNo?: string | null;
   correctsEntryNo?: string | null;
+  autoReverseNextPeriod?: boolean;
   attachments?: Array<{ id: string; originalName: string }>;
   lines: Array<{
     id: string;
@@ -112,6 +113,7 @@ type JournalDetail = {
     vatTreatment?: string | null;
     vatCode?: string | null;
     vatAmountMinor?: number;
+    linkedVatLineId?: string | null;
     tags?: string[];
   }>;
 };
@@ -139,6 +141,7 @@ export default function BooksJournalsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<JournalDetail | null>(null);
+  const detailRequestId = useRef<string | null>(null);
   const [audit, setAudit] = useState<AuditRow[]>([]);
   const [tab, setTab] = useState("overview");
   const [error, setError] = useState("");
@@ -219,13 +222,22 @@ export default function BooksJournalsPage() {
   );
 
   async function openRow(row: JournalRow) {
-    setSelectedId(row.id);
+    const rowId = row.id;
+    // Clear stale drawer content only when switching to a different row.
+    if (selectedId !== rowId) {
+      setDetail(null);
+      setAudit([]);
+    }
+    setSelectedId(rowId);
+    detailRequestId.current = rowId;
     setTab("overview");
     const [d, a] = await Promise.all([
-      fetch(`/api/books/journals/${row.id}`).then((r) => r.json()),
-      fetch(`/api/books/journals/${row.id}/audit`).then((r) => r.json()),
+      fetch(`/api/books/journals/${rowId}`).then((r) => r.json()),
+      fetch(`/api/books/journals/${rowId}/audit`).then((r) => r.json()),
     ]);
-    if (d?.id) {
+    // Drop responses that arrived after the user selected another row.
+    if (detailRequestId.current !== rowId) return;
+    if (d?.id === rowId) {
       setDetail(d);
       setEditMemo(String(d.memo || ""));
       setEditNote(String(d.note || ""));
@@ -317,20 +329,31 @@ export default function BooksJournalsPage() {
 
   function openDraftEditor() {
     if (!detail) return;
+    // Primaries store linkedVatLineId → companion; exclude companions so the
+    // sheet regenerates a single VAT line instead of doubling.
+    const companionIds = new Set(
+      detail.lines
+        .map((l) => l.linkedVatLineId)
+        .filter((id): id is string => Boolean(id))
+        .map(String),
+    );
     setCreatePrefill({
       entryDate: detail.entryDate,
       memo: detail.memo,
       voucherType: detail.voucherType || "Journal",
       tags: detail.tags || [],
-      lines: detail.lines.map((l) => ({
-        accountId: String(l.accountId || ""),
-        debitMinor: l.debitMinor,
-        creditMinor: l.creditMinor,
-        lineMemo: l.lineMemo,
-        vatCode: l.vatCode,
-        vatAmountMinor: l.vatAmountMinor,
-        tags: l.tags || [],
-      })),
+      autoReverseNextPeriod: Boolean(detail.autoReverseNextPeriod),
+      lines: detail.lines
+        .filter((l) => !companionIds.has(l.id))
+        .map((l) => ({
+          accountId: String(l.accountId || ""),
+          debitMinor: l.debitMinor,
+          creditMinor: l.creditMinor,
+          lineMemo: l.lineMemo,
+          vatCode: l.vatCode,
+          vatAmountMinor: l.vatAmountMinor,
+          tags: l.tags || [],
+        })),
     });
     setEditEntryId(detail.id);
     setCreateOpen(true);

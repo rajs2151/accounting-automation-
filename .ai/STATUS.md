@@ -3,6 +3,7 @@
 ## Now
 - Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
 - Current task: P5-1 (close checklist + lock gate) - overnight loop run by chat-Claude; tasks P5-1..P6-4 in .ai/NEXT_TASK_*.md, rules in .ai/HOW_TO_WORK.md
+- 2026-10-07: Phase 3/4 critical bugfixes (expenses double-post, dual-control, period/AED/VAT; accrual auto-reverse next month; sheet reset; draft auto-reverse; drawer race; expense VAT→VAT201)
 - 2026-10-07: Phase 4 CLOSED (P4-1..P4-5)
 - 2026-10-07: P4-5 PASS — reverse reason+date; drawer Reverse; immutability e2e
 - 2026-10-07: P4-4 PASS — schedule/recurring/auto-reverse (1st next month); Entry n of N badge

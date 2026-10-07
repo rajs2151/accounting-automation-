@@ -5,7 +5,7 @@ import type { PoolClient } from "pg";
 import { withUser } from "@/lib/db";
 import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
-import { firstOfNextMonthUtc } from "@/lib/schedule-dates";
+import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
@@ -698,11 +698,12 @@ export async function createBooksJournal(
         after: { status: "posted", entryNo, voucherType },
       });
       if (body.autoReverseNextPeriod) {
+        const reverseOn = firstOfNextMonthIso(body.entryDate);
         await enqueueBooksJob(
           db,
           clientId,
           "auto_reverse",
-          { entryId: id, actorUserId: userId },
+          { entryId: id, actorUserId: userId, reverseOn },
           firstOfNextMonthUtc(body.entryDate),
         );
       }
@@ -771,12 +772,14 @@ export async function postBooksJournal(userId: string, clientId: string, entryId
       after: { status: "posted", entryNo },
     });
     if (entry.rows[0].auto_reverse_next_period) {
+      const entryDate = String(entry.rows[0].entry_date).slice(0, 10);
+      const reverseOn = firstOfNextMonthIso(entryDate);
       await enqueueBooksJob(
         db,
         clientId,
         "auto_reverse",
-        { entryId, actorUserId: userId },
-        firstOfNextMonthUtc(String(entry.rows[0].entry_date).slice(0, 10)),
+        { entryId, actorUserId: userId, reverseOn },
+        firstOfNextMonthUtc(entryDate),
       );
     }
     return { id: entryId, status: "posted", entryNo };
@@ -1163,6 +1166,8 @@ export async function replaceBooksJournalDraft(
     tags?: string[];
     voucherType?: string;
     scheduledFor?: string | null;
+    autoReverseNextPeriod?: boolean;
+    templateKey?: string | null;
     lines: BooksLineInput[];
   },
 ) {
@@ -1195,12 +1200,18 @@ export async function replaceBooksJournalDraft(
         ? before.rows[0].scheduled_for
         : body.scheduledFor;
     const nextStatus = scheduleDate ? "scheduled" : "draft";
+    const autoReverse =
+      body.autoReverseNextPeriod !== undefined
+        ? Boolean(body.autoReverseNextPeriod)
+        : Boolean(before.rows[0].auto_reverse_next_period);
+    const templateKey =
+      body.templateKey !== undefined ? body.templateKey : before.rows[0].template_key;
 
     await db.query(
       `UPDATE books_journal_entries SET
          period_id = $3, memo = $4, note = COALESCE($5, note), reference = COALESCE($6, reference),
          entry_date = $7, content_hash = $8, voucher_type = $9, tags = $10::text[],
-         scheduled_for = $11, status = $12
+         scheduled_for = $11, status = $12, auto_reverse_next_period = $13, template_key = $14
        WHERE id = $1 AND client_id = $2`,
       [
         entryId,
@@ -1215,6 +1226,8 @@ export async function replaceBooksJournalDraft(
         entryTags,
         scheduleDate,
         nextStatus,
+        autoReverse,
+        templateKey,
       ],
     );
     await db.query(`DELETE FROM books_journal_lines WHERE entry_id = $1`, [entryId]);
@@ -1240,6 +1253,7 @@ export async function replaceBooksJournalDraft(
       status: nextStatus,
       voucherType,
       tags: entryTags,
+      autoReverseNextPeriod: autoReverse,
       lines,
     };
   });
