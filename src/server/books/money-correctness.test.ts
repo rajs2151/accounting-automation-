@@ -6,7 +6,11 @@ import test from "node:test";
 import pg from "pg";
 
 import { aedFromOriginal } from "@/lib/fx";
-import { approveAndPostBooksDocument, createBooksDocument } from "@/server/books/documents";
+import {
+  __setTestFailAfterJournalPostForTests,
+  approveAndPostBooksDocument,
+  createBooksDocument,
+} from "@/server/books/documents";
 import { listBooksIssues } from "@/server/books/dashboard";
 import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createBooksParty } from "@/server/books/parties";
@@ -239,6 +243,98 @@ test("MONEY-5: issues flag AR control ≠ open items", async (t) => {
       JSON.stringify(issues.map((i) => i.kind)),
     );
   } finally {
+    await admin.end();
+  }
+});
+
+test("MONEY-6: approve posts journal and open item together", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "money-atomic");
+    const may = company.periods["May 2026"];
+    const customer = await createBooksParty(OMAR, company.clientId, {
+      partyType: "customer",
+      name: `Atomic Cust ${Date.now()}`,
+      force: true,
+    });
+    const inv = await createBooksDocument(OMAR, company.clientId, {
+      docType: "sales_invoice",
+      partyId: String(customer.id),
+      issueDate: "2026-05-10",
+      periodId: may,
+      documentNumber: `ATM-${Date.now()}`,
+      lines: [{ description: "Service", lineKind: "revenue", vatCode: "ZR", netMinor: 50_00, vatMinor: 0 }],
+    });
+    const posted = await approveAndPostBooksDocument(LAYLA, company.clientId, String(inv.id));
+    const j = await admin.query(
+      `SELECT status FROM books_journal_entries WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [posted.journalEntryId, company.clientId],
+    );
+    const oi = await admin.query(
+      `SELECT open_aed_minor, journal_entry_id FROM books_open_items
+       WHERE document_id = $1 AND client_id = $2`,
+      [inv.id, company.clientId],
+    );
+    assert.equal(j.rows[0]?.status, "posted");
+    assert.equal(oi.rowCount, 1);
+    assert.equal(String(oi.rows[0].journal_entry_id), posted.journalEntryId);
+    assert.equal(Number(oi.rows[0].open_aed_minor), 50_00);
+  } finally {
+    await admin.end();
+  }
+});
+
+test("MONEY-7: failure after journal post leaves no posted journal without open item", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "money-atomic-fail");
+    const may = company.periods["May 2026"];
+    const customer = await createBooksParty(OMAR, company.clientId, {
+      partyType: "customer",
+      name: `Atomic Fail ${Date.now()}`,
+      force: true,
+    });
+    const inv = await createBooksDocument(OMAR, company.clientId, {
+      docType: "sales_invoice",
+      partyId: String(customer.id),
+      issueDate: "2026-05-11",
+      periodId: may,
+      documentNumber: `ATF-${Date.now()}`,
+      lines: [{ description: "Service", lineKind: "revenue", vatCode: "ZR", netMinor: 40_00, vatMinor: 0 }],
+    });
+    __setTestFailAfterJournalPostForTests(() => {
+      throw new Error("forced_fail_after_journal_post");
+    });
+    await assert.rejects(
+      () => approveAndPostBooksDocument(LAYLA, company.clientId, String(inv.id)),
+      /forced_fail_after_journal_post/,
+    );
+    const postedOrphans = await admin.query(
+      `SELECT e.id
+       FROM books_journal_entries e
+       WHERE e.client_id = $1 AND e.status = 'posted' AND e.deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM books_open_items oi
+           WHERE oi.journal_entry_id = e.id AND oi.client_id = e.client_id
+         )`,
+      [company.clientId],
+    );
+    assert.equal(postedOrphans.rowCount, 0, "no posted journal without an open item");
+    const doc = await admin.query(
+      `SELECT status, journal_entry_id FROM books_documents WHERE id = $1`,
+      [inv.id],
+    );
+    assert.equal(String(doc.rows[0].status), "draft");
+    assert.equal(doc.rows[0].journal_entry_id, null);
+    const oi = await admin.query(
+      `SELECT id FROM books_open_items WHERE document_id = $1`,
+      [inv.id],
+    );
+    assert.equal(oi.rowCount, 0);
+  } finally {
+    __setTestFailAfterJournalPostForTests(null);
     await admin.end();
   }
 });

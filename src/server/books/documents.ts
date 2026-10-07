@@ -8,7 +8,12 @@ import { assertMinor } from "@/lib/money";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
-import { createBooksJournal, postBooksJournal, reverseBooksJournal } from "@/server/books/journals";
+import {
+  createBooksJournal,
+  postBooksJournalInTx,
+  reverseBooksJournal,
+  softDeleteBooksJournalDraft,
+} from "@/server/books/journals";
 import { upsertOpenItemFromDocument } from "@/server/books/open-items";
 import { enqueueBooksJob } from "@/server/books/jobs";
 import { normalizePlaceOfSupply, refreshDraftPlaceOfSupply } from "@/server/books/place-of-supply";
@@ -834,7 +839,29 @@ const VOUCHER_FOR_DOC: Record<string, string> = {
   debit_note: "Debit Note",
 };
 
-/** Approve + post document (dual-control). Separate connection for journal helpers. */
+/** Soft-delete a draft journal left behind when the approve transaction fails. */
+async function discardDraftJournal(preparerId: string, clientId: string, entryId: string) {
+  try {
+    await softDeleteBooksJournalDraft(preparerId, clientId, entryId);
+  } catch (cleanupError) {
+    console.error(`[documents] could not discard draft journal ${entryId}`, cleanupError);
+  }
+}
+
+/**
+ * Test-only hook: if set, runs inside the approve transaction immediately after the journal
+ * is posted and before the open item is written — so a throw rolls back the post.
+ */
+let testFailAfterJournalPost: (() => void) | null = null;
+export function __setTestFailAfterJournalPostForTests(fn: (() => void) | null) {
+  testFailAfterJournalPost = fn;
+}
+
+/**
+ * Approve + post document (dual-control).
+ * Draft journal is created as the preparer; post + document update + open item run in ONE
+ * approver transaction (same pattern as settlements). On failure the draft is discarded.
+ */
 export async function approveAndPostBooksDocument(
   userId: string,
   clientId: string,
@@ -937,93 +964,103 @@ export async function approveAndPostBooksDocument(
     allowControlAccounts: true,
   });
 
-  const posted = await postBooksJournal(userId, clientId, created.id);
+  let posted: { id: string; status: string; entryNo: string };
+  try {
+    posted = await withUser(userId, async (db) => {
+      await assertSyntheticTenant(db, clientId);
+      const postedInner = await postBooksJournalInTx(db, userId, clientId, created.id);
+      if (testFailAfterJournalPost) testFailAfterJournalPost();
 
-  await withUser(userId, async (db) => {
-    await db.query(
-      `UPDATE books_documents SET
-         status = 'posted', journal_entry_id = $3, approved_by = $4, updated_at = now(),
-         voucher_type = $5
-       WHERE id = $1 AND client_id = $2`,
-      [documentId, clientId, created.id, userId, prepared.voucherType],
-    );
-
-    const side =
-      prepared.doc.doc_type === "sales_invoice" || prepared.doc.doc_type === "credit_note"
-        ? "AR"
-        : "AP";
-
-    if (
-      ["sales_invoice", "purchase_bill"].includes(String(prepared.doc.doc_type)) &&
-      prepared.doc.party_id
-    ) {
-      // Open item must match the AR/AP control line (e.g. reverse-charge bills credit AP at net,
-      // not document gross which includes VAT that never hits 2110).
-      const controlLine = prepared.journalLines.find(
-        (l) => l.lineMemo === "Trade receivables" || l.lineMemo === "Trade payables",
+      await db.query(
+        `UPDATE books_documents SET
+           status = 'posted', journal_entry_id = $3, approved_by = $4, updated_at = now(),
+           voucher_type = $5
+         WHERE id = $1 AND client_id = $2`,
+        [documentId, clientId, created.id, userId, prepared.voucherType],
       );
-      const controlAed = controlLine
-        ? Math.abs(Number(controlLine.aedMinor ?? 0))
-        : Number(prepared.doc.aed_total_minor);
-      const grossAed = Number(prepared.doc.aed_total_minor);
-      const grossOrig = Number(prepared.doc.original_total_minor);
-      // Never fall back to AED as original — FX open items must keep currency units.
-      // Scale original when control ≠ gross (e.g. reverse-charge AP at net).
-      const controlOrig =
-        controlLine?.originalMinor != null
-          ? Math.abs(Number(controlLine.originalMinor))
-          : grossAed === 0
-            ? 0
-            : Math.round((grossOrig * controlAed) / grossAed);
-      await upsertOpenItemFromDocument(db, {
-        clientId,
-        partyId: String(prepared.doc.party_id),
-        documentId,
-        journalEntryId: created.id,
-        side,
-        currency: String(prepared.doc.currency),
-        originalMinor: controlOrig,
-        aedMinor: controlAed,
-        fxRateScaled: Number(prepared.doc.fx_rate_scaled),
-      });
-    }
 
-    // CN/DN: reduce original open item
-    if (
-      (prepared.doc.doc_type === "credit_note" || prepared.doc.doc_type === "debit_note") &&
-      prepared.doc.original_document_id
-    ) {
-      const oi = await db.query(
-        `SELECT id FROM books_open_items WHERE document_id = $1 AND client_id = $2`,
-        [prepared.doc.original_document_id, clientId],
-      );
-      if (oi.rowCount) {
-        const { applyAllocationToOpenItem } = await import("@/server/books/open-items");
-        await applyAllocationToOpenItem(
-          db,
-          String(oi.rows[0].id),
-          clientId,
-          Number(prepared.doc.original_total_minor),
-          Number(prepared.doc.aed_total_minor),
+      const side =
+        prepared.doc.doc_type === "sales_invoice" || prepared.doc.doc_type === "credit_note"
+          ? "AR"
+          : "AP";
+
+      if (
+        ["sales_invoice", "purchase_bill"].includes(String(prepared.doc.doc_type)) &&
+        prepared.doc.party_id
+      ) {
+        // Open item must match the AR/AP control line (e.g. reverse-charge bills credit AP at net,
+        // not document gross which includes VAT that never hits 2110).
+        const controlLine = prepared.journalLines.find(
+          (l) => l.lineMemo === "Trade receivables" || l.lineMemo === "Trade payables",
         );
+        const controlAed = controlLine
+          ? Math.abs(Number(controlLine.aedMinor ?? 0))
+          : Number(prepared.doc.aed_total_minor);
+        const grossAed = Number(prepared.doc.aed_total_minor);
+        const grossOrig = Number(prepared.doc.original_total_minor);
+        // Never fall back to AED as original — FX open items must keep currency units.
+        // Scale original when control ≠ gross (e.g. reverse-charge AP at net).
+        const controlOrig =
+          controlLine?.originalMinor != null
+            ? Math.abs(Number(controlLine.originalMinor))
+            : grossAed === 0
+              ? 0
+              : Math.round((grossOrig * controlAed) / grossAed);
+        await upsertOpenItemFromDocument(db, {
+          clientId,
+          partyId: String(prepared.doc.party_id),
+          documentId,
+          journalEntryId: created.id,
+          side,
+          currency: String(prepared.doc.currency),
+          originalMinor: controlOrig,
+          aedMinor: controlAed,
+          fxRateScaled: Number(prepared.doc.fx_rate_scaled),
+        });
       }
-    }
 
-    // Deferred revenue schedules
-    if (prepared.doc.defer_revenue && prepared.doc.doc_type === "sales_invoice") {
-      await scheduleDeferredReleases(db, clientId, prepared.doc);
-    }
+      // CN/DN: reduce original open item
+      if (
+        (prepared.doc.doc_type === "credit_note" || prepared.doc.doc_type === "debit_note") &&
+        prepared.doc.original_document_id
+      ) {
+        const oi = await db.query(
+          `SELECT id FROM books_open_items WHERE document_id = $1 AND client_id = $2`,
+          [prepared.doc.original_document_id, clientId],
+        );
+        if (oi.rowCount) {
+          const { applyAllocationToOpenItem } = await import("@/server/books/open-items");
+          await applyAllocationToOpenItem(
+            db,
+            String(oi.rows[0].id),
+            clientId,
+            Number(prepared.doc.original_total_minor),
+            Number(prepared.doc.aed_total_minor),
+          );
+        }
+      }
 
-    await writeBooksAudit(db, {
-      clientId,
-      actor: userId,
-      action: "approve_post",
-      entity: "books_document",
-      entityId: documentId,
-      before: { status: "draft" },
-      after: { status: "posted", journalEntryId: created.id, entryNo: posted.entryNo },
+      // Deferred revenue schedules
+      if (prepared.doc.defer_revenue && prepared.doc.doc_type === "sales_invoice") {
+        await scheduleDeferredReleases(db, clientId, prepared.doc);
+      }
+
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "approve_post",
+        entity: "books_document",
+        entityId: documentId,
+        before: { status: "draft" },
+        after: { status: "posted", journalEntryId: created.id, entryNo: postedInner.entryNo },
+      });
+
+      return postedInner;
     });
-  });
+  } catch (error) {
+    await discardDraftJournal(preparerId, clientId, created.id);
+    throw error;
+  }
 
   // C1b-2: optional apply of existing 2320 advance (never default). Dual control: preparer = creator.
   let advanceAllocation: { entryNo: string; amountOriginalMinor: number } | null = null;
