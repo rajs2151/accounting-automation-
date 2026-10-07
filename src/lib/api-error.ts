@@ -162,6 +162,7 @@ const MESSAGES: Record<string, string> = {
   year_has_open_periods: "Lock these months before closing the year:",
   not_fiscal_year_end_period: "Choose the last month of the financial year.",
   year_end_already_closed: "This year is already closed.",
+  export_blocked_gates: "Export blocked until these integrity gates pass:",
   year_end_already_reversed: "This year-end close was already reversed.",
   year_end_not_found: "There is no year-end close for that year.",
   year_end_not_prepared: "Prepare the year-end entry first.",

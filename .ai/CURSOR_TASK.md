@@ -1,29 +1,22 @@
-TASK ID: P6-2
-PHASE: Phase 6 - Reports screens: P&L | Balance Sheet | Cash Flow | Trial Balance tabs + drill-down panel
+TASK ID: P6-4
+PHASE: Phase 6 - Comments per account/period, Corporate tax banner, Revenue chart, Projections layer
 
 OBJECTIVE:
-Screens for the P6-1 engine on the existing ReportTable, with the CrossVal-style layout and a cell drill-down panel
-that can re-categorise an item via an audited reclass entry.
+The remaining Phase 6 features on the P&L screen. Split into commits P6-4a..d if large; each sub-part must be green.
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 359-385; reference screenshots
-docs/reference/crossval/ (P&L screens) and docs/reference/tofu/UI-PATTERNS.md section 13. Existing:
-src/components/books/report-table.tsx (tree, pinned totals, drill-down, keyboard, exports), reports pages from
-RPT-1, P6-1 API.
+READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 386-396. Existing: legacy
+src/app/ct/page.tsx (CT logic ideas), P6-1 engine, P6-2 screens.
 
-REQUIREMENTS:
-1. /books/reports with tabs Profit & Loss | Balance Sheet | Cash Flow | Trial Balance (TB = existing page in the tab).
-2. Column mode switch Monthly / Quarterly / Yearly / Range + "Today" jump; MTD columns labelled; previous-period
-   comparison column optional.
-3. Tree group -> sub-group -> account (-> bank/card source rows for P&L where available); negatives in brackets;
-   K/M abbreviations with exact AED value on hover; frozen first column + horizontal scroll; subtotal rows
-   (GP, EBITDA, EBIT, EBT, Net profit) styled as totals. Gate failures shown as a red banner naming the gate.
-4. Cell click -> right drill-down panel: account, period, transaction count, search, list (date, description,
-   amount, link to entry). "Re-categorise" per item -> creates a DRAFT reclass journal (Dr new account / Cr old,
-   same amount, memo linking the original) for an approver to post - blocked in locked periods (period_locked),
-   audited. Never edits the original entry.
-5. Keyboard and print behave like the existing ReportTable.
-TESTS: unit for the reclass-draft server function (exact lines, locked period refused, preparer cannot post own);
-e2e: open P&L monthly, expand a section, click a cell, panel lists the entries; switch to Balance Sheet - balanced;
-Cash Flow ties banner absent.
-ACCEPTANCE: screens render the engine's numbers exactly, drill-down + reclass draft work, full gates green.
-DO NOT: comments, charts, projections (P6-4); exports (P6-3).
+a) Comments: one thread per (company, account, period) - unique; avatars, timestamps, @mentions of company users;
+   unread count badge on the P&L row. New migration (books table + RLS). Audited.
+b) Corporate tax banner: tax year (company fiscal year), filing due date (9 months after year end), status, and an
+   ESTIMATE = 9% of taxable income above AED 375,000 (taxable income = net profit before CT for the year to date;
+   label clearly "estimate - not a tax computation"; no adjustments engine).
+c) Revenue chart above the P&L: selector Revenue / Expenses / Net profit; bars per column period, current value and
+   % change (like-for-like for MTD), log scale on/off, AED axis. Use the charting approach already in the repo.
+d) Projections: separate books_forecasts table (account, period, amount_minor, method trailing_avg_3|trailing_avg_6|
+   linear|override, growth_pct); "Projections on" shows future months labelled Projected and styled differently;
+   NEVER written to journals and excluded from TB/BS/CT estimate/exports of actuals.
+TESTS: unique thread per row/period; mention notification row created; CT estimate exact for 300,000 (=0),
+   500,000 (=11,250.00) and 375,000 (=0); projections excluded from TB/BS/exports; trailing average exact.
+ACCEPTANCE: each sub-part green and committed; full gates green.

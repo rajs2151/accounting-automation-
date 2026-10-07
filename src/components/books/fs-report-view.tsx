@@ -1,0 +1,553 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { useBooksShell } from "@/components/books/books-shell-context";
+import {
+  ReportsNav,
+  ReportTable,
+  useReportMeta,
+  type ReportRow,
+} from "@/components/books/report-table";
+import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { Button } from "@/components/ui/button";
+import { apiErrorMessage } from "@/lib/api-error";
+import { formatDateUae } from "@/lib/date";
+import {
+  bsToReportTree,
+  cfToReportTree,
+  pnlToReportTree,
+  type BsColumnLike,
+  type CfColumnLike,
+  type PnlColumnLike,
+} from "@/lib/fs-report-tree";
+import { formatMinor } from "@/lib/money";
+
+type Mode = "monthly" | "quarterly" | "yearly" | "range";
+type Statement = "pnl" | "bs" | "cf";
+
+type PeriodRow = {
+  id: string;
+  label: string;
+  periodStart: string;
+  periodEnd: string;
+  status: string;
+};
+
+type Integrity = {
+  tbBalances: { ok: boolean; differenceMinor: number };
+  bsBalances: { ok: boolean; differenceMinor: number };
+  cfTies: { ok: boolean; differenceMinor: number };
+  ready: boolean;
+};
+
+type DrillState = {
+  accountId: string;
+  code: string;
+  name: string;
+  from: string;
+  to: string;
+  columnKey: string;
+  periodLabel: string;
+};
+
+type LineRow = {
+  entryId: string;
+  entryNo: string | null;
+  date: string;
+  memo: string;
+  amountMinor: number;
+};
+
+type AcctOpt = { id: string; code: string; name: string };
+
+export function FsReportView({ statement }: { statement: Statement }) {
+  const { periodId, setPeriodId } = useBooksShell();
+  const meta = useReportMeta();
+  const [periods, setPeriods] = useState<PeriodRow[]>([]);
+  const [mode, setMode] = useState<Mode>("monthly");
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+  const [asOfToday, setAsOfToday] = useState(false);
+  const [showPrior, setShowPrior] = useState(false);
+  const [error, setError] = useState("");
+  const [pnl, setPnl] = useState<PnlColumnLike[] | null>(null);
+  const [bs, setBs] = useState<BsColumnLike[] | null>(null);
+  const [cf, setCf] = useState<CfColumnLike[] | null>(null);
+  const [integrity, setIntegrity] = useState<Integrity | null>(null);
+  const [drill, setDrill] = useState<DrillState | null>(null);
+  const [lines, setLines] = useState<LineRow[]>([]);
+  const [lineSearch, setLineSearch] = useState("");
+  const [accounts, setAccounts] = useState<AcctOpt[]>([]);
+  const [reclassTo, setReclassTo] = useState("");
+  const [reclassMsg, setReclassMsg] = useState("");
+  const [exportMsg, setExportMsg] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    void fetch("/api/books/periods")
+      .then((r) => r.json())
+      .then((list: PeriodRow[]) => {
+        if (!Array.isArray(list)) return;
+        const ordered = [...list].sort((a, b) =>
+          String(a.periodStart).localeCompare(String(b.periodStart)),
+        );
+        setPeriods(ordered);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/books/accounts?postableOnly=1")
+      .then((r) => r.json())
+      .then((list: AcctOpt[]) => {
+        if (Array.isArray(list)) setAccounts(list);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const selected = periods.find((p) => p.id === periodId) || null;
+
+  const query = useMemo(() => {
+    if (mode === "range") {
+      if (!rangeFrom || !rangeTo) return null;
+      return { from: rangeFrom, to: rangeTo };
+    }
+    if (!selected) return null;
+    if (mode === "monthly") {
+      let from = selected.periodStart;
+      if (showPrior) {
+        const idx = periods.findIndex((p) => p.id === selected.id);
+        if (idx > 0) from = periods[idx - 1].periodStart;
+      }
+      return { from, to: selected.periodEnd };
+    }
+    if (mode === "quarterly") {
+      const idx = periods.findIndex((p) => p.id === selected.id);
+      const startIdx = Math.max(0, idx - 2);
+      return { from: periods[startIdx]?.periodStart || selected.periodStart, to: selected.periodEnd };
+    }
+    // yearly — use all periods up to selected that share the same calendar year of period end
+    const y = selected.periodEnd.slice(0, 4);
+    const inYear = periods.filter((p) => p.periodEnd.startsWith(y) && p.periodEnd <= selected.periodEnd);
+    const from = inYear[0]?.periodStart || `${y}-01-01`;
+    return { from, to: selected.periodEnd };
+  }, [mode, selected, periods, showPrior, rangeFrom, rangeTo]);
+
+  const asOf = asOfToday ? new Date().toISOString().slice(0, 10) : "2099-12-31";
+
+  useEffect(() => {
+    if (!query) return;
+    let cancelled = false;
+    setError("");
+    const qs = new URLSearchParams({
+      mode,
+      from: query.from,
+      to: query.to,
+      asOf,
+    });
+    void Promise.all([
+      fetch(`/api/books/reports/financial-statements?${qs}`).then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(apiErrorMessage(j) || "fs_failed");
+        return j;
+      }),
+    ])
+      .then(([pack]) => {
+        if (cancelled) return;
+        setPnl(pack.pnl?.columns || []);
+        setBs(pack.balanceSheet?.columns || []);
+        setCf(pack.cashFlow?.columns || []);
+        setIntegrity(pack.integrity || null);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, mode, asOf]);
+
+  const tree = useMemo(() => {
+    if (statement === "pnl" && pnl) return pnlToReportTree(pnl);
+    if (statement === "bs" && bs) return bsToReportTree(bs);
+    if (statement === "cf" && cf) return cfToReportTree(cf);
+    return { columns: [], rows: [] as ReportRow[], footer: [] };
+  }, [statement, pnl, bs, cf]);
+
+  const columnMeta = useMemo(() => {
+    const cols =
+      statement === "pnl" ? pnl : statement === "bs" ? bs : cf;
+    return new Map((cols || []).map((c) => [c.column.key, c.column]));
+  }, [statement, pnl, bs, cf]);
+
+  const openDrill = useCallback(
+    (row: ReportRow, columnKey: string) => {
+      const d = row.drill as { kind?: string; accountId?: string; code?: string; name?: string } | undefined;
+      if (!d || d.kind !== "account" || !d.accountId) return;
+      const col = columnMeta.get(columnKey);
+      if (!col) return;
+      setDrill({
+        accountId: d.accountId,
+        code: d.code || "",
+        name: d.name || row.label,
+        from: col.from,
+        to: col.to,
+        columnKey,
+        periodLabel: col.label,
+      });
+      setLineSearch("");
+      setReclassTo("");
+      setReclassMsg("");
+    },
+    [columnMeta],
+  );
+
+  useEffect(() => {
+    if (!drill) {
+      setLines([]);
+      return;
+    }
+    let cancelled = false;
+    const qs = new URLSearchParams({
+      accountId: drill.accountId,
+      from: drill.from,
+      to: drill.to,
+    });
+    void fetch(`/api/books/reports/account-lines?${qs}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (j.error) {
+          setLines([]);
+          return;
+        }
+        setLines(j.lines || []);
+      })
+      .catch(() => {
+        if (!cancelled) setLines([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [drill]);
+
+  const filteredLines = useMemo(() => {
+    const q = lineSearch.trim().toLowerCase();
+    if (!q) return lines;
+    return lines.filter(
+      (l) =>
+        l.memo.toLowerCase().includes(q) ||
+        (l.entryNo || "").toLowerCase().includes(q) ||
+        l.date.includes(q),
+    );
+  }, [lines, lineSearch]);
+
+  async function submitReclass(line: LineRow) {
+    if (!drill || !reclassTo || !selected) return;
+    setReclassMsg("");
+    const amount = Math.abs(line.amountMinor);
+    if (amount <= 0) {
+      setReclassMsg("nothing_to_reclass");
+      return;
+    }
+    const res = await fetch("/api/books/journals/reclass-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        periodId: selected.id,
+        entryDate: line.date,
+        fromAccountId: drill.accountId,
+        toAccountId: reclassTo,
+        amountMinor: amount,
+        sourceEntryId: line.entryId,
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      setReclassMsg(apiErrorMessage(j) || String(j.error || "reclass_failed"));
+      return;
+    }
+    setReclassMsg(`Draft ${j.reference || j.id?.slice?.(0, 8) || "created"} — send to approver to post.`);
+  }
+
+  function jumpToday() {
+    const today = new Date().toISOString().slice(0, 10);
+    setAsOfToday(true);
+    const hit =
+      periods.find((p) => p.periodStart <= today && p.periodEnd >= today) ||
+      periods[periods.length - 1];
+    if (hit) setPeriodId(hit.id);
+  }
+
+  async function exportPack(format: "xlsx" | "pdf") {
+    if (!query) return;
+    setExportMsg("");
+    setExporting(true);
+    try {
+      const res = await fetch("/api/books/reports/export-statements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format,
+          mode,
+          from: query.from,
+          to: query.to,
+          asOf,
+          preparedBy: meta.preparedBy,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setExportMsg(apiErrorMessage(j) || String(j.error || "export_failed"));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `financial-statements-${query.from}_${query.to}.${format === "pdf" ? "pdf" : "xlsx"}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportMsg(`Exported ${format.toUpperCase()}.`);
+    } catch {
+      setExportMsg("export_failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const title =
+    statement === "pnl" ? "Profit & Loss" : statement === "bs" ? "Balance sheet" : "Cash flow";
+  const navKey = statement === "pnl" ? "pnl" : statement === "bs" ? "bs" : "cf";
+  const periodLabel = selected?.label || query?.from || "—";
+
+  const gateFails: string[] = [];
+  if (integrity) {
+    if (!integrity.tbBalances.ok) gateFails.push(`TB (${integrity.tbBalances.differenceMinor} fils)`);
+    if (!integrity.bsBalances.ok) gateFails.push(`Balance sheet (${integrity.bsBalances.differenceMinor} fils)`);
+    if (!integrity.cfTies.ok) gateFails.push(`Cash flow ties (${integrity.cfTies.differenceMinor} fils)`);
+  }
+
+  return (
+    <div className="space-y-4 pb-10">
+      <ReportsNav active={navKey} />
+      <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <p className="text-sm text-muted-foreground">
+            Posted journals · AED fils · {periodLabel}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="text-xs text-muted-foreground">
+            Columns
+            <select
+              className="ms-2 rounded-md border border-border bg-card px-2 py-1 text-sm"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as Mode)}
+              data-testid="fs-mode"
+            >
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="yearly">Yearly</option>
+              <option value="range">Range</option>
+            </select>
+          </label>
+          {mode === "range" ? (
+            <>
+              <label className="text-xs text-muted-foreground">
+                From
+                <input
+                  type="date"
+                  className="ms-2 rounded-md border border-border bg-card px-2 py-1 text-sm"
+                  value={rangeFrom}
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                  data-testid="fs-range-from"
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                To
+                <input
+                  type="date"
+                  className="ms-2 rounded-md border border-border bg-card px-2 py-1 text-sm"
+                  value={rangeTo}
+                  onChange={(e) => setRangeTo(e.target.value)}
+                  data-testid="fs-range-to"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="text-xs text-muted-foreground">
+              Period
+              <select
+                className="ms-2 rounded-md border border-border bg-card px-2 py-1 text-sm"
+                value={periodId}
+                onChange={(e) => setPeriodId(e.target.value)}
+                data-testid="fs-period"
+              >
+                {periods.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={showPrior}
+              onChange={(e) => setShowPrior(e.target.checked)}
+              data-testid="fs-show-prior"
+            />
+            Prior period column
+          </label>
+          <Button size="sm" variant="outline" onClick={jumpToday} data-testid="fs-today">
+            Today
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={exporting || !query || Boolean(gateFails.length)}
+            onClick={() => void exportPack("xlsx")}
+            data-testid="fs-export-xlsx"
+          >
+            Export Excel
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={exporting || !query || Boolean(gateFails.length)}
+            onClick={() => void exportPack("pdf")}
+            data-testid="fs-export-pdf"
+          >
+            Export PDF
+          </Button>
+        </div>
+      </div>
+
+      {gateFails.length ? (
+        <div
+          className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-100"
+          data-testid="fs-gate-banner"
+          role="alert"
+        >
+          Integrity gate failed: {gateFails.join(" · ")}. Export is blocked until gates pass.
+        </div>
+      ) : null}
+      {exportMsg ? (
+        <p className="text-sm text-muted-foreground print:hidden" data-testid="fs-export-msg">
+          {exportMsg}
+        </p>
+      ) : null}
+
+      {error ? (
+        <p className="text-sm text-destructive" data-testid="fs-error">
+          {error}
+        </p>
+      ) : null}
+
+      <ReportTable
+        testId={`fs-report-${statement}`}
+        stateKey={`fs-${statement}-${mode}-${query?.from}-${query?.to}`}
+        title={title}
+        company={meta.company}
+        periodLabel={periodLabel}
+        preparedBy={meta.preparedBy}
+        columns={tree.columns}
+        rows={tree.rows}
+        footer={tree.footer}
+        brackets
+        abbreviate
+        onCellDrill={statement === "cf" ? undefined : openDrill}
+        exportName={`${statement}-${periodLabel.replace(/\s+/g, "-").toLowerCase()}`}
+        emptyText="No movements in this range."
+      />
+
+      <BooksSideDrawer
+        open={Boolean(drill)}
+        onOpenChange={(o) => {
+          if (!o) setDrill(null);
+        }}
+        title={drill ? `${drill.code} · ${drill.name}` : "Drill-down"}
+        entryNo={drill?.periodLabel}
+      >
+        {drill ? (
+          <div className="flex h-full flex-col gap-3 p-4" data-testid="fs-drill-panel">
+            <div className="text-sm text-muted-foreground">
+              {formatDateUae(drill.from)} – {formatDateUae(drill.to)} · {filteredLines.length} line
+              {filteredLines.length === 1 ? "" : "s"}
+            </div>
+            <input
+              className="rounded-md border border-border bg-card px-2 py-1.5 text-sm"
+              placeholder="Search description / entry…"
+              value={lineSearch}
+              onChange={(e) => setLineSearch(e.target.value)}
+              data-testid="fs-drill-search"
+            />
+            <label className="text-xs text-muted-foreground">
+              Re-categorise to
+              <select
+                className="mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
+                value={reclassTo}
+                onChange={(e) => setReclassTo(e.target.value)}
+                data-testid="fs-reclass-to"
+              >
+                <option value="">Select account…</option>
+                {accounts
+                  .filter((a) => a.id !== drill.accountId)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.code} · {a.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            {reclassMsg ? (
+              <p className="text-xs text-muted-foreground" data-testid="fs-reclass-msg">
+                {reclassMsg}
+              </p>
+            ) : null}
+            <ul className="min-h-0 flex-1 space-y-2 overflow-auto text-sm" data-testid="fs-drill-lines">
+              {filteredLines.map((l) => (
+                <li
+                  key={`${l.entryId}-${l.date}-${l.amountMinor}`}
+                  className="flex items-start justify-between gap-2 rounded-md border border-border/60 px-2 py-1.5"
+                >
+                  <div>
+                    <div className="font-medium">{formatDateUae(l.date)}</div>
+                    <div className="text-muted-foreground">{l.memo || "—"}</div>
+                    <Link
+                      href={`/books/reports/entry?entryId=${l.entryId}`}
+                      className="text-xs text-primary underline-offset-2 hover:underline"
+                    >
+                      {l.entryNo || l.entryId.slice(0, 8)}
+                    </Link>
+                  </div>
+                  <div className="text-end">
+                    <div className="tabular-nums">{formatMinor(l.amountMinor)}</div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-1"
+                      disabled={!reclassTo}
+                      onClick={() => void submitReclass(l)}
+                      data-testid="fs-reclass-btn"
+                    >
+                      Re-categorise
+                    </Button>
+                  </div>
+                </li>
+              ))}
+              {!filteredLines.length ? (
+                <li className="text-muted-foreground">No lines in this column.</li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
+      </BooksSideDrawer>
+    </div>
+  );
+}

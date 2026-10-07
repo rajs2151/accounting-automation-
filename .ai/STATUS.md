@@ -2,7 +2,9 @@
 
 ## Now
 - Phase: **6 (FS)** on feat/books-phase1 — Stream A (Phase 5 closed)
-- Current task: P6-2 (next — after P6-1 PASS)
+- Current task: P6-4 (next — after P6-3 PASS)
+- 2026-10-07: P6-3 PASS — gated FS Excel+PDF export (integrity + audit hash); unit 283p/0f; e2e 8/8
+- 2026-10-07: P6-2 PASS — FS screens (P&L/BS/CF tabs) + drill reclass draft; unit 273p/0f/1s; e2e 8/8
 - 2026-10-07: P6-1 PASS — FS engine P&L/BS/CF + period columns + integrity gates + report APIs (no UI); unit 247p/0f/1s; e2e 7/7
 - 2026-10-07: P5-4 PASS — year-end close to RE + Golden v5 TB; TB as-of picker deferred (period picker covers)
 - 2026-10-07: P5-3 PASS — FX rates + unrealised revaluation + close gate (db/59); push enabled per owner

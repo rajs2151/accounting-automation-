@@ -54,10 +54,34 @@ export function differenceRow(totalDebitMinor: number, totalCreditMinor: number)
 }
 
 /** Report cell text: blank for zero; negatives in brackets when `brackets` (statements), else "-". */
-export function formatReportAmount(minor: number | null | undefined, opts?: { brackets?: boolean }): string {
+export function formatReportAmount(
+  minor: number | null | undefined,
+  opts?: { brackets?: boolean; abbreviate?: boolean },
+): string {
   if (minor == null || minor === 0) return "";
-  if (minor < 0 && opts?.brackets) return `(${formatMinor(-minor)})`;
-  return formatMinor(minor);
+  const neg = minor < 0;
+  const abs = neg ? -minor : minor;
+  let body: string;
+  if (opts?.abbreviate && abs >= 100_000_000) {
+    // ≥ 1,000,000.00 AED → M (fils / 1e8)
+    body = `${(abs / 100_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  } else if (opts?.abbreviate && abs >= 100_000) {
+    // ≥ 1,000.00 AED → K
+    body = `${(abs / 100_000).toFixed(1).replace(/\.0$/, "")}K`;
+  } else {
+    body = formatMinor(abs);
+  }
+  if (neg && opts?.brackets) return `(${body})`;
+  if (neg) return `-${body}`;
+  return body;
+}
+
+/** Exact AED string for hover when cells use K/M abbreviations. */
+export function formatReportAmountExact(
+  minor: number | null | undefined,
+  opts?: { brackets?: boolean },
+): string {
+  return formatReportAmount(minor, { brackets: opts?.brackets, abbreviate: false });
 }
 
 export type MonthColumn = { key: string; label: string; start: string; end: string };

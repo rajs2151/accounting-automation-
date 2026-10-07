@@ -108,6 +108,9 @@ function MoneyTile(props: { testId: string; label: string; amountMinor: number |
 }
 
 const REPORT_SHORTCUTS = [
+  { href: "/books/reports/pnl", label: "Profit & Loss", note: "Revenue to net profit" },
+  { href: "/books/reports/balance-sheet", label: "Balance sheet", note: "Assets = liabilities + equity" },
+  { href: "/books/reports/cash-flow", label: "Cash flow", note: "Indirect method" },
   { href: "/books/reports/trial-balance", label: "Trial balance", note: "Balances by account" },
   { href: "/books/reports/day-book", label: "Day book", note: "Every voucher by date" },
   { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", note: "Who owes you" },
@@ -152,7 +155,7 @@ function BooksFlow({ d }: { d: Checklist }) {
       note: "Posted entries update account ledgers, the trial balance, ageing and the VAT return.",
       count: null,
       countLabel: "",
-      href: "/books/reports/trial-balance",
+      href: "/books/reports/pnl",
     },
   ];
   return (

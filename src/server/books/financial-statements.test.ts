@@ -320,8 +320,8 @@ test("P6-1: hand-computed P&L / BS / CF + gates + quarterly sum", async (t) => {
       `INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
       [RAJ, company.clientId],
     );
-    await closeBooksYearToRE(LAYLA, company.clientId, jun);
-    await postBooksYearEndClose(RAJ, company.clientId, 2025);
+    const prepared = await closeBooksYearToRE(LAYLA, company.clientId, jun);
+    await postBooksYearEndClose(RAJ, company.clientId, prepared.fiscalYear);
 
     const afterClose = await booksProfitAndLoss(OMAR, company.clientId, {
       mode: "monthly",

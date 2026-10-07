@@ -24,6 +24,8 @@ test("RPT-1: amount format — blank zero, brackets for negatives on statements"
   assert.equal(formatReportAmount(123456), "1,234.56");
   assert.equal(formatReportAmount(-123456, { brackets: true }), "(1,234.56)");
   assert.equal(formatReportAmount(-5), "-0.05");
+  assert.equal(formatReportAmount(150_000, { abbreviate: true }), "1.5K");
+  assert.equal(formatReportAmount(-250_000_000, { abbreviate: true, brackets: true }), "(2.5M)");
 });
 
 test("RPT-1: monthly column split, clipped to the range, across a year end", () => {
