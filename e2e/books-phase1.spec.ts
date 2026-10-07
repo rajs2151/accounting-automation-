@@ -221,9 +221,17 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   }
   await expect(search).toBeFocused({ timeout: 5000 });
 
+  await page.goto("/books/inbox");
+  await page.getByTestId("inbox-upload").click();
+  await expect(page.getByTestId("upload-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+
   await page.goto("/books/sales");
   await expect(page.getByRole("heading", { name: "Sales invoices" })).toBeVisible();
   await expect(page.getByText("Upload Invoices")).toBeVisible();
+  await page.getByTestId("sales-upload").click();
+  await expect(page.getByTestId("upload-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /Record manually/i })).toBeVisible();
   await expect(page.getByTestId("sales-uploads-tab")).toBeVisible();
   await expect(page.getByTestId("sales-issue-date")).toBeVisible();
@@ -231,6 +239,9 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await page.goto("/books/purchases");
   await expect(page.getByRole("heading", { name: "Purchase bills" })).toBeVisible();
   await expect(page.getByTestId("purchase-upload")).toBeVisible();
+  await page.getByTestId("purchase-upload").click();
+  await expect(page.getByTestId("upload-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
   await expect(page.getByText("(fils)")).toHaveCount(0);
   await expect(page.getByTestId("purchase-uploads-tab")).toBeVisible();
   await expect(page.getByTestId("purchase-issue-date")).toBeVisible();
@@ -344,6 +355,8 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await expect(page.getByTestId("totals-balance-badge")).toContainText(/Balanced/i);
   await expect(page.getByTestId("vat-by-code-SR")).toContainText(/SR 5% on 100\.00 = 5\.00/);
   await expect(page.getByTestId("confirm-fields")).toBeVisible();
+  await expect(page.getByTestId("review-approve-next")).toBeVisible();
+  await expect(page.getByTestId("review-back")).toBeVisible();
   await savePhase1("review-split-view.png", await page.screenshot({ fullPage: true }));
   await savePhase1("review-uploaded-invoice-02.png", await page.screenshot({ fullPage: true }));
 
@@ -687,8 +700,14 @@ test("phase1: upload bank statement from /books/statements", async ({ page }) =>
   fs.mkdirSync(path.dirname(tmpPdf), { recursive: true });
   fs.writeFileSync(tmpPdf, bytes);
 
-  // Prove the Upload statement control (not a bare API call).
-  await page.getByTestId("statement-upload").locator("input[type=file]").setInputFiles(tmpPdf);
+  // Prove the shared Upload dialog (not a bare API call).
+  await page.getByTestId("statement-upload").click();
+  await expect(page.getByTestId("upload-dialog")).toBeVisible();
+  await page.getByTestId("upload-dialog-input").setInputFiles(tmpPdf);
+  await expect(page.getByTestId("upload-file-list")).toContainText(/Uploaded/i, {
+    timeout: 20000,
+  });
+  await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText("bank_a-").or(page.getByText("bank_a.pdf"))).toBeVisible({
     timeout: 20000,
   });

@@ -28,6 +28,7 @@ import {
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
 import { CompanySwitcher } from "@/components/books/company-switcher";
 import { BooksIssuesBadge } from "@/components/books/issues-badge";
+import { UploadDialog } from "@/components/books/upload-dialog";
 import { SecurityBannerChip } from "@/components/security-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -115,13 +116,22 @@ function periodDotClass(status: string) {
 function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { periods, periodsLoaded, periodId, setPeriodId, globalSearch, setGlobalSearch } = useBooksShell();
+  const {
+    periods,
+    periodsLoaded,
+    periodId,
+    setPeriodId,
+    globalSearch,
+    setGlobalSearch,
+    sidebarCollapsed: collapsed,
+    setSidebarCollapsed: setCollapsed,
+  } = useBooksShell();
   const searchRef = useRef<HTMLInputElement>(null);
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [language, setLanguage] = useState<"EN" | "AR">("EN");
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const isLogin = pathname === "/login";
   const isBooks = pathname.startsWith("/books");
@@ -259,7 +269,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           variant="outline"
           className="w-full justify-start gap-2"
           data-testid="shell-global-upload"
-          onClick={() => router.push("/books/inbox?upload=1")}
+          onClick={() => setUploadOpen(true)}
         >
           <Upload className="size-4" />
           Upload
@@ -272,7 +282,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           className="mx-auto flex"
           title="Upload"
           data-testid="shell-global-upload"
-          onClick={() => router.push("/books/inbox?upload=1")}
+          onClick={() => setUploadOpen(true)}
         >
           <Upload className="size-4" />
         </Button>
@@ -280,7 +290,11 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     </div>
   );
 
-  const firstName = directory?.me?.name?.split(/\s+/)[0];
+  const meName = directory?.me?.name?.trim() || "";
+  const looksLikeId = /^[0-9a-f-]{20,}$/i.test(meName);
+  const firstName = looksLikeId
+    ? directory?.me?.role || "there"
+    : meName.split(/\s+/)[0] || "there";
   const currentPeriod = periods.find((p) => p.id === periodId);
 
   if (isLogin) {
@@ -469,7 +483,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
             key={`${directory?.me?.id || ""}:${directory?.clientId || ""}`}
             className={cn(
               "min-h-0 min-w-0 flex-1",
-              pathname.match(/^\/books\/inbox\/[^/]+$/)
+              pathname.match(/^\/books\/(inbox|documents|statements)\/[^/]+$/)
                 ? "flex flex-col overflow-hidden p-0"
                 : "overflow-y-auto px-4 py-5 md:px-6 lg:px-8",
             )}
@@ -498,6 +512,8 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           </div>
         </SheetContent>
       </Sheet>
+
+      <UploadDialog open={uploadOpen} onOpenChange={setUploadOpen} />
     </div>
   );
 }
@@ -523,10 +539,15 @@ function WorkingAsUser({
 }) {
   if (!directory?.me) return null;
 
+  const items = Object.fromEntries(
+    directory.users.map((u) => [u.id, collapsed ? u.name : `${u.name} · ${u.role}`]),
+  );
+
   if (collapsed) {
     return (
       <Select
         value={directory.me.id}
+        items={items}
         onValueChange={(uid) => {
           if (uid) onSwitch(uid, clientId);
         }}
@@ -537,7 +558,7 @@ function WorkingAsUser({
         <SelectContent>
           {directory.users.map((user) => (
             <SelectItem key={user.id} value={user.id}>
-              {user.name.slice(0, 8)}
+              {user.name}
             </SelectItem>
           ))}
         </SelectContent>
@@ -550,6 +571,7 @@ function WorkingAsUser({
       <span className="block text-xs font-medium text-muted-foreground">Working as</span>
       <Select
         value={directory.me.id}
+        items={items}
         onValueChange={(uid) => {
           if (!uid) return;
           onSwitch(uid, clientId);

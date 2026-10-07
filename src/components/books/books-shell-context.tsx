@@ -12,6 +12,9 @@ type BooksShellContextValue = {
   setPeriodId: (id: string) => void;
   globalSearch: string;
   setGlobalSearch: (q: string) => void;
+  /** App sidebar collapsed (icon rail). Review page can force-collapse. */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (v: boolean) => void;
 };
 
 const BooksShellContext = createContext<BooksShellContextValue | null>(null);
@@ -21,6 +24,7 @@ export function BooksShellProvider({ children }: { children: ReactNode }) {
   const [periodsLoaded, setPeriodsLoaded] = useState(false);
   const [periodId, setPeriodId] = useState("");
   const [globalSearch, setGlobalSearch] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     fetch("/api/books/periods")
@@ -41,8 +45,17 @@ export function BooksShellProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ periods, periodsLoaded, periodId, setPeriodId, globalSearch, setGlobalSearch }),
-    [periods, periodsLoaded, periodId, globalSearch],
+    () => ({
+      periods,
+      periodsLoaded,
+      periodId,
+      setPeriodId,
+      globalSearch,
+      setGlobalSearch,
+      sidebarCollapsed,
+      setSidebarCollapsed,
+    }),
+    [periods, periodsLoaded, periodId, globalSearch, sidebarCollapsed],
   );
 
   return <BooksShellContext.Provider value={value}>{children}</BooksShellContext.Provider>;
@@ -58,6 +71,8 @@ export function useBooksShell() {
       setPeriodId: () => undefined,
       globalSearch: "",
       setGlobalSearch: () => undefined,
+      sidebarCollapsed: false,
+      setSidebarCollapsed: () => undefined,
     };
   }
   return ctx;

@@ -13,7 +13,7 @@ import { DocumentReviewPanels } from "@/components/books/document-review-panels"
 import { OpenItemKpiTiles } from "@/components/books/open-item-kpis";
 import { rowOpenProps } from "@/components/books/table-peek";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
-import { showUploadFeedback } from "@/components/books/upload-feedback";
+import { UploadDialog } from "@/components/books/upload-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -51,7 +51,17 @@ type InboxRow = {
   error: string | null;
   detectedType: string | null;
   intendedType?: string | null;
+  byteSize?: number;
+  uploadedByName?: string | null;
+  createdAt?: string;
 };
+
+function formatBytes(n: number | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 type Tab = "all" | "needs_review" | "uploads";
 
@@ -71,6 +81,7 @@ export default function SalesPage() {
   const [uploads, setUploads] = useState<InboxRow[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [myRole, setMyRole] = useState("");
   // Approving posts the document: approver/admin only, and never the preparer (server-enforced).
@@ -144,18 +155,12 @@ export default function SalesPage() {
     return base.filter((r) => r.status === statusFilter);
   }, [tab, rows, needsReviewDocs, statusFilter]);
 
-  async function onUpload(files: FileList | null) {
-    if (!files?.length) return;
-    const body = new FormData();
-    for (const f of Array.from(files)) body.append("files", f);
-    body.append("intendedType", "sales_invoice");
-    const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
-    const data = await res.json().catch(() => ({}));
-    showUploadFeedback(res.ok, data);
-    if (!res.ok) return;
-    setTab("uploads");
-    void reload();
-  }
+  useEffect(() => {
+    const busy = uploads.some((u) => u.status === "queued" || u.status === "extracting");
+    if (!busy) return;
+    const t = window.setInterval(() => void reload(), 3000);
+    return () => window.clearInterval(t);
+  }, [uploads, reload]);
 
   async function retry(id: string) {
     const res = await fetch(`/api/books/inbox/${id}/retry`, {
@@ -322,19 +327,9 @@ export default function SalesPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <label
-            className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
-            data-testid="sales-upload"
-          >
+          <Button data-testid="sales-upload" onClick={() => setUploadOpen(true)}>
             Upload Invoices
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
-              className="hidden"
-              onChange={(e) => void onUpload(e.target.files)}
-            />
-          </label>
+          </Button>
           <Button variant="outline" onClick={() => setManualOpen((v) => !v)}>
             Record manually
           </Button>
@@ -346,14 +341,14 @@ export default function SalesPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} data-testid="sales-tabs">
           <TabsList>
-            <TabsTrigger value="all" data-testid="sales-tab-all">
-              All ({rows.length})
+            <TabsTrigger value="uploads" data-testid="sales-uploads-tab">
+              Uploads ({uploads.length})
             </TabsTrigger>
             <TabsTrigger value="needs_review" data-testid="sales-tab-needs-review">
               Needs Review ({needsReviewCount})
             </TabsTrigger>
-            <TabsTrigger value="uploads" data-testid="sales-uploads-tab">
-              Uploads ({uploads.length})
+            <TabsTrigger value="all" data-testid="sales-tab-all">
+              All ({rows.length})
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -441,8 +436,11 @@ export default function SalesPage() {
             <tr className="text-left text-muted-foreground">
               <th className="w-8 py-2" />
               <th>File</th>
-              <th>Status</th>
+              <th>Size</th>
               <th>Type</th>
+              <th>Uploaded</th>
+              <th>By</th>
+              <th>Status</th>
               <th />
             </tr>
           </thead>
@@ -469,12 +467,20 @@ export default function SalesPage() {
                     <FileText className="size-4 shrink-0 text-muted-foreground" />
                     {u.filename}
                   </span>
+                  {u.status === "failed" && u.error ? (
+                    <div className="mt-0.5 text-xs text-destructive">{u.error}</div>
+                  ) : null}
                 </td>
+                <td className="tabular-nums text-muted-foreground">{formatBytes(u.byteSize)}</td>
+                <td>
+                  <StatusBadge meta={docTypeLabel(u.intendedType || u.detectedType)} />
+                </td>
+                <td className="text-muted-foreground">
+                  {u.createdAt ? formatDateUae(String(u.createdAt).slice(0, 10)) : "—"}
+                </td>
+                <td className="text-muted-foreground">{u.uploadedByName || "—"}</td>
                 <td data-testid={`upload-status-${u.id}`}>
                   <StatusBadge meta={inboxStatusLabel(u.status, u.error === "duplicate_file")} />
-                </td>
-                <td>
-                  <StatusBadge meta={docTypeLabel(u.detectedType)} />
                 </td>
                 <td className="text-right" onClick={(e) => e.stopPropagation()}>
                   <RowKebabMenu data-testid={`upload-row-menu-${u.id}`}>
@@ -489,7 +495,7 @@ export default function SalesPage() {
             ))}
             {!uploads.length ? (
               <tr>
-                <td colSpan={5} className="py-6 text-muted-foreground">
+                <td colSpan={8} className="py-6 text-muted-foreground">
                   No uploads yet — use Upload Invoices.
                 </td>
               </tr>
@@ -646,7 +652,14 @@ export default function SalesPage() {
                     r.outstandingMinor == null ? null : Number(r.outstandingMinor);
                   const gross = Number(r.grossMinor || 0);
                   return (
-                    <tr key={r.id} className="border-t border-border" {...rowOpenProps(() => setReviewId(r.id))}>
+                    <tr
+                      key={r.id}
+                      className="border-t border-border"
+                      {...rowOpenProps(() => {
+                        if (r.status === "posted" || r.status === "void") setReviewId(r.id);
+                        else window.location.href = `/books/documents/${r.id}`;
+                      })}
+                    >
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
@@ -689,7 +702,14 @@ export default function SalesPage() {
                         </div>
                       </td>
                       <td className="space-x-2 px-3 py-2">
-                        <Button size="sm" variant="outline" onClick={() => setReviewId(r.id)}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            if (r.status === "posted" || r.status === "void") setReviewId(r.id);
+                            else window.location.href = `/books/documents/${r.id}`;
+                          }}
+                        >
                           Review
                         </Button>
                         {r.status === "draft" ? (
@@ -741,6 +761,16 @@ export default function SalesPage() {
           </div>
         ) : null}
       </BooksSideDrawer>
+
+      <UploadDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        defaultDocType="sales_invoice"
+        onUploaded={() => {
+          setTab("uploads");
+          void reload();
+        }}
+      />
     </div>
   );
 }

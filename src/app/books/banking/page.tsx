@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { CellAmount } from "@/components/books/cells";
 import { StatusBadge } from "@/components/books/status-badge";
-import { showUploadFeedback } from "@/components/books/upload-feedback";
+import { UploadDialog } from "@/components/books/upload-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -108,8 +108,7 @@ export default function BankingPage() {
   const [setupId, setSetupId] = useState<string | null>(null);
   const [bankName, setBankName] = useState("");
   const [iban, setIban] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-  const rowFileRef = useRef<HTMLInputElement>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForId, setUploadForId] = useState<string | null>(null);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [periodId, setPeriodId] = useState("");
@@ -175,25 +174,6 @@ export default function BankingPage() {
     void reload();
   }, [reload]);
 
-  async function onUpload(files: FileList | null, accountId: string | null) {
-    if (!files?.length) return;
-    if (accountId) {
-      const row = rows.find((r) => r.id === accountId);
-      if (row && !row.setupOk) {
-        toast.error("Set up bank name / IBAN before uploading to this account");
-        return;
-      }
-    }
-    const body = new FormData();
-    for (const f of Array.from(files)) body.append("files", f);
-    body.append("userDocType", "bank_statement");
-    if (accountId) body.append("accountId", accountId);
-    const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
-    const data = await res.json().catch(() => ({}));
-    showUploadFeedback(res.ok, data);
-    if (res.ok) void reload();
-  }
-
   async function saveSetup() {
     if (!setupId) return;
     const res = await fetch(`/api/books/bank-accounts/${setupId}`, {
@@ -250,21 +230,15 @@ export default function BankingPage() {
           >
             Download sample sheet
           </a>
-          <label className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground">
+          <Button
+            data-testid="banking-upload"
+            onClick={() => {
+              setUploadForId(null);
+              setUploadOpen(true);
+            }}
+          >
             Upload statement
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
-              className="hidden"
-              data-testid="banking-upload"
-              onChange={(e) => {
-                void onUpload(e.target.files, null);
-                e.target.value = "";
-              }}
-            />
-          </label>
+          </Button>
           <Link
             href="/books/statements"
             className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
@@ -417,7 +391,7 @@ export default function BankingPage() {
                       data-testid={`banking-upload-${r.code}`}
                       onClick={() => {
                         setUploadForId(r.id);
-                        rowFileRef.current?.click();
+                        setUploadOpen(true);
                       }}
                     >
                       Upload
@@ -510,18 +484,15 @@ export default function BankingPage() {
         </div>
       ) : null}
 
-      <input
-        ref={rowFileRef}
-        type="file"
-        multiple
-        accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
-        className="hidden"
-        data-testid="banking-row-upload-input"
-        onChange={(e) => {
-          void onUpload(e.target.files, uploadForId);
-          e.target.value = "";
-          setUploadForId(null);
+      <UploadDialog
+        open={uploadOpen}
+        onOpenChange={(v) => {
+          setUploadOpen(v);
+          if (!v) setUploadForId(null);
         }}
+        defaultDocType="bank_statement"
+        intendedAccountId={uploadForId}
+        onUploaded={() => void reload()}
       />
     </div>
   );

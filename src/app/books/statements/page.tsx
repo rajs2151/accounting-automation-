@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/books/status-badge";
 import { rowOpenProps } from "@/components/books/table-peek";
-import { showUploadFeedback } from "@/components/books/upload-feedback";
+import { UploadDialog } from "@/components/books/upload-dialog";
 import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
@@ -51,10 +51,10 @@ function bankLabel(r: Row): string {
 export default function StatementsListPage() {
   const router = useRouter();
   const [rows, setRows] = useState<Row[]>([]);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [csvText, setCsvText] = useState(
     "id,Type,Amount,Fee,Net,Currency,Created (UTC),Description\ntxn_1,charge,100.00,3.20,96.80,aed,2026-05-05 10:00:00,Payment\n",
   );
-  const fileRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(async () => {
     const data = await fetch("/api/books/statements").then((r) => r.json());
@@ -72,19 +72,6 @@ export default function StatementsListPage() {
     const t = setInterval(() => void reload(), 2500);
     return () => clearInterval(t);
   }, [rows, reload]);
-
-  async function onUpload(files: FileList | null) {
-    if (!files?.length) return;
-    const body = new FormData();
-    for (const f of Array.from(files)) body.append("files", f);
-    body.append("userDocType", "bank_statement");
-    const res = await fetch("/api/books/inbox/upload", { method: "POST", body });
-    const data = await res.json().catch(() => ({}));
-    showUploadFeedback(res.ok, data);
-    if (fileRef.current) fileRef.current.value = "";
-    if (!res.ok) return;
-    void reload();
-  }
 
   async function ingestStripe() {
     await fetch("/api/books/statements/csv", {
@@ -127,20 +114,9 @@ export default function StatementsListPage() {
           >
             Download sample sheet
           </a>
-          <label
-            className="inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
-            data-testid="statement-upload"
-          >
+          <Button data-testid="statement-upload" onClick={() => setUploadOpen(true)}>
             Upload statement
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
-              className="hidden"
-              onChange={(e) => void onUpload(e.target.files)}
-            />
-          </label>
+          </Button>
         </div>
       </div>
 
@@ -239,6 +215,13 @@ export default function StatementsListPage() {
         />
         <Button onClick={() => void ingestStripe()}>Ingest Stripe CSV preset</Button>
       </div>
+
+      <UploadDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        defaultDocType="bank_statement"
+        onUploaded={() => void reload()}
+      />
     </div>
   );
 }

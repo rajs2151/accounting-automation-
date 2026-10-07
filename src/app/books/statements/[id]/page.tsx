@@ -1,11 +1,13 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
+import { PdfPagePreview } from "@/components/books/pdf-page-preview";
+import { useBooksShell } from "@/components/books/books-shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +27,9 @@ import {
 } from "@/lib/iban-display";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 import { cn } from "@/lib/utils";
+
+const STMT_SPLIT_KEY = "arnibooks.statement.previewPct";
+const STMT_DEFAULT_PCT = 45;
 
 type Line = {
   id?: string;
@@ -275,11 +280,17 @@ function ClickEditAmount({
 export default function StatementReviewPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { setSidebarCollapsed } = useBooksShell();
   const [list, setList] = useState<ListRow[]>([]);
   const [sections, setSections] = useState<Record<string, SectionState>>({});
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [currencyFilter, setCurrencyFilter] = useState<string>("all");
   const [logsOpen, setLogsOpen] = useState(false);
+  const [sourceFileUrl, setSourceFileUrl] = useState<string | null>(null);
+  const [previewPct, setPreviewPct] = useState(STMT_DEFAULT_PCT);
+  const [wideLayout, setWideLayout] = useState(false);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
   const [logs, setLogs] = useState<{
     filename: string | null;
     uploadedBy: string | null;
@@ -290,6 +301,30 @@ export default function StatementReviewPage() {
     error: string | null;
     events: Array<{ id: string; actor: string | null; action: string; at: string }>;
   } | null>(null);
+
+  useEffect(() => {
+    setSidebarCollapsed(true);
+    return () => setSidebarCollapsed(false);
+  }, [setSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STMT_SPLIT_KEY);
+      if (!raw) return;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 30 && n <= 70) setPreviewPct(n);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setWideLayout(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const reloadList = useCallback(async () => {
     const rows = await fetch("/api/books/statements").then((r) => r.json());
@@ -347,6 +382,28 @@ export default function StatementReviewPage() {
   }, [reload]);
 
   const currentMeta = sections[params.id]?.meta;
+
+  useEffect(() => {
+    const inboxId =
+      currentMeta?.inboxItemId || list.find((r) => r.id === params.id)?.inboxItemId || null;
+    if (!inboxId) {
+      setSourceFileUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/api/books/inbox/${inboxId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        setSourceFileUrl(typeof d.fileUrl === "string" ? d.fileUrl : null);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceFileUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentMeta?.inboxItemId, list, params.id]);
   const siblingIds = useMemo(() => {
     const fileId = currentMeta?.fileId || list.find((r) => r.id === params.id)?.fileId || null;
     const inboxItemId =
@@ -462,8 +519,14 @@ export default function StatementReviewPage() {
   }
 
   return (
-    <div className="space-y-4 py-4" data-testid="statement-review">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div
+      className={cn(
+        "flex min-h-0 flex-col",
+        sourceFileUrl ? "h-full overflow-hidden" : "space-y-4 py-4",
+      )}
+      data-testid="statement-review"
+    >
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <h1 className="text-2xl font-semibold">Statement review</h1>
         <Button
           type="button"
@@ -475,6 +538,71 @@ export default function StatementReviewPage() {
           {logsOpen ? "Hide statement logs" : "Statement logs"}
         </Button>
       </div>
+
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          sourceFileUrl ? "flex flex-col overflow-hidden lg:flex-row" : "space-y-4 px-4 py-4",
+        )}
+        ref={splitRef}
+        data-testid="statement-workspace"
+      >
+        {sourceFileUrl ? (
+          <>
+            <div
+              className="min-h-0 min-w-0 overflow-hidden max-lg:h-[40vh] max-lg:shrink-0"
+              style={
+                wideLayout
+                  ? { flexBasis: `${previewPct}%`, flexGrow: 0, flexShrink: 0 }
+                  : undefined
+              }
+              data-testid="statement-source-pane"
+            >
+              <PdfPagePreview
+                fileUrl={sourceFileUrl}
+                boxes={[]}
+                activeLabel={null}
+                className="h-full"
+              />
+            </div>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-valuemin={30}
+              aria-valuemax={70}
+              aria-valuenow={Math.round(previewPct)}
+              className="hidden w-1.5 shrink-0 cursor-col-resize touch-none bg-border hover:bg-primary/40 lg:block"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                draggingRef.current = true;
+                (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (!draggingRef.current || !splitRef.current) return;
+                const rect = splitRef.current.getBoundingClientRect();
+                if (rect.width < 1) return;
+                const pct = ((e.clientX - rect.left) / rect.width) * 100;
+                setPreviewPct(Math.min(70, Math.max(30, pct)));
+              }}
+              onPointerUp={() => {
+                if (!draggingRef.current) return;
+                draggingRef.current = false;
+                try {
+                  localStorage.setItem(STMT_SPLIT_KEY, String(Math.round(previewPct)));
+                } catch {
+                  /* ignore */
+                }
+              }}
+            />
+          </>
+        ) : null}
+
+        <div
+          className={cn(
+            "min-h-0 min-w-0 space-y-4",
+            sourceFileUrl ? "flex-1 overflow-y-auto px-4 py-4" : "",
+          )}
+        >
 
       {logsOpen && logs ? (
         <div
@@ -873,6 +1001,8 @@ export default function StatementReviewPage() {
             </section>
           );
         })}
+      </div>
+        </div>
       </div>
     </div>
   );

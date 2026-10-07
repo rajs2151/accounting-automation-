@@ -84,9 +84,12 @@ export async function listBooksInbox(
               i.intended_type AS "intendedType",
               i.classification_confidence AS "classificationConfidence",
               i.status, i.error, i.created_at AS "createdAt",
-              f.filename, f.sha256, f.content_type AS "contentType"
+              f.filename, f.sha256, f.content_type AS "contentType",
+              f.byte_size AS "byteSize",
+              u.name AS "uploadedByName"
        FROM books_inbox_items i
        JOIN books_files f ON f.id = i.file_id
+       LEFT JOIN users u ON u.id = f.uploaded_by
        WHERE ($1::boolean AND i.client_id IS NULL)
           OR (NOT $1::boolean AND i.client_id = $2)
        ORDER BY i.created_at DESC

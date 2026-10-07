@@ -3,7 +3,7 @@
 import { ChevronLeft, ChevronRight, Info, MoreHorizontal } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { DocumentReviewPanels } from "@/components/books/document-review-panels";
@@ -19,12 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { apiErrorMessage } from "@/lib/api-error";
 import { displayToMinor, formatMinor } from "@/lib/money";
 import type { FieldSource, PageBBox } from "@/lib/review-bbox";
@@ -45,9 +40,19 @@ import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const SPLITTER_KEY = "arnibooks.review.previewPct";
-const DEFAULT_PREVIEW_PCT = 55;
+const DEFAULT_PREVIEW_PCT = 45;
 const MIN_PREVIEW_PCT = 30;
 const MAX_PREVIEW_PCT = 70;
+
+const FLAG_FIELD_HINT: Record<string, string> = {
+  company_not_on_invoice: "company_match",
+  company_side_unknown: "company_match",
+  company_mismatch: "company_match",
+  low_confidence_classification: "doc_type",
+  no_rule_match: "doc_type",
+  unassigned: "supplier_name",
+  totals_mismatch: "grand_total",
+};
 
 type FieldState = ReviewFieldState & { bbox?: PageBBox; source?: FieldSource };
 
@@ -144,10 +149,12 @@ function FieldGroup({
   if (!present.length) return null;
   return (
     <div className="space-y-2">
-      <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-        {eyebrow}
-      </p>
-      <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+      {eyebrow ? (
+        <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+          {eyebrow}
+        </p>
+      ) : null}
+      <div className="grid grid-cols-1 gap-x-3 gap-y-3 sm:grid-cols-2 min-[1600px]:grid-cols-3">
         {present.map((key) => {
           const field = fields[key]!;
           const tone = fieldConfidenceTone({ fieldConfidence: field.confidence });
@@ -173,11 +180,31 @@ function FieldGroup({
   );
 }
 
+function ReviewCard({
+  title,
+  children,
+  testId,
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <section
+      className="space-y-3 rounded-lg border border-border bg-card p-4"
+      data-testid={testId}
+    >
+      <h2 className="text-sm font-semibold tracking-wide text-foreground">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
 /** Split-view review: uploaded file pages + read-first fields (UI-3). */
 export default function InboxReviewPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const { periodId } = useBooksShell();
+  const { periodId, setSidebarCollapsed } = useBooksShell();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [review, setReview] = useState<ReviewPayload | null>(null);
@@ -219,6 +246,11 @@ export default function InboxReviewPage() {
       /* ignore */
     }
   }, []);
+
+  useEffect(() => {
+    setSidebarCollapsed(true);
+    return () => setSidebarCollapsed(false);
+  }, [setSidebarCollapsed]);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -356,6 +388,11 @@ export default function InboxReviewPage() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void approveAndNext();
+        return;
+      }
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if ((e.target as HTMLElement | null)?.isContentEditable) return;
@@ -372,7 +409,8 @@ export default function InboxReviewPage() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [nav.prevId, nav.nextId, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav.prevId, nav.nextId, router, documentId, partyId, periodId, lineItems]);
 
   function resolveConfirmDocType(): "sales_invoice" | "purchase_bill" {
     const raw = String(review?.detectedType || fields.doc_type?.value || "").toLowerCase();
@@ -382,19 +420,20 @@ export default function InboxReviewPage() {
     return "sales_invoice";
   }
 
-  async function confirmFields() {
+  async function confirmFields(): Promise<string | null> {
+    if (documentId) return documentId;
     if (!partyId || !periodId) {
       toast.error(apiErrorMessage({ error: "party_and_period_required" }));
-      return;
+      return null;
     }
     const missingVat = lineItems.filter((l) => !l.vatCode?.trim());
     if (missingVat.length) {
       toast.error("Pick a VAT code for every line before confirm (do not assume 5%).");
-      return;
+      return null;
     }
     if (lineItems.some((l) => l.netMinor == null)) {
       toast.error("Enter a net amount for every line before confirm.");
-      return;
+      return null;
     }
     const res = await fetch(`/api/books/inbox/${params.id}/confirm`, {
       method: "POST",
@@ -414,11 +453,36 @@ export default function InboxReviewPage() {
     const data = await res.json();
     if (!res.ok) {
       toast.error(apiErrorMessage(data));
-      return;
+      return null;
     }
     toast.success("Draft document created");
-    setDocumentId(String(data.documentId));
+    const id = String(data.documentId);
+    setDocumentId(id);
     void load();
+    return id;
+  }
+
+  async function approveAndNext() {
+    const docId = await confirmFields();
+    if (!docId) return;
+    const res = await fetch(`/api/books/documents/${docId}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(apiErrorMessage(data, "approve_failed"));
+      void load();
+      return;
+    }
+    toast.success(data.entryNo ? `Posted ${data.entryNo}` : "Posted");
+    if (nav.nextId) {
+      router.push(`/books/inbox/${nav.nextId}`);
+    } else {
+      toast.success("Queue complete");
+      void load();
+    }
   }
 
   async function updatePartyFromExtraction() {
@@ -625,9 +689,20 @@ export default function InboxReviewPage() {
   ];
   const displayFlags = splitValidationFlags(mergedFlagList);
 
+  const flagCount = displayFlags.badges.length;
   const headerBar = (
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-3 py-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <Link
+          href="/books/inbox"
+          className="inline-flex h-8 items-center rounded-lg px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+          data-testid="review-back"
+        >
+          ‹ Back
+        </Link>
+        <h1 className="max-w-[min(40vw,28rem)] truncate text-base font-semibold" title={review.filename}>
+          {review.filename}
+        </h1>
         <div className="flex items-center gap-1">
           <Button
             type="button"
@@ -640,6 +715,18 @@ export default function InboxReviewPage() {
           >
             <ChevronLeft className="size-4" />
           </Button>
+          {queueLabel ? (
+            <span
+              className="text-sm text-muted-foreground tabular-nums"
+              data-testid="review-queue-position"
+            >
+              {queueLabel}
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground" data-testid="review-queue-position">
+              {typeMeta.label}
+            </span>
+          )}
           <Button
             type="button"
             size="icon-sm"
@@ -652,15 +739,6 @@ export default function InboxReviewPage() {
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <h1 className="text-xl font-semibold">{typeMeta.label}</h1>
-        {queueLabel ? (
-          <span
-            className="text-sm text-muted-foreground tabular-nums"
-            data-testid="review-queue-position"
-          >
-            {queueLabel}
-          </span>
-        ) : null}
         <StatusBadge meta={statusMeta} data-testid="review-status-badge" />
         {newSupplier ? (
           <StatusBadge
@@ -668,6 +746,51 @@ export default function InboxReviewPage() {
             data-testid="new-supplier-badge"
           />
         ) : null}
+        {flagCount > 0 || displayFlags.technical.length ? (
+          <Popover>
+            <PopoverTrigger
+              type="button"
+              data-testid="validation-flags"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
+            >
+              <Info className="size-3.5" />
+              {flagCount} thing{flagCount === 1 ? "" : "s"} to check
+            </PopoverTrigger>
+            <PopoverContent className="w-80" align="start">
+              <ul className="space-y-1.5 text-sm" data-testid="flags-popover-list">
+                {displayFlags.badges.map((b) => {
+                  const fieldKey = FLAG_FIELD_HINT[b.key];
+                  return (
+                    <li key={b.key}>
+                      <button
+                        type="button"
+                        className="text-start text-primary underline-offset-2 hover:underline"
+                        data-testid={`flag-badge-${b.key}`}
+                        onClick={() => {
+                          if (fieldKey) setActiveField(fieldKey);
+                        }}
+                      >
+                        {b.label}
+                      </button>
+                    </li>
+                  );
+                })}
+                {displayFlags.technical.length ? (
+                  <li
+                    className="pt-1 font-mono text-[11px] text-muted-foreground"
+                    data-testid="validation-flags-tech"
+                  >
+                    {displayFlags.technical.join(", ")}
+                  </li>
+                ) : null}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <span className="text-sm text-emerald-700" data-testid="validation-flags">
+            Amounts look balanced
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <DropdownMenu>
@@ -688,64 +811,27 @@ export default function InboxReviewPage() {
             <DropdownMenuItem data-testid="review-retry" onClick={() => void retry()}>
               Retry extract
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => toast.success("Saved as profile (stub)")}>
-              Save as profile
-            </DropdownMenuItem>
             <DropdownMenuItem
-              render={<Link href="/books/statements" data-testid="review-statement-link" />}
+              onClick={() => {
+                toast.message("Discard keeps the file in storage; remove from the Uploads list later.");
+                router.push("/books/inbox");
+              }}
             >
-              Statement review
+              Discard
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {!documentId ? (
-          <Button onClick={() => void confirmFields()} data-testid="confirm-fields">
-            Confirm fields
-          </Button>
-        ) : null}
+        <Button
+          variant="outline"
+          onClick={() => void confirmFields()}
+          data-testid="confirm-fields"
+        >
+          Save draft
+        </Button>
+        <Button onClick={() => void approveAndNext()} data-testid="review-approve-next">
+          Approve &amp; next
+        </Button>
       </div>
-    </div>
-  );
-
-  const flagsBar = (
-    <div
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2"
-      data-testid="validation-flags"
-    >
-      {displayFlags.badges.length || displayFlags.technical.length ? (
-        <TooltipProvider>
-          {displayFlags.badges.map((b) => (
-            <StatusBadge
-              key={b.key}
-              meta={{ label: b.label, tone: "warning" }}
-              data-testid={`flag-badge-${b.key}`}
-            />
-          ))}
-          {displayFlags.technical.length ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
-                    aria-label="Technical extraction details"
-                    data-testid="validation-flags-tech"
-                  >
-                    <Info className="size-3.5" />
-                  </button>
-                }
-              />
-              <TooltipContent>
-                <span className="font-mono text-[11px]">{displayFlags.technical.join(", ")}</span>
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
-        </TooltipProvider>
-      ) : (
-        <span className="text-sm text-emerald-700">
-          Amounts balanced (subtotal + VAT = grand total)
-        </span>
-      )}
     </div>
   );
 
@@ -755,7 +841,6 @@ export default function InboxReviewPage() {
       data-testid="review-split-view"
     >
       {headerBar}
-      {flagsBar}
 
       <div
         ref={splitRef}
@@ -811,32 +896,92 @@ export default function InboxReviewPage() {
           data-testid="review-fields-panel"
         >
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-            <FieldGroup
-              eyebrow="DOCUMENT"
-              keys={DOCUMENT_FIELDS}
-              fields={fields}
-              activeField={activeField}
-              setActiveField={setActiveField}
-              onFieldChange={onFieldChange}
-            />
-            <FieldGroup
-              eyebrow="PARTY"
-              keys={PARTY_FIELDS}
-              fields={fields}
-              activeField={activeField}
-              setActiveField={setActiveField}
-              onFieldChange={onFieldChange}
-            />
-            <FieldGroup
-              eyebrow="AMOUNTS"
-              keys={AMOUNT_FIELDS}
-              fields={fields}
-              activeField={activeField}
-              setActiveField={setActiveField}
-              onFieldChange={onFieldChange}
-            />
+            <ReviewCard title="Party" testId="review-card-party">
+              <FieldGroup
+                eyebrow=""
+                keys={PARTY_FIELDS}
+                fields={fields}
+                activeField={activeField}
+                setActiveField={setActiveField}
+                onFieldChange={onFieldChange}
+              />
+              {!documentId ? (
+                <div className="space-y-2 border-t border-border pt-3">
+                  <Label className="text-xs">Party for draft</Label>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={partyId}
+                    onChange={(e) => {
+                      setPartyId(e.target.value);
+                      setMismatchKeep(false);
+                    }}
+                    data-testid="confirm-party"
+                  >
+                    {parties.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {mismatchDiffs.length ? (
+                    <div
+                      className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"
+                      data-testid="party-mismatch-banner"
+                    >
+                      <p className="text-sm font-semibold text-amber-900">Party mismatch</p>
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-amber-900/80">
+                            <th className="py-1">Field</th>
+                            <th>Extracted</th>
+                            <th>Master</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mismatchDiffs.map((d) => (
+                            <tr key={d.field} className="border-t border-amber-200">
+                              <td className="py-1 capitalize">{d.field}</td>
+                              <td data-testid={`mismatch-extracted-${d.field}`}>{d.extracted}</td>
+                              <td data-testid={`mismatch-master-${d.field}`}>{d.master}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          data-testid="party-mismatch-update"
+                          onClick={() => void updatePartyFromExtraction()}
+                        >
+                          Update party
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid="party-mismatch-keep"
+                          onClick={() => setMismatchKeep(true)}
+                        >
+                          Keep master
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </ReviewCard>
 
-            <div>
+            <ReviewCard title="Document" testId="review-card-document">
+              <FieldGroup
+                eyebrow=""
+                keys={DOCUMENT_FIELDS}
+                fields={fields}
+                activeField={activeField}
+                setActiveField={setActiveField}
+                onFieldChange={onFieldChange}
+              />
+            </ReviewCard>
+
+            <ReviewCard title="Lines" testId="review-card-lines">
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <Label className="text-xs font-medium text-muted-foreground">Line items</Label>
                 <Tabs
@@ -919,145 +1064,97 @@ export default function InboxReviewPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ReviewCard>
 
-            <section className="space-y-1.5 border-t border-border pt-3" data-testid="totals-panel">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Subtotal</span>
-                <span className="tabular-nums">
-                  {balance.subtotalMinor != null ? (
-                    formatMinor(balance.subtotalMinor)
-                  ) : (
-                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
-                  )}
-                </span>
-              </div>
-              {vatRows.map((row) => (
-                <div
-                  key={row.code}
-                  className="flex items-center justify-between gap-2 text-sm"
-                  data-testid={`vat-by-code-${row.code}`}
-                >
-                  <span className="text-muted-foreground">{row.display}</span>
+            <ReviewCard title="Totals" testId="totals-panel">
+              <FieldGroup
+                eyebrow=""
+                keys={AMOUNT_FIELDS}
+                fields={fields}
+                activeField={activeField}
+                setActiveField={setActiveField}
+                onFieldChange={onFieldChange}
+              />
+              <div className="space-y-1.5 border-t border-border pt-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span className="tabular-nums">
+                    {balance.subtotalMinor != null ? (
+                      formatMinor(balance.subtotalMinor)
+                    ) : (
+                      <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                    )}
+                  </span>
                 </div>
-              ))}
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">VAT total</span>
-                <span className="tabular-nums">
-                  {balance.vatTotalMinor != null ? (
-                    formatMinor(balance.vatTotalMinor)
-                  ) : (
-                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
-                  )}
-                </span>
-              </div>
-              <div className="flex items-center justify-between border-t-2 border-double border-foreground/80 pt-2 text-sm font-semibold">
-                <span>Grand total</span>
-                <span className="tabular-nums">
-                  {balance.grandTotalMinor != null ? (
-                    formatMinor(balance.grandTotalMinor)
-                  ) : (
-                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
-                  )}
-                </span>
-              </div>
-              <div className="pt-1">
-                {balance.balanced === true ? (
-                  <StatusBadge
-                    meta={{ label: "Balanced", tone: "success" }}
-                    data-testid="totals-balance-badge"
-                  />
-                ) : balance.balanced === false && balance.offByMinor != null ? (
-                  <StatusBadge
-                    meta={{
-                      label: `Off by ${formatMinor(Math.abs(balance.offByMinor))}`,
-                      tone: "danger",
-                    }}
-                    data-testid="totals-balance-badge"
-                  />
-                ) : null}
-              </div>
-            </section>
-
-            {!documentId ? (
-              <div className="space-y-2">
-                <Label className="text-xs">Party for draft</Label>
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                  value={partyId}
-                  onChange={(e) => {
-                    setPartyId(e.target.value);
-                    setMismatchKeep(false);
-                  }}
-                  data-testid="confirm-party"
-                >
-                  {parties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                {mismatchDiffs.length ? (
+                {vatRows.map((row) => (
                   <div
-                    className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3"
-                    data-testid="party-mismatch-banner"
+                    key={row.code}
+                    className="flex items-center justify-between gap-2 text-sm"
+                    data-testid={`vat-by-code-${row.code}`}
                   >
-                    <p className="text-sm font-semibold text-amber-900">Party mismatch</p>
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="text-left text-amber-900/80">
-                          <th className="py-1">Field</th>
-                          <th>Extracted</th>
-                          <th>Master</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {mismatchDiffs.map((d) => (
-                          <tr key={d.field} className="border-t border-amber-200">
-                            <td className="py-1 capitalize">{d.field}</td>
-                            <td data-testid={`mismatch-extracted-${d.field}`}>{d.extracted}</td>
-                            <td data-testid={`mismatch-master-${d.field}`}>{d.master}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        data-testid="party-mismatch-update"
-                        onClick={() => void updatePartyFromExtraction()}
-                      >
-                        Update party
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        data-testid="party-mismatch-keep"
-                        onClick={() => setMismatchKeep(true)}
-                      >
-                        Keep master
-                      </Button>
-                    </div>
+                    <span className="text-muted-foreground">{row.display}</span>
                   </div>
-                ) : null}
+                ))}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">VAT total</span>
+                  <span className="tabular-nums">
+                    {balance.vatTotalMinor != null ? (
+                      formatMinor(balance.vatTotalMinor)
+                    ) : (
+                      <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-t-2 border-double border-foreground/80 pt-2 text-sm font-semibold">
+                  <span>Grand total</span>
+                  <span className="tabular-nums">
+                    {balance.grandTotalMinor != null ? (
+                      formatMinor(balance.grandTotalMinor)
+                    ) : (
+                      <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="pt-1">
+                  {balance.balanced === true ? (
+                    <StatusBadge
+                      meta={{ label: "Balanced", tone: "success" }}
+                      data-testid="totals-balance-badge"
+                    />
+                  ) : balance.balanced === false && balance.offByMinor != null ? (
+                    <StatusBadge
+                      meta={{
+                        label: `Off by ${formatMinor(Math.abs(balance.offByMinor))}`,
+                        tone: "danger",
+                      }}
+                      data-testid="totals-balance-badge"
+                    />
+                  ) : null}
+                </div>
               </div>
-            ) : null}
+            </ReviewCard>
 
             {documentId ? (
-              <div className="border-t border-border pt-3">
-                <DocumentReviewPanels
-                  documentId={documentId}
-                  onApproved={() => void load()}
-                  onApprovedAndNext={() => {
-                    if (nav.nextId) {
-                      router.push(`/books/inbox/${nav.nextId}`);
-                    } else {
-                      toast.success("Queue complete");
-                      void load();
-                    }
-                  }}
-                />
-              </div>
+              <details className="rounded-lg border border-border bg-card p-4" open>
+                <summary className="cursor-pointer text-sm font-semibold">
+                  Payments · Journal preview · VAT
+                </summary>
+                <div className="mt-3">
+                  <DocumentReviewPanels
+                    documentId={documentId}
+                    hideApproveActions
+                    onApproved={() => void load()}
+                    onApprovedAndNext={() => {
+                      if (nav.nextId) {
+                        router.push(`/books/inbox/${nav.nextId}`);
+                      } else {
+                        toast.success("Queue complete");
+                        void load();
+                      }
+                    }}
+                  />
+                </div>
+              </details>
             ) : null}
           </div>
         </div>

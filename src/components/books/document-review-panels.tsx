@@ -47,11 +47,14 @@ export function DocumentReviewPanels({
   documentId,
   onApproved,
   onApprovedAndNext,
+  hideApproveActions = false,
 }: {
   documentId: string;
   onApproved?: () => void;
   /** After a successful approve, navigate to the next needs-review item (C1-3). */
   onApprovedAndNext?: () => void;
+  /** When true, header chrome owns Approve (ING-3 full review). */
+  hideApproveActions?: boolean;
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [preview, setPreview] = useState<{
@@ -425,7 +428,7 @@ export function DocumentReviewPanels({
         </section>
       ) : null}
 
-      {doc.status === "draft" ? (
+      {doc.status === "draft" && !hideApproveActions ? (
         <div className="flex flex-wrap gap-2">
           <Button
             data-testid="review-approve"
@@ -447,9 +450,9 @@ export function DocumentReviewPanels({
             </Button>
           ) : null}
         </div>
-      ) : (
+      ) : doc.status !== "draft" ? (
         <p className="text-sm text-muted-foreground">Status: {doc.status}</p>
-      )}
+      ) : null}
     </div>
   );
 }
