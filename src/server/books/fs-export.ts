@@ -17,7 +17,7 @@ import {
   type FsQuery,
   type PnlColumn,
 } from "@/server/books/financial-statements";
-import { buildSimplePdf } from "@/server/books/pdf";
+import { buildSimplePdf, type PdfSection } from "@/server/books/pdf";
 import { booksTrialBalance } from "@/server/books/trial-balance";
 import { buildMultiSheetXlsx } from "@/server/books/xlsx";
 import { assertSyntheticTenant } from "@/server/security-gate";
@@ -41,8 +41,31 @@ function filsToDecimal(minor: number): string {
   return `${neg ? "-" : ""}${whole}.${frac}`;
 }
 
-function cellAmount(minor: number): string {
-  return minor === 0 ? "" : filsToDecimal(minor);
+/**
+ * Statement amount cell: exact fils as decimal, negatives in accounting brackets "(123.45)".
+ * xlsx.ts has no number-format (styles) support, so a negative is a bracketed text cell there;
+ * positives stay numeric cells.
+ */
+export function cellAmount(minor: number): string {
+  if (minor === 0) return "";
+  const s = filsToDecimal(Math.abs(minor));
+  return minor < 0 ? `(${s})` : s;
+}
+
+const isSyntheticAccount = (accountId: string) => String(accountId).startsWith("synthetic:");
+
+/** PL_other mixes income and expense: its total is the net contribution to profit (EBT − EBIT). */
+function pnlSectionTotal(c: PnlColumn, key: string): number {
+  const sec = c.sections.find((s) => s.key === key);
+  if (key === "PL_other") return sec?.netMinor ?? c.ebtMinor - c.ebitMinor;
+  return sec?.totalMinor ?? 0;
+}
+
+/** Account amount as presented: PL_other expense accounts are negative (they reduce profit). */
+function pnlAccountAmount(c: PnlColumn, key: string, accountId: string): number {
+  const a = c.sections.find((s) => s.key === key)?.accounts.find((x) => x.accountId === accountId);
+  if (!a) return 0;
+  return key === "PL_other" ? (a.netMinor ?? a.amountMinor) : a.amountMinor;
 }
 
 /** Pure gate check — unit-tested without DB. */
@@ -113,7 +136,7 @@ function pnlSheet(columns: PnlColumn[], meta: string[][]): string[][] {
     if (!keys.has(key)) continue;
     rows.push([
       keys.get(key)!,
-      ...columns.map((c) => cellAmount(c.sections.find((s) => s.key === key)?.totalMinor ?? 0)),
+      ...columns.map((c) => cellAmount(pnlSectionTotal(c, key))),
     ]);
     const accts = new Map<string, { code: string; name: string }>();
     for (const col of columns) {
@@ -123,10 +146,7 @@ function pnlSheet(columns: PnlColumn[], meta: string[][]): string[][] {
     for (const [id, a] of accts) {
       rows.push([
         `  ${a.code} ${a.name}`,
-        ...columns.map((c) => {
-          const sec = c.sections.find((s) => s.key === key);
-          return cellAmount(sec?.accounts.find((x) => x.accountId === id)?.amountMinor ?? 0);
-        }),
+        ...columns.map((c) => cellAmount(pnlAccountAmount(c, key, id))),
       ]);
     }
     if (key === "PL_cogs") {
@@ -166,7 +186,7 @@ function bsSheet(columns: BsColumn[], meta: string[][]): string[][] {
       }
       for (const [id, a] of accts) {
         rows.push([
-          `    ${a.code === "CYE" || a.code.startsWith("CYE") ? "" : a.code + " "}${a.name}`.trimEnd(),
+          `    ${isSyntheticAccount(id) || a.code.startsWith("CYE") ? "" : a.code + " "}${a.name}`.trimEnd(),
           ...columns.map((c) =>
             cellAmount(
               pick(c).find((s) => s.key === sKey)?.accounts.find((x) => x.accountId === id)
@@ -258,8 +278,23 @@ function notesSheet(
   ];
 }
 
-function sheetToPdfLines(rows: string[][]): string[] {
-  return rows.map((r) => r.filter((c) => c !== "").join("  |  "));
+/** Number of leading header rows headerRows() adds (title, company, meta line, blank). */
+const META_ROWS = 4;
+
+/**
+ * PDF section for a statement sheet: the table after the meta rows (the PDF prints its own header),
+ * every cell kept in its column so a blank (zero) amount never shifts later values left.
+ */
+export function sheetToPdfSection(
+  title: string,
+  rows: string[][],
+  textColumns = 1,
+): PdfSection {
+  return { title, table: { rows: rows.slice(META_ROWS), textColumns } };
+}
+
+function notesToPdfLines(rows: string[][]): string[] {
+  return rows.map((r) => r.join("  |  "));
 }
 
 export async function exportBooksFinancialStatements(
@@ -356,7 +391,13 @@ export async function exportBooksFinancialStatements(
       periodLabel,
       preparedBy,
       generatedAt,
-      sections: sheets.map((s) => ({ title: s.name, lines: sheetToPdfLines(s.rows) })),
+      sections: [
+        sheetToPdfSection("Profit & Loss", sheets[0].rows),
+        sheetToPdfSection("Balance Sheet", sheets[1].rows),
+        sheetToPdfSection("Cash Flow", sheets[2].rows),
+        sheetToPdfSection("Trial Balance", sheets[3].rows, 2),
+        { title: "Notes", lines: notesToPdfLines(sheets[4].rows) },
+      ],
     });
     contentType = "application/pdf";
     fileName = `financial-statements-${query.from}_${query.to}`;

@@ -250,3 +250,28 @@
     content: none !important;
   }
 }
+
+/* Printing a report: only the report. App chrome hidden; tables print whole (their horizontal scroll
+ * box and sticky first column would otherwise clip the amount columns). */
+@media print {
+  [data-print-chrome] {
+    display: none !important;
+  }
+  [data-print-main] {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  .books-notion .overflow-x-auto,
+  .books-notion .overflow-auto {
+    overflow: visible !important;
+  }
+  .books-notion table {
+    font-size: 10px;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .books-notion td,
+  .books-notion th {
+    position: static !important;
+  }
+}

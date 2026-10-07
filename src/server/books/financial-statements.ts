@@ -21,12 +21,20 @@ export type FsAccountRow = {
   code: string;
   name: string;
   amountMinor: number;
+  /**
+   * PL_other only: signed contribution to profit (income positive, expense negative).
+   * amountMinor keeps its natural sign (expense cost positive) for backward compatibility.
+   */
+  netMinor?: number;
 };
 
 export type FsSection = {
   key: string;
   label: string;
+  /** Sum of account amounts in their natural sign (for PL_other this mixes income and cost). */
   totalMinor: number;
+  /** PL_other only: signed net contribution to profit (= EBT − EBIT). */
+  netMinor?: number;
   accounts: FsAccountRow[];
 };
 
@@ -308,6 +316,12 @@ function buildPnlColumn(
     const meta = accounts.find((a) => a.id === r.accountId)!;
     return meta.accountType === "income" ? s + r.amountMinor : s - r.amountMinor;
   }, 0);
+  // Signed presentation of the mixed section: income adds to profit, expense takes away.
+  for (const r of other.accounts) {
+    const meta = accounts.find((a) => a.id === r.accountId)!;
+    r.netMinor = meta.accountType === "income" ? r.amountMinor : -r.amountMinor;
+  }
+  other.netMinor = otherNet;
 
   const grossProfitMinor = revenue.totalMinor - cogs.totalMinor;
   const ebitdaMinor = grossProfitMinor - opex.totalMinor;

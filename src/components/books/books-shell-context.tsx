@@ -6,6 +6,8 @@ export type BooksPeriod = { id: string; label: string; status: string };
 
 type BooksShellContextValue = {
   periods: BooksPeriod[];
+  /** True once the period list request has finished (even if it returned nothing). */
+  periodsLoaded: boolean;
   periodId: string;
   setPeriodId: (id: string) => void;
   globalSearch: string;
@@ -16,6 +18,7 @@ const BooksShellContext = createContext<BooksShellContextValue | null>(null);
 
 export function BooksShellProvider({ children }: { children: ReactNode }) {
   const [periods, setPeriods] = useState<BooksPeriod[]>([]);
+  const [periodsLoaded, setPeriodsLoaded] = useState(false);
   const [periodId, setPeriodId] = useState("");
   const [globalSearch, setGlobalSearch] = useState("");
 
@@ -32,13 +35,14 @@ export function BooksShellProvider({ children }: { children: ReactNode }) {
           setPeriodId(jun?.id || open?.id || list[0].id);
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setPeriodsLoaded(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value = useMemo(
-    () => ({ periods, periodId, setPeriodId, globalSearch, setGlobalSearch }),
-    [periods, periodId, globalSearch],
+    () => ({ periods, periodsLoaded, periodId, setPeriodId, globalSearch, setGlobalSearch }),
+    [periods, periodsLoaded, periodId, globalSearch],
   );
 
   return <BooksShellContext.Provider value={value}>{children}</BooksShellContext.Provider>;
@@ -49,6 +53,7 @@ export function useBooksShell() {
   if (!ctx) {
     return {
       periods: [] as BooksPeriod[],
+      periodsLoaded: true,
       periodId: "",
       setPeriodId: () => undefined,
       globalSearch: "",

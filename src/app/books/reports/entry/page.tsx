@@ -55,7 +55,7 @@ function EntryInner() {
   const params = useSearchParams();
   const router = useRouter();
   const meta = useReportMeta();
-  const id = params.get("id") || "";
+  const id = params.get("id") || params.get("entryId") || "";
   const trail = useMemo(() => readTrail(params.get("trail")), [params]);
   const [entry, setEntry] = useState<Entry | null>(null);
   const [source, setSource] = useState<Source | null | undefined>(undefined);

@@ -7,8 +7,22 @@ export type FsSectionLike = {
   key: string;
   label: string;
   totalMinor: number;
-  accounts: Array<{ accountId: string; code: string; name: string; amountMinor: number }>;
+  /** PL_other: signed net contribution to profit (income +, expense −). */
+  netMinor?: number;
+  accounts: Array<{
+    accountId: string;
+    code: string;
+    name: string;
+    amountMinor: number;
+    /** PL_other: signed contribution (expense shown negative). */
+    netMinor?: number;
+  }>;
 };
+
+/** Engine-made presentation lines (e.g. "synthetic:pye", "synthetic:cye") have no ledger to drill into. */
+export function isSyntheticAccountId(accountId: string): boolean {
+  return String(accountId).startsWith("synthetic:");
+}
 
 export type PnlColumnLike = {
   column: { key: string; label: string; from: string; to: string };
@@ -42,19 +56,19 @@ function sectionChildren(
   colKey: string,
   valuesAcross: (accountId: string, code: string) => Record<string, number>,
 ): ReportRow[] {
-  return section.accounts.map((a) => ({
-    id: `acct:${a.accountId}`,
-    code: a.code.startsWith("CYE") ? undefined : a.code,
-    label: a.name,
-    values: valuesAcross(a.accountId, a.code),
-    drill: {
-      kind: "account",
-      accountId: a.accountId,
-      code: a.code,
-      name: a.name,
-    },
-    testId: `fs-acct-${a.code}`,
-  }));
+  return section.accounts.map((a) => {
+    const synthetic = isSyntheticAccountId(a.accountId) || a.code.startsWith("CYE");
+    return {
+      id: `acct:${a.accountId}`,
+      code: synthetic ? undefined : a.code,
+      label: a.name,
+      values: valuesAcross(a.accountId, a.code),
+      drill: synthetic
+        ? undefined
+        : { kind: "account", accountId: a.accountId, code: a.code, name: a.name },
+      testId: `fs-acct-${a.code}`,
+    };
+  });
 }
 
 /** Merge account amounts across period columns into one tree (P&L). */
@@ -80,10 +94,35 @@ export function pnlToReportTree(columns: PnlColumnLike[]): {
     }
   }
 
+  // PL_other mixes income and expense: show each account by its contribution to profit
+  // (expense negative). The sign comes from the engine's netMinor; columns without it
+  // (e.g. projections) reuse the sign seen in any actual column for the same account.
+  const otherSign = new Map<string, number>();
+  for (const col of columns) {
+    for (const a of col.sections.find((s) => s.key === "PL_other")?.accounts || []) {
+      if (a.netMinor != null && a.amountMinor !== 0) {
+        otherSign.set(a.accountId, Math.sign(a.netMinor) * Math.sign(a.amountMinor) || 1);
+      }
+    }
+  }
+
   const amountAt = (sectionKey: string, accountId: string, colKey: string) => {
     const col = columns.find((c) => c.column.key === colKey);
     const sec = col?.sections.find((s) => s.key === sectionKey);
-    return sec?.accounts.find((a) => a.accountId === accountId)?.amountMinor ?? 0;
+    const acct = sec?.accounts.find((a) => a.accountId === accountId);
+    if (!acct) return 0;
+    if (sectionKey !== "PL_other") return acct.amountMinor;
+    if (acct.netMinor != null) return acct.netMinor;
+    return acct.amountMinor * (otherSign.get(accountId) ?? 1);
+  };
+
+  const sectionTotal = (col: PnlColumnLike, key: string) => {
+    const sec = col.sections.find((s) => s.key === key);
+    if (key === "PL_other") {
+      // Net contribution, not income + expense added together.
+      return sec?.netMinor ?? col.ebtMinor - col.ebitMinor;
+    }
+    return sec?.totalMinor ?? 0;
   };
 
   const rows: ReportRow[] = [];
@@ -93,19 +132,20 @@ export function pnlToReportTree(columns: PnlColumnLike[]): {
     const children: ReportRow[] = [...meta.accounts.entries()].map(([accountId, a]) => {
       const values: Record<string, number> = {};
       for (const c of cols) values[c.key] = amountAt(key, accountId, c.key);
+      const synthetic = isSyntheticAccountId(accountId);
       return {
         id: `${key}:${accountId}`,
-        code: a.code,
+        code: synthetic ? undefined : a.code,
         label: a.name,
         values,
-        drill: { kind: "account", accountId, code: a.code, name: a.name },
+        drill: synthetic ? undefined : { kind: "account", accountId, code: a.code, name: a.name },
         testId: `fs-acct-${a.code}`,
       };
     });
     const values: Record<string, number> = {};
     for (const c of cols) {
       const col = columns.find((x) => x.column.key === c.key)!;
-      values[c.key] = col.sections.find((s) => s.key === key)?.totalMinor ?? 0;
+      values[c.key] = sectionTotal(col, key);
     }
     rows.push({
       id: key,
@@ -196,15 +236,14 @@ export function bsToReportTree(columns: BsColumnLike[]): {
             const sec = g.pick(col).find((s) => s.key === sKey);
             values[c.key] = sec?.accounts.find((a) => a.accountId === accountId)?.amountMinor ?? 0;
           }
+          // Synthetic equity lines (prior years' / current year profit) are computed, not posted.
+          const synthetic = isSyntheticAccountId(accountId) || v.code === "CYE";
           return {
             id: id,
-            code: v.code === "CYE" ? undefined : v.code,
+            code: synthetic ? undefined : v.code,
             label: v.name,
             values,
-            drill:
-              v.code === "CYE"
-                ? undefined
-                : { kind: "account", accountId, code: v.code, name: v.name },
+            drill: synthetic ? undefined : { kind: "account", accountId, code: v.code, name: v.name },
             testId: `fs-acct-${v.code}`,
           };
         });
@@ -276,3 +315,39 @@ export function cfToReportTree(columns: CfColumnLike[]): {
 }
 
 void sectionChildren;
+
+function ymdLocal(y: number, m: number, d: number) {
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function lastDay(y: number, m: number) {
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** Add `n` months to (year, month 1–12). */
+function shiftMonth(y: number, m: number, n: number): { y: number; m: number } {
+  const idx = y * 12 + (m - 1) + n;
+  return { y: Math.floor(idx / 12), m: (idx % 12) + 1 };
+}
+
+/**
+ * Query range for quarterly / yearly report modes: the fiscal quarter or fiscal year (per the
+ * company's fiscal_year_start_month) that contains the selected period. Monthly / range are
+ * handled by the caller.
+ */
+export function fiscalRangeForPeriod(
+  mode: "quarterly" | "yearly",
+  periodStart: string,
+  fyStartMonth = 1,
+): { from: string; to: string } {
+  const fyStart = Math.min(12, Math.max(1, Math.floor(Number(fyStartMonth)) || 1));
+  const y = Number(periodStart.slice(0, 4));
+  const m = Number(periodStart.slice(5, 7));
+  const fyYear = m < fyStart ? y - 1 : y;
+  const monthsIn = (y - fyYear) * 12 + (m - fyStart);
+  const startOffset = mode === "yearly" ? 0 : Math.floor(monthsIn / 3) * 3;
+  const span = mode === "yearly" ? 12 : 3;
+  const s = shiftMonth(fyYear, fyStart, startOffset);
+  const e = shiftMonth(fyYear, fyStart, startOffset + span - 1);
+  return { from: ymdLocal(s.y, s.m, 1), to: ymdLocal(e.y, e.m, lastDay(e.y, e.m)) };
+}

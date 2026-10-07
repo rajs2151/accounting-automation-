@@ -113,7 +113,7 @@ function periodDotClass(status: string) {
 function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { periods, periodId, setPeriodId, globalSearch, setGlobalSearch } = useBooksShell();
+  const { periods, periodsLoaded, periodId, setPeriodId, globalSearch, setGlobalSearch } = useBooksShell();
   const searchRef = useRef<HTMLInputElement>(null);
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
@@ -293,7 +293,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (isBooks && periods.length === 0) {
+  if (isBooks && !periodsLoaded) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
         Loading company period…
@@ -304,7 +304,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
       <div className="flex min-h-0 min-w-0 flex-1">
-        <aside
+        <aside data-print-chrome=""
           className={cn(
             "hidden shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex",
             collapsed ? "w-[72px]" : "w-64",
@@ -363,14 +363,14 @@ function ShellInner({ children }: { children: React.ReactNode }) {
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
+          <header data-print-chrome="" className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
             <Button variant="outline" size="icon-sm" onClick={() => setMobileOpen(true)} aria-label="Open navigation">
               <PanelLeft />
             </Button>
             <span className="font-semibold text-primary">{PRODUCT_NAME}</span>
           </header>
 
-          <header
+          <header data-print-chrome=""
             className="hidden shrink-0 items-center gap-3 border-b border-border bg-card px-4 py-2.5 md:flex"
             data-testid="app-top-bar"
           >
@@ -416,6 +416,10 @@ function ShellInner({ children }: { children: React.ReactNode }) {
                   ))}
                 </SelectContent>
               </Select>
+            ) : isBooks ? (
+              <span className="shrink-0 text-xs text-muted-foreground" data-testid="topbar-no-periods">
+                No accounting periods yet
+              </span>
             ) : null}
             <div className="relative w-full max-w-[480px] flex-1">
               <Search className="absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -459,7 +463,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main
+          <main data-print-main=""
             key={`${directory?.me?.id || ""}:${directory?.clientId || ""}`}
             className={cn(
               "min-h-0 min-w-0 flex-1",

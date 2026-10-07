@@ -231,6 +231,20 @@ const MESSAGES: Record<string, string> = {
   invalid_side: "Choose receivables (AR) or payables (AP).",
   invalid_day_book_type: "Choose a voucher type from the list.",
   settlement_post_via_receipts: "Post receipts and payments from Receipts & payments.",
+  // P6-2 reports hardening (reclass from drill-down, statement exports).
+  reclass_amount_invalid: "Enter a whole positive amount to re-categorise.",
+  reclass_amount_exceeds_source: "That is more than this line still holds. Fils left to re-categorise:",
+  reclass_source_not_found: "The source entry was not found for this company.",
+  reclass_source_not_posted: "Only posted entries can be re-categorised (not drafts, reversed or deleted ones).",
+  reclass_source_no_line: "The source entry has no line on the account you are moving from.",
+  reclass_source_line_zero: "The source entry's line on that account nets to zero, so there is nothing to move.",
+  reclass_cross_statement:
+    "Re-categorise within the same statement: P&L to P&L, or balance sheet to balance sheet.",
+  reclass_control_account:
+    "Receivable, payable, VAT and bank control accounts can't be re-categorised here — correct them in their own module.",
+  reclass_account_not_found: "Choose an active, postable account from this company's chart of accounts.",
+  reclass_same_account: "Choose a different account to move the amount to.",
+  mfa_required: "Verify with your MFA code before downloading.",
 };
 
 export function apiErrorMessage(data: unknown, fallback = "Something went wrong. Please try again."): string {

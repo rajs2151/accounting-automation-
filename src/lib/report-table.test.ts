@@ -24,7 +24,10 @@ test("RPT-1: amount format — blank zero, brackets for negatives on statements"
   assert.equal(formatReportAmount(123456), "1,234.56");
   assert.equal(formatReportAmount(-123456, { brackets: true }), "(1,234.56)");
   assert.equal(formatReportAmount(-5), "-0.05");
-  assert.equal(formatReportAmount(150_000, { abbreviate: true }), "1.5K");
+  // Small figures stay exact (AED 1,500 as "1.5K" hid real money); K from AED 100,000, no "1000K".
+  assert.equal(formatReportAmount(150_000, { abbreviate: true }), "1,500.00");
+  assert.equal(formatReportAmount(15_000_000, { abbreviate: true }), "150K");
+  assert.equal(formatReportAmount(99_999_999, { abbreviate: true }), "1M");
   assert.equal(formatReportAmount(-250_000_000, { abbreviate: true, brackets: true }), "(2.5M)");
 });
 

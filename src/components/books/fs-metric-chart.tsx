@@ -7,7 +7,7 @@ import {
   type FsChartMetric,
   type PnlColumnForChart,
 } from "@/lib/fs-chart-series";
-import { formatMinor } from "@/lib/money";
+import { formatReportAmount } from "@/lib/report-table";
 
 const METRICS: Array<{ key: FsChartMetric; label: string }> = [
   { key: "revenue", label: "Revenue" },
@@ -83,7 +83,9 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
       </div>
       {current ? (
         <p className="mb-1 text-sm" data-testid="fs-chart-current">
-          {current.label}: <span className="font-medium tabular-nums">{formatMinor(current.amountMinor)}</span>
+          {current.label}: <span className="font-medium tabular-nums">
+            {current.amountMinor === 0 ? "0.00" : formatReportAmount(current.amountMinor, { brackets: true })}
+          </span>
           {current.pctChange != null ? (
             <span className="ms-2 text-muted-foreground">
               {current.pctChange >= 0 ? "+" : ""}
@@ -93,7 +95,11 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
         </p>
       ) : null}
       <svg
-        width="100%"
+        // Natural size (never wider than the card): width="100%" on a small viewBox blew a few bars up
+        // past 600px and pushed the table off screen.
+        width={width}
+        height={height + padB}
+        style={{ maxWidth: "100%", height: "auto" }}
         viewBox={`0 0 ${width} ${height + padB}`}
         role="img"
         aria-label={`${metric} by period`}

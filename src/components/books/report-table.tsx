@@ -167,7 +167,14 @@ export function ReportTable(props: {
       return;
     }
     save({ focus: i });
-    props.onDrill?.(r);
+    if (props.onDrill) {
+      props.onDrill(r);
+      return;
+    }
+    // Statements drill per cell: Enter opens the row's last amount column (the current period).
+    const amountCols = columns.filter((c) => c.kind !== "text" && !c.projected);
+    const col = amountCols[amountCols.length - 1];
+    if (props.onCellDrill && col) props.onCellDrill(r, col.key);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -426,7 +433,11 @@ export function ReportTable(props: {
               <tr key={f.id} className="border-t-2 border-border font-semibold" data-testid={f.testId}>
                 <td className="px-3 py-2">{f.label}</td>
                 {columns.map((c) => (
-                  <td key={c.key} className={cn("px-3 py-2", c.kind === "text" ? "text-start" : "text-end tabular-nums")}>
+                  <td
+                    key={c.key}
+                    className={cn("px-3 py-2", c.kind === "text" ? "text-start" : "text-end tabular-nums")}
+                    title={c.kind === "text" ? undefined : amountTitle(f.values[c.key]) || undefined}
+                  >
                     {cell(f, c)}
                   </td>
                 ))}

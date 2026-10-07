@@ -12,12 +12,14 @@ import {
   type ReportRow,
 } from "@/components/books/report-table";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { MfaDownloadModal } from "@/components/security-banner";
 import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
 import {
   bsToReportTree,
   cfToReportTree,
+  fiscalRangeForPeriod,
   pnlToReportTree,
   type BsColumnLike,
   type CfColumnLike,
@@ -118,11 +120,21 @@ export function FsReportView({ statement }: { statement: Statement }) {
   const [integrity, setIntegrity] = useState<Integrity | null>(null);
   const [drill, setDrill] = useState<DrillState | null>(null);
   const [lines, setLines] = useState<LineRow[]>([]);
+  /** Drill presentation: sign of the statement, BS opening balance and the drill total. */
+  const [drillMeta, setDrillMeta] = useState<{
+    statement: "pnl" | "bs";
+    sign: number;
+    openingMinor: number;
+    totalMinor: number;
+  } | null>(null);
+  const [drillError, setDrillError] = useState("");
   const [lineSearch, setLineSearch] = useState("");
   const [accounts, setAccounts] = useState<AcctOpt[]>([]);
   const [reclassTo, setReclassTo] = useState("");
   const [reclassMsg, setReclassMsg] = useState("");
   const [exportMsg, setExportMsg] = useState("");
+  // Statement downloads need a fresh MFA check; the pending format is retried once verified.
+  const [mfaFormat, setMfaFormat] = useState<"xlsx" | "pdf" | null>(null);
   const [exporting, setExporting] = useState(false);
   const [ctBanner, setCtBanner] = useState<CtBanner | null>(null);
   const [commentBadges, setCommentBadges] = useState<CommentBadge[]>([]);
@@ -138,6 +150,8 @@ export function FsReportView({ statement }: { statement: Statement }) {
   const [mentionUsers, setMentionUsers] = useState<Array<{ id: string; name: string }>>([]);
   const [projectionsOn, setProjectionsOn] = useState(false);
   const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
+  const [periodsLoaded, setPeriodsLoaded] = useState(false);
+  const [fyStartMonth, setFyStartMonth] = useState(1);
 
   useEffect(() => {
     void fetch("/api/books/periods")
@@ -148,6 +162,18 @@ export function FsReportView({ statement }: { statement: Statement }) {
           String(a.periodStart).localeCompare(String(b.periodStart)),
         );
         setPeriods(ordered);
+      })
+      .catch(() => undefined)
+      .finally(() => setPeriodsLoaded(true));
+  }, []);
+
+  // Fiscal calendar for quarterly / yearly ranges (company fiscal_year_start_month).
+  useEffect(() => {
+    void fetch("/api/books/company")
+      .then((r) => r.json())
+      .then((c: { fiscalYearStartMonth?: number } | null) => {
+        const m = Number(c?.fiscalYearStartMonth);
+        if (Number.isInteger(m) && m >= 1 && m <= 12) setFyStartMonth(m);
       })
       .catch(() => undefined);
   }, []);
@@ -187,17 +213,9 @@ export function FsReportView({ statement }: { statement: Statement }) {
       }
       return { from, to: selected.periodEnd };
     }
-    if (mode === "quarterly") {
-      const idx = periods.findIndex((p) => p.id === selected.id);
-      const startIdx = Math.max(0, idx - 2);
-      return { from: periods[startIdx]?.periodStart || selected.periodStart, to: selected.periodEnd };
-    }
-    // yearly — use all periods up to selected that share the same calendar year of period end
-    const y = selected.periodEnd.slice(0, 4);
-    const inYear = periods.filter((p) => p.periodEnd.startsWith(y) && p.periodEnd <= selected.periodEnd);
-    const from = inYear[0]?.periodStart || `${y}-01-01`;
-    return { from, to: selected.periodEnd };
-  }, [mode, selected, periods, showPrior, rangeFrom, rangeTo]);
+    // Quarterly / yearly: the fiscal quarter / fiscal year (company calendar) containing the period.
+    return fiscalRangeForPeriod(mode, selected.periodStart, fyStartMonth);
+  }, [mode, selected, periods, showPrior, rangeFrom, rangeTo, fyStartMonth]);
 
   const asOf = asOfToday ? new Date().toISOString().slice(0, 10) : "2099-12-31";
 
@@ -340,6 +358,8 @@ export function FsReportView({ statement }: { statement: Statement }) {
   useEffect(() => {
     if (!drill) {
       setLines([]);
+      setDrillMeta(null);
+      setDrillError("");
       return;
     }
     let cancelled = false;
@@ -354,12 +374,24 @@ export function FsReportView({ statement }: { statement: Statement }) {
         if (cancelled) return;
         if (j.error) {
           setLines([]);
+          setDrillMeta(null);
+          setDrillError(apiErrorMessage(j));
           return;
         }
+        setDrillError("");
         setLines(j.lines || []);
+        setDrillMeta({
+          statement: j.statement === "bs" ? "bs" : "pnl",
+          sign: Number(j.sign) === -1 ? -1 : 1,
+          openingMinor: Number(j.openingMinor || 0),
+          totalMinor: Number(j.totalMinor || 0),
+        });
       })
       .catch(() => {
-        if (!cancelled) setLines([]);
+        if (!cancelled) {
+          setLines([]);
+          setDrillMeta(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -378,7 +410,7 @@ export function FsReportView({ statement }: { statement: Statement }) {
   }, [lines, lineSearch]);
 
   async function submitReclass(line: LineRow) {
-    if (!drill || !reclassTo || !selected) return;
+    if (!drill || !reclassTo) return;
     setReclassMsg("");
     const amount = Math.abs(line.amountMinor);
     if (amount <= 0) {
@@ -389,7 +421,8 @@ export function FsReportView({ statement }: { statement: Statement }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        periodId: selected.id,
+        // The server books into the period containing the line's date; this is only a fallback.
+        periodId: selected?.id,
         entryDate: line.date,
         fromAccountId: drill.accountId,
         toAccountId: reclassTo,
@@ -485,6 +518,10 @@ export function FsReportView({ statement }: { statement: Statement }) {
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
+        if (res.status === 403 && j.error === "mfa_required") {
+          setMfaFormat(format);
+          return;
+        }
         setExportMsg(apiErrorMessage(j) || String(j.error || "export_failed"));
         return;
       }
@@ -497,7 +534,7 @@ export function FsReportView({ statement }: { statement: Statement }) {
       URL.revokeObjectURL(url);
       setExportMsg(`Exported ${format.toUpperCase()}.`);
     } catch {
-      setExportMsg("export_failed");
+      setExportMsg("Export failed. Check your connection and try again.");
     } finally {
       setExporting(false);
     }
@@ -506,13 +543,34 @@ export function FsReportView({ statement }: { statement: Statement }) {
   const title =
     statement === "pnl" ? "Profit & Loss" : statement === "bs" ? "Balance sheet" : "Cash flow";
   const navKey = statement === "pnl" ? "pnl" : statement === "bs" ? "bs" : "cf";
-  const periodLabel = selected?.label || query?.from || "—";
+  // Caption / file name / export header follow the columns shown, not the single month picked.
+  const shownCols = statement === "pnl" ? pnl : statement === "bs" ? bs : cf;
+  const periodLabel = (() => {
+    if (shownCols?.length) {
+      const first = shownCols[0].column.label;
+      const last = shownCols[shownCols.length - 1].column.label;
+      return first === last ? first : `${first} – ${last}`;
+    }
+    if (mode === "range" && query) return `${query.from} – ${query.to}`;
+    return selected?.label || query?.from || "—";
+  })();
 
   const gateFails: string[] = [];
   if (integrity) {
     if (!integrity.tbBalances.ok) gateFails.push(`TB (${integrity.tbBalances.differenceMinor} fils)`);
     if (!integrity.bsBalances.ok) gateFails.push(`Balance sheet (${integrity.bsBalances.differenceMinor} fils)`);
     if (!integrity.cfTies.ok) gateFails.push(`Cash flow ties (${integrity.cfTies.differenceMinor} fils)`);
+  }
+
+  if (periodsLoaded && !periods.length) {
+    return (
+      <div className="space-y-4 pb-10">
+        <ReportsNav active={navKey} />
+        <p className="text-sm text-muted-foreground" data-testid="fs-no-periods">
+          No accounting periods yet — add one in Settings.
+        </p>
+      </div>
+    );
   }
 
   return (
@@ -522,7 +580,7 @@ export function FsReportView({ statement }: { statement: Statement }) {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
           <p className="text-sm text-muted-foreground">
-            Posted journals · AED fils · {periodLabel}
+            Posted journals · AED · {periodLabel}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -658,6 +716,17 @@ export function FsReportView({ statement }: { statement: Statement }) {
           Integrity gate failed: {gateFails.join(" · ")}. Export is blocked until gates pass.
         </div>
       ) : null}
+      <MfaDownloadModal
+        open={mfaFormat !== null}
+        onOpenChange={(open) => {
+          if (!open) setMfaFormat(null);
+        }}
+        onVerified={() => {
+          const f = mfaFormat;
+          setMfaFormat(null);
+          if (f) void exportPack(f);
+        }}
+      />
       {exportMsg ? (
         <p className="text-sm text-muted-foreground print:hidden" data-testid="fs-export-msg">
           {exportMsg}
@@ -684,7 +753,7 @@ export function FsReportView({ statement }: { statement: Statement }) {
         abbreviate
         onCellDrill={statement === "cf" ? undefined : openDrill}
         onCommentClick={statement === "pnl" ? (row) => void openComments(row) : undefined}
-        exportName={`${statement}-${periodLabel.replace(/\s+/g, "-").toLowerCase()}`}
+        exportName={`${statement}-${periodLabel.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase()}`}
         emptyText="No movements in this range."
       />
 
@@ -806,7 +875,26 @@ export function FsReportView({ statement }: { statement: Statement }) {
                 {reclassMsg}
               </p>
             ) : null}
+            {drillError ? (
+              <p className="text-xs text-destructive" data-testid="fs-drill-error">
+                {drillError}
+              </p>
+            ) : null}
             <ul className="min-h-0 flex-1 space-y-2 overflow-auto text-sm" data-testid="fs-drill-lines">
+              {drillMeta?.statement === "bs" ? (
+                <li
+                  className="flex items-start justify-between gap-2 rounded-md border border-border/60 bg-muted/40 px-2 py-1.5"
+                  data-testid="fs-drill-opening"
+                >
+                  <div>
+                    <div className="font-medium">Opening balance</div>
+                    <div className="text-muted-foreground">Balance before {formatDateUae(drill.from)}</div>
+                  </div>
+                  <div className="tabular-nums">
+                    {formatMinor(drillMeta.sign * drillMeta.openingMinor)}
+                  </div>
+                </li>
+              ) : null}
               {filteredLines.map((l) => (
                 <li
                   key={`${l.entryId}-${l.date}-${l.amountMinor}`}
@@ -816,14 +904,16 @@ export function FsReportView({ statement }: { statement: Statement }) {
                     <div className="font-medium">{formatDateUae(l.date)}</div>
                     <div className="text-muted-foreground">{l.memo || "—"}</div>
                     <Link
-                      href={`/books/reports/entry?entryId=${l.entryId}`}
+                      href={`/books/reports/entry?id=${l.entryId}`}
                       className="text-xs text-primary underline-offset-2 hover:underline"
                     >
                       {l.entryNo || l.entryId.slice(0, 8)}
                     </Link>
                   </div>
                   <div className="text-end">
-                    <div className="tabular-nums">{formatMinor(l.amountMinor)}</div>
+                    <div className="tabular-nums">
+                      {formatMinor((drillMeta?.sign ?? 1) * l.amountMinor)}
+                    </div>
                     <Button
                       size="sm"
                       variant="outline"
@@ -839,6 +929,15 @@ export function FsReportView({ statement }: { statement: Statement }) {
               ))}
               {!filteredLines.length ? (
                 <li className="text-muted-foreground">No lines in this column.</li>
+              ) : null}
+              {drillMeta && !lineSearch.trim() ? (
+                <li
+                  className="flex justify-between gap-2 border-t border-border px-2 pt-2 font-medium"
+                  data-testid="fs-drill-total"
+                >
+                  <span>{drillMeta.statement === "bs" ? "Closing balance" : "Total"}</span>
+                  <span className="tabular-nums">{formatMinor(drillMeta.totalMinor)}</span>
+                </li>
               ) : null}
             </ul>
           </div>

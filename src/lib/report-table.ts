@@ -64,12 +64,13 @@ export function formatReportAmount(
   const neg = minor < 0;
   const abs = neg ? -minor : minor;
   let body: string;
-  if (opts?.abbreviate && abs >= 100_000_000) {
-    // ≥ 1,000,000.00 AED → M (fils / 1e8)
+  // Abbreviate only large figures (1,002.50 as "1K" hid real money): K from AED 100,000, M from
+  // AED 1,000,000; a K value that rounds to 1000 becomes M (no "1000K").
+  const k = Math.round(abs / 10_000) / 10; // AED thousands, one decimal
+  if (opts?.abbreviate && (abs >= 100_000_000 || k >= 1000)) {
     body = `${(abs / 100_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  } else if (opts?.abbreviate && abs >= 100_000) {
-    // ≥ 1,000.00 AED → K
-    body = `${(abs / 100_000).toFixed(1).replace(/\.0$/, "")}K`;
+  } else if (opts?.abbreviate && abs >= 10_000_000) {
+    body = `${k.toFixed(1).replace(/\.0$/, "")}K`;
   } else {
     body = formatMinor(abs);
   }

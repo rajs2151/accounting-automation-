@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { MoneyTypeError } from "@/lib/money";
@@ -169,7 +170,7 @@ import {
   suggestPartyDuplicates,
   updateBooksParty,
 } from "@/server/books/parties";
-import { createBooksPeriod, listBooksPeriods } from "@/server/books/periods";
+import { assertUuid, createBooksPeriod, listBooksPeriods } from "@/server/books/periods";
 import {
   allocatePartyAdvance,
   createContra,
@@ -226,9 +227,14 @@ import { listBooksVatCodes } from "@/server/books/vat-codes";
 import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
 import { listBooksVoucherSequences, updateBooksVoucherSequence } from "@/server/books/vouchers";
 import { LedgerError } from "@/server/errors";
-import { assertSessionTenantAllowed } from "@/server/security-gate";
+import { assertDownloadMfa, assertSessionTenantAllowed, MFA_COOKIE } from "@/server/security-gate";
 
 type Ctx = { params: Promise<{ path: string[] }> };
+
+async function mfaTokenFromRequest() {
+  const jar = await cookies();
+  return jar.get(MFA_COOKIE)?.value;
+}
 
 function fail(error: unknown) {
   if (error instanceof SessionError) {
@@ -467,6 +473,8 @@ export async function GET(request: Request, ctx: Ctx) {
       const from = url.searchParams.get("from") || "";
       const to = url.searchParams.get("to") || "";
       if (!accountId || !from || !to) throw new BooksError("account_lines_params", "invalid");
+      // Synthetic statement lines ("synthetic:pye") are not accounts: refuse before Postgres sees them.
+      assertUuid(accountId, "invalid_account_id");
       return NextResponse.json(
         await booksAccountLinesInRange(session.userId, session.clientId, { accountId, from, to }),
       );
@@ -1124,11 +1132,12 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "journals" && path[1] === "reclass-draft" && path.length === 2) {
       return NextResponse.json(
         await createBooksReclassDraft(session.userId, session.clientId, {
-          periodId: String(body.periodId || ""),
+          // Fallback only: the server books into the period that contains entryDate.
+          periodId: body.periodId ? String(body.periodId) : undefined,
           entryDate: String(body.entryDate || ""),
           fromAccountId: String(body.fromAccountId || ""),
           toAccountId: String(body.toAccountId || ""),
-          amountMinor: Number(body.amountMinor || 0),
+          amountMinor: Number(body.amountMinor ?? 0),
           sourceEntryId: String(body.sourceEntryId || ""),
         }),
       );
@@ -1353,6 +1362,8 @@ export async function POST(request: Request, ctx: Ctx) {
       });
     }
     if (path[0] === "reports" && path[1] === "export-statements" && path.length === 2) {
+      // Same step-up MFA as the other downloads (release packs).
+      assertDownloadMfa(session.userId, await mfaTokenFromRequest());
       const format = String(body.format || "xlsx") === "pdf" ? "pdf" : "xlsx";
       const mode = parseMode(body.mode);
       const from = String(body.from || "");
