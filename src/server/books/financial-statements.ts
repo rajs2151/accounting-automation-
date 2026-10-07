@@ -56,6 +56,8 @@ export type BsColumn = {
   totalLiabilitiesMinor: number;
   totalEquityMinor: number;
   currentYearProfitMinor: number;
+  /** Profit of earlier fiscal years still in income/expense accounts (no posted year-end close). */
+  priorYearsUnclosedProfitMinor: number;
 };
 
 export type CfColumn = {
@@ -67,6 +69,8 @@ export type CfColumn = {
   investingMinor: number;
   financingMinor: number;
   netChangeMinor: number;
+  /** Revaluation of foreign-currency cash: moves the cash balance without any cash flow. */
+  fxEffectOnCashMinor: number;
   openingCashMinor: number;
   closingCashMinor: number;
   lines: Array<{ key: string; label: string; amountMinor: number }>;
@@ -83,6 +87,7 @@ type AcctMeta = {
   isCard: boolean;
   isContra: boolean;
   normalBalance: string | null;
+  cashFlowClass: string | null;
 };
 
 function iso(v: unknown): string {
@@ -105,6 +110,35 @@ export function isCashMoneyAccount(a: AcctMeta): boolean {
   return a.isBank || a.subType === "cash" || a.subType === "bank";
 }
 
+const isPnl = (a: AcctMeta) => a.accountType === "income" || a.accountType === "expense";
+const isDepr = (a: AcctMeta) => a.accountType === "expense" && (a.subType === "depr" || a.subType === "amort");
+
+/** P&L line for an account; accounts without one fall back by type so nothing drops out of profit. */
+function plLine(a: AcctMeta): string {
+  if (a.statementLine?.startsWith("PL_")) return a.statementLine;
+  return a.accountType === "income" ? "PL_revenue" : "PL_opex";
+}
+
+/** Balance-sheet line; accounts without one fall back by type so the balance sheet always balances. */
+function bsLine(a: AcctMeta): string {
+  if (a.statementLine?.startsWith("BS_")) return a.statementLine;
+  if (a.accountType === "asset") {
+    return ["fa", "ia", "fa_contra", "ia_contra"].includes(a.subType || "") ? "BS_nca" : "BS_current_assets";
+  }
+  if (a.accountType === "liability") return "BS_current_liab";
+  return "BS_equity";
+}
+
+/** Cash-flow bucket for a non-cash balance-sheet account (configured class, else by statement line). */
+function cfClass(a: AcctMeta): "operating" | "investing" | "financing" {
+  const c = a.cashFlowClass;
+  if (c === "operating" || c === "investing" || c === "financing") return c;
+  const line = bsLine(a);
+  if (line === "BS_nca") return "investing";
+  if (line === "BS_ncl" || line === "BS_equity") return "financing";
+  return "operating";
+}
+
 const PN_EXCLUDE_CLOSING = `
   e.entry_type IS DISTINCT FROM 'closing'
   AND NOT EXISTS (
@@ -118,9 +152,11 @@ async function loadAccounts(db: PoolClient, clientId: string): Promise<AcctMeta[
     `SELECT id, code, name, account_type AS "accountType",
             sub_type AS "subType", statement_line AS "statementLine",
             is_bank AS "isBank", COALESCE(is_card, false) AS "isCard",
-            is_contra AS "isContra", normal_balance AS "normalBalance"
+            is_contra AS "isContra", normal_balance AS "normalBalance",
+            cash_flow_class AS "cashFlowClass"
      FROM books_accounts
-     WHERE client_id = $1 AND active = true AND is_postable = true
+     -- Inactive accounts stay in: a deactivated account still has history in past periods.
+     WHERE client_id = $1 AND is_postable = true
      ORDER BY code`,
     [clientId],
   );
@@ -135,6 +171,7 @@ async function loadAccounts(db: PoolClient, clientId: string): Promise<AcctMeta[
     isCard: Boolean(r.isCard),
     isContra: Boolean(r.isContra),
     normalBalance: r.normalBalance == null ? null : String(r.normalBalance),
+    cashFlowClass: r.cashFlowClass == null ? null : String(r.cashFlowClass),
   }));
 }
 
@@ -227,43 +264,42 @@ function buildPnlColumn(
     amounts,
     "PL_revenue",
     "Revenue",
-    (a) => a.statementLine === "PL_revenue",
+    (a) => isPnl(a) && !isDepr(a) && plLine(a) === "PL_revenue",
   );
   const cogs = sectionFrom(
     accounts,
     amounts,
     "PL_cogs",
     "Cost of sales",
-    (a) => a.statementLine === "PL_cogs",
+    (a) => isPnl(a) && !isDepr(a) && plLine(a) === "PL_cogs",
   );
   const opex = sectionFrom(
     accounts,
     amounts,
     "PL_opex",
     "Operating expenses",
-    (a) =>
-      a.statementLine === "PL_opex" && a.subType !== "depr" && a.subType !== "amort",
+    (a) => isPnl(a) && !isDepr(a) && plLine(a) === "PL_opex",
   );
   const depr = sectionFrom(
     accounts,
     amounts,
     "PL_depr",
     "Depreciation & amortisation",
-    (a) => a.subType === "depr" || a.subType === "amort",
+    (a) => isDepr(a),
   );
   const other = sectionFrom(
     accounts,
     amounts,
     "PL_other",
     "Other income / finance",
-    (a) => a.statementLine === "PL_other",
+    (a) => isPnl(a) && !isDepr(a) && plLine(a) === "PL_other",
   );
   const tax = sectionFrom(
     accounts,
     amounts,
     "PL_tax",
     "Corporate tax",
-    (a) => a.statementLine === "PL_tax",
+    (a) => isPnl(a) && !isDepr(a) && plLine(a) === "PL_tax",
   );
 
   // Expense sections stored as positive costs; other may mix income (positive) and expense (positive cost).
@@ -295,6 +331,7 @@ function buildBsColumn(
   accounts: AcctMeta[],
   bal: Map<string, { debit: number; credit: number }>,
   ytdProfit: number,
+  priorUnclosedProfit = 0,
 ): BsColumn {
   const amounts = new Map<string, number>();
   for (const a of accounts) {
@@ -308,39 +345,47 @@ function buildBsColumn(
     amounts,
     "BS_current_assets",
     "Current assets",
-    (a) => a.statementLine === "BS_current_assets",
+    (a) => !isPnl(a) && bsLine(a) === "BS_current_assets",
   );
   const nca = sectionFrom(
     accounts,
     amounts,
     "BS_nca",
     "Non-current assets",
-    (a) => a.statementLine === "BS_nca",
+    (a) => !isPnl(a) && bsLine(a) === "BS_nca",
   );
   const cl = sectionFrom(
     accounts,
     amounts,
     "BS_current_liab",
     "Current liabilities",
-    (a) => a.statementLine === "BS_current_liab",
+    (a) => !isPnl(a) && bsLine(a) === "BS_current_liab",
   );
   const ncl = sectionFrom(
     accounts,
     amounts,
     "BS_ncl",
     "Non-current liabilities",
-    (a) => a.statementLine === "BS_ncl",
+    (a) => !isPnl(a) && bsLine(a) === "BS_ncl",
   );
   const equityBase = sectionFrom(
     accounts,
     amounts,
     "BS_equity",
     "Equity",
-    (a) => a.statementLine === "BS_equity",
+    (a) => !isPnl(a) && bsLine(a) === "BS_equity",
   );
 
   // Current-year profit (before YE close lands in RE). Shown as synthetic equity line.
   const equityAccounts = [...equityBase.accounts];
+  if (priorUnclosedProfit !== 0) {
+    equityAccounts.push({
+      accountId: "synthetic:pye",
+      code: "PYE",
+      name: "Prior years' profit not yet closed",
+      amountMinor: priorUnclosedProfit,
+    });
+  }
   if (ytdProfit !== 0) {
     equityAccounts.push({
       accountId: "synthetic:cye",
@@ -349,7 +394,7 @@ function buildBsColumn(
       amountMinor: ytdProfit,
     });
   }
-  const totalEquityMinor = equityBase.totalMinor + ytdProfit;
+  const totalEquityMinor = equityBase.totalMinor + ytdProfit + priorUnclosedProfit;
   const equity: FsSection = {
     key: "BS_equity",
     label: "Equity",
@@ -369,38 +414,20 @@ function buildBsColumn(
     totalLiabilitiesMinor,
     totalEquityMinor,
     currentYearProfitMinor: ytdProfit,
+    priorYearsUnclosedProfitMinor: priorUnclosedProfit,
   };
 }
 
-/** Operating WC (ex cash, ex suspense, ex NCA). CT payable included. */
-const WC_ASSET_CODES = new Set([
-  "1210",
-  "1220",
-  "1230",
-  "1310",
-  "1320",
-  "1330",
-  "1340",
-  "1410",
-  "1420",
-  "1430",
-  "1440",
-  "1510",
-  "1520",
-]);
-const WC_LIAB_CODES = new Set([
-  "2110",
-  "2120",
-  "2130",
-  "2140",
-  "2210",
-  "2220",
-  "2230",
-  "2310",
-  "2320",
-  "2330",
-]);
-
+/**
+ * Indirect cash flow that ties by construction. Every non-cash balance-sheet account belongs to exactly
+ * one bucket (operating / investing / financing — its cash_flow_class, else by statement line), and all
+ * movements come from the same journal lines as net profit (closing entries excluded on both sides), so
+ * net change + FX effect = closing − opening cash. Presentation adjustments:
+ *  - depreciation / amortisation and loss on disposal (7500) are added back in operating and taken out
+ *    of investing (they are the non-cash part of the fixed-asset movement);
+ *  - FX revaluation posted against cash accounts is shown as "effect of exchange rates on cash" and its
+ *    7310 gain/loss removed from operating; revaluation of receivables/payables nets out in working capital.
+ */
 function buildCfColumn(
   column: PeriodColumn,
   accounts: AcctMeta[],
@@ -408,72 +435,39 @@ function buildCfColumn(
   closeBal: Map<string, { debit: number; credit: number }>,
   mov: Map<string, { debit: number; credit: number }>,
   netProfitMinor: number,
+  fxEffectOnCashMinor: number,
 ): CfColumn {
-  const byCode = new Map(accounts.map((a) => [a.code, a]));
-
-  const amt = (map: Map<string, { debit: number; credit: number }>, code: string) => {
-    const a = byCode.get(code);
-    if (!a) return 0;
+  const drCr = (map: Map<string, { debit: number; credit: number }>, a: AcctMeta) => {
     const m = map.get(a.id);
-    if (!m) return 0;
-    return signedNet(a.accountType, m.debit, m.credit, a.isContra);
+    return m ? m.debit - m.credit : 0;
   };
 
-  // Non-cash: depr/amort expense movement + unrealised FX (7310) expense net
   let depr = 0;
-  for (const a of accounts) {
-    if (a.subType !== "depr" && a.subType !== "amort") continue;
-    const m = mov.get(a.id);
-    if (m) depr += signedNet("expense", m.debit, m.credit, false);
-  }
-  const fxUnreal = (() => {
-    const a = byCode.get("7310");
-    if (!a) return 0;
-    const m = mov.get(a.id);
-    if (!m) return 0;
-    return signedNet("expense", m.debit, m.credit, false);
-  })();
-  const adjustmentsMinor = depr + fxUnreal;
-
-  let wc = 0;
-  for (const code of WC_ASSET_CODES) {
-    const delta = amt(closeBal, code) - amt(openBal, code);
-    wc -= delta; // asset increase uses cash
-  }
-  for (const code of WC_LIAB_CODES) {
-    const delta = amt(closeBal, code) - amt(openBal, code);
-    wc += delta; // liability increase provides cash
-  }
-
-  const operatingMinor = netProfitMinor + adjustmentsMinor + wc;
-
-  // Investing: change in NCA FA/IA gross (ex contra) — purchase uses cash
-  let investing = 0;
-  for (const a of accounts) {
-    if (a.statementLine !== "BS_nca") continue;
-    if (a.subType === "fa_contra" || a.subType === "ia_contra") continue;
-    const delta = amt(closeBal, a.code) - amt(openBal, a.code);
-    investing -= delta;
-  }
-
-  // Financing: capital +, drawings − (drawings contra equity), loans +
-  const capDelta = amt(closeBal, "3100") - amt(openBal, "3100");
-  const drawDelta = amt(closeBal, "3400") - amt(openBal, "3400"); // drawings balance is negative under equity rule
-  const loanDelta = amt(closeBal, "2420") - amt(openBal, "2420");
-  // drawings increase (more negative equity / higher debit) reduces cash: -(-delta) wait
-  // signed equity for 3400 (debit-normal contra): signedNet equity = credit - debit → negative when drawn
-  // increase in drawings magnitude → amount becomes more negative → delta negative → financing should decrease
-  const financingMinor = capDelta + drawDelta + loanDelta;
-
-  const netChangeMinor = operatingMinor + investing + financingMinor;
-
+  let disposalLoss = 0;
+  const bucket = { operating: 0, investing: 0, financing: 0 };
   let openingCash = 0;
   let closingCash = 0;
   for (const a of accounts) {
-    if (!isCashMoneyAccount(a)) continue;
-    openingCash += amt(openBal, a.code);
-    closingCash += amt(closeBal, a.code);
+    if (isPnl(a)) {
+      if (isDepr(a)) depr += drCr(mov, a);
+      if (a.code === "7500") disposalLoss += drCr(mov, a);
+      continue;
+    }
+    if (isCashMoneyAccount(a)) {
+      openingCash += drCr(openBal, a);
+      closingCash += drCr(closeBal, a);
+      continue;
+    }
+    // An increase in a non-cash asset (debit) uses cash; an increase in a liability/equity provides it.
+    bucket[cfClass(a)] -= drCr(mov, a);
   }
+
+  const adjustmentsMinor = depr + disposalLoss - fxEffectOnCashMinor;
+  const wc = bucket.operating;
+  const operatingMinor = netProfitMinor + adjustmentsMinor + wc;
+  const investing = bucket.investing - depr - disposalLoss;
+  const financingMinor = bucket.financing;
+  const netChangeMinor = operatingMinor + investing + financingMinor;
 
   const lines = [
     { key: "np", label: "Net profit", amountMinor: netProfitMinor },
@@ -483,6 +477,7 @@ function buildCfColumn(
     { key: "cfi", label: "Cash from investing", amountMinor: investing },
     { key: "cff", label: "Cash from financing", amountMinor: financingMinor },
     { key: "net", label: "Net change in cash", amountMinor: netChangeMinor },
+    { key: "fx", label: "Effect of exchange rates on cash", amountMinor: fxEffectOnCashMinor },
     { key: "open", label: "Opening cash", amountMinor: openingCash },
     { key: "close", label: "Closing cash", amountMinor: closingCash },
   ];
@@ -496,10 +491,31 @@ function buildCfColumn(
     investingMinor: investing,
     financingMinor,
     netChangeMinor,
+    fxEffectOnCashMinor,
     openingCashMinor: openingCash,
     closingCashMinor: closingCash,
     lines,
   };
+}
+
+/** Cash-account movement from FX revaluation entries (and their reversals, and manual 7310 entries) in the range. */
+async function fxEffectOnCash(db: PoolClient, clientId: string, from: string, to: string, cashIds: string[]) {
+  if (!cashIds.length) return 0;
+  const r = await db.query(
+    `SELECT COALESCE(SUM(l.debit_minor - l.credit_minor), 0)::bigint AS net
+     FROM books_journal_lines l
+     JOIN books_journal_entries e ON e.id = l.entry_id
+     JOIN books_journal_entries be ON be.id = COALESCE(e.reverses_entry_id, e.id)
+     WHERE e.client_id = $1 AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
+       AND e.entry_date >= $2::date AND e.entry_date <= $3::date
+       -- Revaluation runs, and any manual entry booking unrealised FX (7310) against cash.
+       AND (be.entry_type = 'fx_revaluation' OR EXISTS (
+             SELECT 1 FROM books_journal_lines x JOIN books_accounts xa ON xa.id = x.account_id
+             WHERE x.entry_id = e.id AND xa.code = '7310'))
+       AND l.account_id = ANY($4::uuid[])`,
+    [clientId, from, to, cashIds],
+  );
+  return Number(r.rows[0].net);
 }
 
 async function loadClientPeriods(
@@ -580,23 +596,18 @@ export async function booksBalanceSheet(userId: string, clientId: string, query:
       const bal = await balanceMap(db, clientId, col.to);
       const fy = fiscalYearForDate(col.to, fyStartMonth);
       const { start } = fiscalYearBounds(fy, fyStartMonth);
-      // After YE close (journal dated on/before column end), profit sits in 3200 RE.
-      const ye = await db.query(
-        `SELECT 1
-         FROM books_year_end_closes y
-         JOIN books_journal_entries e ON e.id = y.journal_entry_id
-         WHERE y.client_id = $1 AND y.fiscal_year = $2
-           AND y.reversed_at IS NULL
-           AND e.entry_date <= $3::date
-         LIMIT 1`,
-        [clientId, fy, col.to],
-      );
-      let ytdProfit = 0;
-      if (!ye.rowCount) {
-        const ytdMov = await movementMap(db, clientId, start, col.to, true);
-        ytdProfit = buildPnlColumn(col, accounts, ytdMov).netProfitMinor;
-      }
-      out.push(buildBsColumn(col, accounts, bal, ytdProfit));
+      // Unclosed profit = what still sits in income/expense accounts as of the column end (a posted
+      // year-end close has moved it to retained earnings; a draft, deleted or reversed one has not).
+      // Split for presentation: this fiscal year's part, and older years never closed.
+      const pnlNet = (m: Map<string, { debit: number; credit: number }>) =>
+        accounts.filter(isPnl).reduce((sum, acct) => {
+          const x = m.get(acct.id);
+          return x ? sum + (x.credit - x.debit) : sum;
+        }, 0);
+      const unclosedTotal = pnlNet(bal);
+      const ytdProfit = pnlNet(await movementMap(db, clientId, start, col.to, false));
+      const priorUnclosed = unclosedTotal - ytdProfit;
+      out.push(buildBsColumn(col, accounts, bal, ytdProfit, priorUnclosed));
     }
     return { mode: query.mode, columns: out };
   });
@@ -626,7 +637,14 @@ export async function booksCashFlow(userId: string, clientId: string, query: FsQ
       const closeBal = await balanceMap(db, clientId, col.to);
       const mov = await movementMap(db, clientId, col.from, col.to, true);
       const pnl = buildPnlColumn(col, accounts, mov);
-      out.push(buildCfColumn(col, accounts, openBal, closeBal, mov, pnl.netProfitMinor));
+      const fx = await fxEffectOnCash(
+        db,
+        clientId,
+        col.from,
+        col.to,
+        accounts.filter(isCashMoneyAccount).map((a) => a.id),
+      );
+      out.push(buildCfColumn(col, accounts, openBal, closeBal, mov, pnl.netProfitMinor, fx));
     }
     return { mode: query.mode, columns: out };
   });
@@ -646,21 +664,28 @@ export async function booksFinancialStatementsPack(
     booksCashFlow(userId, clientId, q),
   ]);
 
-  // TB gate: for each column end, assets+expenses debits vs credits identity via BS equation + CF.
-  let tbDiff = 0;
+  // Every column must be right on its own: add absolute differences so errors can't cancel out.
   let bsDiff = 0;
   let cfDiff = 0;
   for (let i = 0; i < bs.columns.length; i++) {
     const b = bs.columns[i];
     const c = cf.columns[i];
-    const eq = b.totalAssetsMinor - (b.totalLiabilitiesMinor + b.totalEquityMinor);
-    bsDiff += eq;
-    const tie = c.openingCashMinor + c.netChangeMinor - c.closingCashMinor;
-    cfDiff += tie;
+    bsDiff += Math.abs(b.totalAssetsMinor - (b.totalLiabilitiesMinor + b.totalEquityMinor));
+    cfDiff += Math.abs(c.openingCashMinor + c.netChangeMinor + c.fxEffectOnCashMinor - c.closingCashMinor);
   }
-  // TB: use booksTrialBalance-style — if BS balances and we built from journals, TB follows; still compute via pack.
-  tbDiff = 0; // journal engine enforces balance; surface 0 unless BS broken
-  if (bsDiff !== 0) tbDiff = bsDiff;
+  // Trial balance: total debits = total credits of everything posted up to the last column end.
+  const lastTo = bs.columns.reduce((m, c) => (c.column.to > m ? c.column.to : m), q.to);
+  const tbDiff = await withUser(userId, async (db) => {
+    const r = await db.query(
+      `SELECT COALESCE(SUM(l.debit_minor), 0)::bigint - COALESCE(SUM(l.credit_minor), 0)::bigint AS diff
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       WHERE e.client_id = $1 AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
+         AND e.entry_date <= $2::date`,
+      [clientId, lastTo],
+    );
+    return Math.abs(Number(r.rows[0].diff));
+  });
 
   const integrity: FsIntegrity = {
     tbBalances: { ok: tbDiff === 0, differenceMinor: tbDiff },

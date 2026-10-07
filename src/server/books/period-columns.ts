@@ -2,6 +2,7 @@
  * P6-1: fiscal-year-aware report period columns (Monthly / Quarterly / Yearly / range).
  * Partial current columns are labelled MTD/QTD/YTD and compared like-for-like (same day count).
  */
+import { BooksError } from "@/server/books/errors";
 import { fiscalYearForDate } from "@/lib/fiscal-year";
 
 export type PeriodColumnMode = "monthly" | "quarterly" | "yearly" | "range";
@@ -97,6 +98,13 @@ export type PeriodRow = { id: string; label: string; periodStart: string; period
  * Build report columns for the selected mode.
  * `asOf` defaults to today (UTC); used only to mark partial current columns.
  */
+/** A real calendar date in YYYY-MM-DD (2026-02-30 is refused instead of reaching Postgres). */
+function assertIsoDate(v: string) {
+  const ok =
+    /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+  if (!ok) throw new BooksError("invalid_date", "invalid");
+}
+
 export function buildPeriodColumns(args: {
   mode: PeriodColumnMode;
   periods: PeriodRow[];
@@ -109,6 +117,13 @@ export function buildPeriodColumns(args: {
   const asOf = iso(args.asOf || new Date().toISOString().slice(0, 10));
   const from = iso(args.from);
   const to = iso(args.to);
+  assertIsoDate(from);
+  assertIsoDate(to);
+  if (args.asOf) assertIsoDate(iso(args.asOf));
+  if (from > to) throw new BooksError("invalid_date_range", "invalid");
+  // Columns never reach outside the requested dates (a 15–20 May request is not all of May).
+  const clamp = (cols: PeriodColumn[]) =>
+    cols.map((c) => ({ ...c, from: c.from < from ? from : c.from, to: c.to > to ? to : c.to }));
   const periods = [...args.periods]
     .map((p) => ({
       id: p.id,
@@ -136,7 +151,7 @@ export function buildPeriodColumns(args: {
   }
 
   if (args.mode === "monthly") {
-    return periods.map((p) =>
+    return clamp(periods.map((p) =>
       applyPartial(
         {
           key: `m:${p.id}`,
@@ -148,7 +163,7 @@ export function buildPeriodColumns(args: {
         },
         asOf,
       ),
-    );
+    ));
   }
 
   if (args.mode === "quarterly") {
@@ -171,7 +186,7 @@ export function buildPeriodColumns(args: {
         if (p.periodEnd > existing.to) existing.to = p.periodEnd;
       }
     }
-    return [...buckets.entries()].map(([key, b]) =>
+    return clamp([...buckets.entries()].map(([key, b]) =>
       applyPartial(
         {
           key,
@@ -183,7 +198,7 @@ export function buildPeriodColumns(args: {
         },
         asOf,
       ),
-    );
+    ));
   }
 
   // yearly
@@ -202,7 +217,7 @@ export function buildPeriodColumns(args: {
       if (p.periodEnd > existing.to) existing.to = p.periodEnd;
     }
   }
-  return [...years.entries()].map(([fy, b]) => {
+  return clamp([...years.entries()].map(([fy, b]) => {
     const bounds = fiscalYearBounds(fy, fyStart);
     return applyPartial(
       {
@@ -215,5 +230,5 @@ export function buildPeriodColumns(args: {
       },
       asOf,
     );
-  });
+  }));
 }

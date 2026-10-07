@@ -19,3 +19,16 @@ test("apiErrorMessage: known codes read as sentences, unknown server errors show
     assert.doesNotMatch(apiErrorMessage(body), /request failed/i);
   }
 });
+
+test("apiErrorMessage: Phase 3-5 codes and code:detail codes read as sentences", () => {
+  assert.equal(
+    apiErrorMessage({ error: "entry_date_outside_period" }),
+    "The date is outside the selected period. Pick a date inside the period, or switch period.",
+  );
+  assert.equal(
+    apiErrorMessage({ error: "year_has_open_periods:Apr 2026,May 2026" }),
+    "Lock these months before closing the year: Apr 2026, May 2026.",
+  );
+  assert.equal(apiErrorMessage({ error: "fx_rate_missing:USD" }), "Enter the closing exchange rate for: USD.");
+  assert.equal(apiErrorMessage({ error: "some_unknown_code" }), "Some unknown code");
+});

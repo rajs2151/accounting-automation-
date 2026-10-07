@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 
-import { getBooksCloseChecklist, waiveBooksCloseGate } from "@/server/books/close";
+import { getBooksCloseChecklist, lockBooksPeriodWithChecklist, waiveBooksCloseGate } from "@/server/books/close";
 import {
   booksBalanceSheet,
   booksCashFlow,
@@ -15,10 +15,11 @@ import {
 import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { buildPeriodColumns } from "@/server/books/period-columns";
 import { createTestCompany } from "@/server/books/test-company";
-import { closeBooksYearToRE } from "@/server/books/year-end";
+import { closeBooksYearToRE, postBooksYearEndClose } from "@/server/books/year-end";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
 const LAYLA = "44444444-4444-4444-8444-444444444444";
+const RAJ = "77777777-7777-4777-8777-777777777777";
 
 async function withAdmin(t: test.TestContext) {
   const appUrl =
@@ -306,11 +307,21 @@ test("P6-1: hand-computed P&L / BS / CF + gates + quarterly sum", async (t) => {
     await admin.query(`UPDATE clients SET fiscal_year_start_month = 7 WHERE id = $1`, [
       company.clientId,
     ]);
-    const cl = await getBooksCloseChecklist(LAYLA, company.clientId, jun);
-    for (const key of cl.failing) {
-      await waiveBooksCloseGate(LAYLA, company.clientId, jun, key, "P6-1 waiver");
+    // Year-end close (P5 hardening): earlier months of the year locked first, then one approver
+    // prepares the closing entry and a different approver posts it.
+    for (const pid of [company.periods["Apr 2026"]!, company.periods["May 2026"]!, jun]) {
+      const cl = await getBooksCloseChecklist(LAYLA, company.clientId, pid);
+      for (const key of cl.failing) {
+        await waiveBooksCloseGate(LAYLA, company.clientId, pid, key, "P6-1 waiver");
+      }
+      if (pid !== jun) await lockBooksPeriodWithChecklist(LAYLA, company.clientId, pid);
     }
+    await admin.query(
+      `INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [RAJ, company.clientId],
+    );
     await closeBooksYearToRE(LAYLA, company.clientId, jun);
+    await postBooksYearEndClose(RAJ, company.clientId, 2025);
 
     const afterClose = await booksProfitAndLoss(OMAR, company.clientId, {
       mode: "monthly",
