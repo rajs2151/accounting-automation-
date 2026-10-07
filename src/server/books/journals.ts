@@ -6,6 +6,7 @@ import { withUser } from "@/lib/db";
 import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
 import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
+import { markPeriodChangedSinceClose } from "@/server/books/close";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
@@ -131,12 +132,16 @@ async function assignEntryNo(
     [clientId, vt, year],
   );
   const entryNo = String(no.rows[0].entry_no);
-  await db.query(
+  const posted = await db.query(
     `UPDATE books_journal_entries
      SET status = 'posted', posted_at = now(), entry_no = $3, voucher_type = $4
-     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')`,
+     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')
+     RETURNING period_id`,
     [entryId, clientId, entryNo, vt],
   );
+  if (posted.rowCount) {
+    await markPeriodChangedSinceClose(db, clientId, String(posted.rows[0].period_id));
+  }
   return entryNo;
 }
 

@@ -1,47 +1,32 @@
-TASK ID: P5-1
-PHASE: Phase 5 - Month-end close: close checklist + lock gate (server + screen)
+TASK ID: P5-2
+PHASE: Phase 5 - Fixed asset register + monthly straight-line depreciation
 
 OBJECTIVE:
-A close checklist per company x period that computes each gate from existing data, and a Lock action (approver)
-that only succeeds when every gate passes or is waived with a reason (audited). Unlock needs a reason (audited);
-posting into a period after it was unlocked marks that period "changed since close".
+Register fixed assets per company and post monthly depreciation as dual-control journals; add the Depreciation gate
+to the P5-1 close checklist.
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 325-350 (Phase 5 section 1).
-PORT, don't invent: the legacy close engine src/server/close.ts (closeChecklist, waive*ForClose, closePeriod,
-reopenPeriod, listCloseEvents) works on old tables - reuse its structure for the books module.
+READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md line 335. PORT from the legacy engine:
+src/server/close.ts monthlyStraightLineMinor, registerFixedAsset, listDepreciation, postDepreciation.
+COA: 1600 Fixed assets (sub fa), 1690 Accumulated depreciation (fa_contra), 6800 Depreciation (depr),
+1790/6810 amortisation. Journal engine: src/server/books/journals.ts (create + post with dual control).
 
-EXISTING (books): src/server/books/periods.ts (lockBooksPeriod, reopenBooksPeriod); bank-recon.ts (ledger vs
-statement per account/month); dashboard.ts (statement coverage, review counts, issues); bank-transactions.ts
-(review_status needs_review/ready/posted/excluded); place-of-supply.ts gap list; vat201.ts draft; schedule-post
-(P4-4 scheduled/recurring entries). COA: 1390 Suspense; clearing 1130, 1220, 1300, 1310, 1320, 1330, 1340;
-VAT 2210 output / 1430 input.
+REQUIREMENTS:
+- New migration: books_fixed_assets (client, name, asset account default 1600, accumulated account default 1690,
+  expense account default 6800, cost_minor, residual_minor, in_service_date, life_months, method 'straight_line',
+  disposed_at nullable, source journal/document optional) + books_depreciation_runs (asset, period, amount_minor,
+  journal_entry_id, unique (asset, period)). RLS like other books tables.
+- Monthly amount = (cost - residual) / life_months in fils, remainder distributed so the total over the life equals
+  cost - residual exactly (state the rounding rule; last month absorbs the remainder). First month = month of
+  in_service_date (full month; state it). Never depreciate below residual or after disposal.
+- "Run depreciation for <period>": creates ONE draft journal (JV, entry_type depreciation) with one Dr 6800 /
+  Cr 1690 line per asset, preparer = current user; posting needs an approver (existing dual control). Idempotent:
+  running twice for the same period does not double-post (unique run per asset+period).
+- Locked period -> refuse (period_locked). Disposal: out of scope (record disposed_at only, stop depreciation).
+- Close checklist (P5-1) gate "Depreciation": pass when every active asset has a posted run for the period (or no
+  assets), else fail with the list.
+- Screen: Settings > Fixed assets (or /books/fixed-assets): list, add asset, schedule preview, Run depreciation.
 
-GATES (each: status pass | fail | waived, a count, and a deep link):
-1. Statements: every bank/card/gateway account has statement coverage for the whole period (reuse dashboard logic).
-2. Bank lines: no bank txn in the period still needs_review or ready-not-posted.
-3. Bank reconciliation: bank-recon difference = 0 for every bank account at period end.
-4. Suspense 1390 closing balance = 0 (else list the entries).
-5. Clearing accounts: 1310/1320/1330 (gateway/POS) and 1340 (transfers) net to 0 at period end; 1220
-   (disbursements) and 1300/1130 shown as information with their balance (no auto-fail; owner decides later).
-6. Scheduled/recurring entries due in the period are posted.
-7. VAT control: VAT 201 draft (if the stagger period ends this month) has no place-of-supply gaps, and its Box 8/11
-   VAT ties to the 2210/1430 movement; otherwise "not a VAT period end" = pass.
-8. Missing documents: bank lines posted by category (no invoice/bill) above a threshold are listed (information only).
-Depreciation and FX revaluation gates are added by P5-2 and P5-3 - leave a placeholder that reports "not set up".
-
-SERVER: new src/server/books/close.ts: getBooksCloseChecklist(userId, clientId, periodId), waiveBooksCloseGate
-(approver/admin, reason required, audited), lockBooksPeriodWithChecklist (approver/admin; refuses with
-close_gates_failing + the failing gates), unlock = existing reopenBooksPeriod but reason required + audited; a
-"changed since close" flag set when any journal is posted into a reopened period. New migration for waivers/close
-events/flag (books tables, RLS like other books tables).
-SCREEN: src/app/books/close/page.tsx (period picker from the top bar): gate list with status badges, counts, deep
-links, Waive (reason) and Lock buttons (approver only; UI mirrors server), close history.
-Add "Close" to the Books nav (append-only change in the nav list).
-
-TESTS: unit for each gate pass/fail with test-owned data (createTestCompany); lock refused while a gate fails;
-waive with reason then lock succeeds; accountant cannot lock/waive (403); unlock requires reason; posting after
-unlock sets "changed since close". e2e: open Close page, see gates, lock as approver.
-
-ACCEPTANCE: gates computed server-side; lock/waive/unlock rules enforced server-side and audited; tests above pass;
-full gates green.
-DO NOT: edit bank-transactions.ts/settlements.ts logic (read only), change dual control, delete periods.
+TESTS (hand-computed): asset cost 36,000.00 residual 0 life 36 -> 1,000.00/month; asset 10,000.00 residual 1,000.00
+life 7 -> 1,285.71 x 6 + 1,285.74 last (total 9,000.00); run twice same period -> one journal; locked period
+refused; preparer cannot post own run; gate fails before run, passes after posting.
+ACCEPTANCE: exact amounts, balanced journals, idempotent runs, gate wired, full gates green.

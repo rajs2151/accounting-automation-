@@ -23,6 +23,14 @@ import {
   uploadBooksJournalAttachment,
 } from "@/server/books/attachments";
 import { listBooksAudit } from "@/server/books/audit";
+import {
+  CloseGatesFailingError,
+  getBooksCloseChecklist,
+  listBooksCloseEvents,
+  lockBooksPeriodWithChecklist,
+  unlockBooksPeriodWithReason,
+  waiveBooksCloseGate,
+} from "@/server/books/close";
 import { BooksError } from "@/server/books/errors";
 import {
   beginBooksJournalCorrection,
@@ -189,6 +197,21 @@ function fail(error: unknown) {
   }
   if (error instanceof MoneyTypeError) {
     return NextResponse.json({ error: "invalid_money", message: error.message }, { status: 400 });
+  }
+  if (error instanceof CloseGatesFailingError) {
+    return NextResponse.json(
+      {
+        error: error.message,
+        code: error.code,
+        failingGates: error.failingGates.map((g) => ({
+          key: g.key,
+          label: g.label,
+          count: g.count,
+          detail: g.detail,
+        })),
+      },
+      { status: 409 },
+    );
   }
   if (error instanceof LedgerError || error instanceof BooksError) {
     const status =
@@ -407,6 +430,20 @@ export async function GET(request: Request, ctx: Ctx) {
           side: side === "AP" ? "AP" : side === "AR" ? "AR" : (side as "AR"),
           asOf: url.searchParams.get("asOf") || "",
         }),
+      );
+    }
+    if (path[0] === "close" && path.length === 1) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await getBooksCloseChecklist(session.userId, session.clientId, periodId),
+      );
+    }
+    if (path[0] === "close" && path[1] === "events" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await listBooksCloseEvents(session.userId, session.clientId, periodId),
       );
     }
     if (path[0] === "dashboard" && path.length === 1) {
@@ -683,6 +720,36 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "periods" && path[2] === "reopen" && path.length === 3) {
       return NextResponse.json(
         await reopenBooksPeriod(session.userId, session.clientId, path[1], String(body.reason || "")),
+      );
+    }
+    if (path[0] === "close" && path[1] === "lock" && path.length === 2) {
+      return NextResponse.json(
+        await lockBooksPeriodWithChecklist(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "close" && path[1] === "unlock" && path.length === 2) {
+      return NextResponse.json(
+        await unlockBooksPeriodWithReason(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.reason || ""),
+        ),
+      );
+    }
+    if (path[0] === "close" && path[1] === "waive" && path.length === 2) {
+      return NextResponse.json(
+        await waiveBooksCloseGate(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.gateKey || ""),
+          String(body.reason || ""),
+        ),
       );
     }
     if (path[0] === "company" && path.length === 1) {

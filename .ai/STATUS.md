@@ -1,8 +1,10 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
-- Current task: P5-1 (close checklist + lock gate) - overnight loop run by chat-Claude; tasks P5-1..P6-4 in .ai/NEXT_TASK_*.md, rules in .ai/HOW_TO_WORK.md
+- Phase: **5 (Close + TB)** on feat/books-phase1 — Stream A
+- Current task: P5-2 (next — after P5-1 PASS)
+- 2026-10-07: P5-1 PASS — close checklist + waive/lock/unlock + changed-since-close (db/57); unit 237p/0f/1s; e2e 7/7
+- 2026-10-07: P5-1 — books close checklist + waive/lock/unlock + changed-since-close (db/57)
 - 2026-10-07: Phase 3/4 critical bugfixes (expenses double-post, dual-control, period/AED/VAT; accrual auto-reverse next month; sheet reset; draft auto-reverse; drawer race; expense VAT→VAT201)
 - 2026-10-07: Phase 4 CLOSED (P4-1..P4-5)
 - 2026-10-07: P4-5 PASS — reverse reason+date; drawer Reverse; immutability e2e
@@ -127,3 +129,4 @@
 - 2026-10-07 | P4-4 | PASS | auto-reverse run_at = 1st next month; recurring Entry n of N; schedule UI e2e; blocked legend
 - 2026-10-07 | P4-5 | PASS | reverse reason+date required; drawer Reverse; dual-control; e2e
 - 2026-10-07 | Phase 4 | CLOSED | P4-1..P4-5 on feat/books-phase1
+- 2026-10-07 | P5-1 | PASS | db/57 close waivers/events; /books/close; lock gate; unit 237p e2e 7/7
