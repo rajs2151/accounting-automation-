@@ -101,7 +101,7 @@ const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
       { href: "/books/fixed-assets", label: "Fixed assets", icon: Building2 },
       { href: "/books/close", label: "Close", icon: CalendarCheck },
       { href: "/books/reports/trial-balance", label: "Reports", icon: ChartColumn, also: ["/books/reports"] },
-      { href: "/books/health", label: "Company Health", icon: Activity },
+      { href: "/books/health", label: "Company Health", icon: Activity, also: ["/books/firm"] },
     ],
   },
   { items: [{ href: "/books/settings", label: "Settings", icon: Settings }] },

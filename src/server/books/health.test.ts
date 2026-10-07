@@ -8,6 +8,7 @@ import pg from "pg";
 import {
   avgNetCashFlowMinor,
   booksHealthDebtorsCreditors,
+  booksHealthPanel,
   booksHealthSummary,
   cashConversionCycleDays,
   cashRunway,
@@ -64,6 +65,25 @@ test("P7-1: avgNetCashFlowMinor / runway / L÷A pure", () => {
 
   assert.equal(liabilitiesAssetsRatioBps(45_000, 100_000), 4500);
   assert.equal(liabilitiesAssetsRatioBps(1, 0), null);
+});
+
+test("P7-3: panel returns scorecard + trends + insights shape", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "p7-3-panel");
+    const jun = company.periods["Jun 2026"];
+    assert.ok(jun);
+    const panel = await booksHealthPanel(OMAR, company.clientId, jun);
+    assert.equal(panel.scorecard.periodId, jun);
+    assert.equal(typeof panel.scorecard.closeReady, "boolean");
+    assert.equal(typeof panel.scorecard.tbBalanced, "boolean");
+    assert.ok(Array.isArray(panel.trends.cashSeries));
+    assert.ok(Array.isArray(panel.trends.pnlSeries));
+    assert.ok(Array.isArray(panel.insights));
+  } finally {
+    await admin.end();
+  }
 });
 
 test("P7-2: DSO / DPO / DIO / CCC / collection / trackerStatus pure", () => {

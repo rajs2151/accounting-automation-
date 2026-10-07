@@ -40,4 +40,22 @@ test("P7-1: Company Health Dashboard shows metric cards", async ({ page, context
   await expect(page.getByTestId("health-debtors-panel")).toBeVisible();
   await expect(page.getByTestId("health-ar-tracker")).toBeVisible();
   await expect(page.getByTestId("health-ap-tracker")).toBeVisible();
+
+  await page.getByTestId("health-tab-scorecard").click();
+  await expect(page.getByTestId("health-scorecard")).toBeVisible();
+  await expect(page.getByTestId("health-sc-close")).toBeVisible();
+
+  await page.getByTestId("health-tab-runway").click();
+  await expect(page.getByTestId("health-runway-panel")).toBeVisible();
+
+  await page.getByTestId("health-tab-profitability").click();
+  await expect(page.getByTestId("health-profitability-panel")).toBeVisible();
+});
+
+test("P7-4: Firm health board lists companies", async ({ page, context }) => {
+  await setSession(context, OMAR);
+  await page.goto("/books/firm");
+  await expect(page.getByTestId("firm-health-page")).toBeVisible();
+  await expect(page.getByTestId("firm-refresh")).toBeVisible();
+  await expect(page.getByTestId("firm-error")).toHaveCount(0);
 });

@@ -2,7 +2,9 @@
 
 ## Now
 - Phase: **7 (Company Health)** on feat/books-phase1 — Stream A
-- Current task: P7-3 (scorecard / runway charts / insights — wait for owner "go")
+- Current task: Phase 7 CLOSED — next owner pick: Golden v6 / B2 VAT pack / lab script
+- 2026-10-07: Phase 7 CLOSED (P7-1..P7-4) — Company Health + firm board; unit 336p/0f/1s; e2e 10/10
+- 2026-10-07: P7-3+P7-4 PASS — scorecard, runway/profit tabs, insights, firm board
 - 2026-10-07: P7-2 PASS — AR/AP trackers, DSO/DPO/CCC/collection strip, Debtors tab + GET /health/debtors; unit 324p/0f/1s; e2e 9/9
 - 2026-10-07: P7-1 PASS — health summary (cash, avg CF, runway, L÷A) + /books/health Dashboard; unit 317p/0f/1s; e2e 9/9
 - 2026-10-07: P6-4 PASS — comments/@mentions, CT estimate banner, SVG P&L chart, forecasts layer (db/61); unit 293p/0f/1s; e2e 8/8

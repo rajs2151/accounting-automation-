@@ -1,16 +1,28 @@
 /**
  * P7-1: Company Health summary metrics from posted journals only (fils).
  * P7-2: AR/AP trackers + DSO / DPO / CCC from open items + P&L (same period).
+ * P7-3: scorecard, cash/profit trends, rule-based insights.
+ * P7-4: firm multi-company health board.
  */
 import { withUser } from "@/lib/db";
 import { BooksError } from "@/server/books/errors";
 import { booksAgeing, type AgeingRow } from "@/server/books/ageing";
+import { getBooksCloseChecklist } from "@/server/books/close";
+import { getBooksMonthChecklist } from "@/server/books/dashboard";
 import {
   booksBalanceSheet,
   booksCashFlow,
   booksProfitAndLoss,
   type BsColumn,
 } from "@/server/books/financial-statements";
+import {
+  buildHealthInsights,
+  momPctChange,
+  type CostMover,
+  type HealthInsight,
+  type OverduePartyShare,
+} from "@/server/books/health-insights";
+import { booksTrialBalance } from "@/server/books/trial-balance";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export type HealthMetricChange = {
@@ -520,4 +532,361 @@ export async function booksHealthSummary(
       liabilitiesAssets: "Total liabilities ÷ total assets (balance sheet as of period end)",
     },
   };
+}
+
+export type HealthScorecard = {
+  periodId: string;
+  periodLabel: string;
+  periodStatus: string;
+  closeReady: boolean;
+  failingGateCount: number;
+  failingGates: Array<{ key: string; label: string }>;
+  tbBalanced: boolean;
+  tbDifferenceMinor: number;
+  arOverdueMinor: number;
+  apOverdueMinor: number;
+  documentsToReview: number;
+  bankNeedsReview: number;
+  cashOnHandMinor: number;
+  runway: CashRunway;
+  dsoDays: number | null;
+  liabilitiesAssetsRatioBps: number | null;
+};
+
+export type HealthCashPoint = {
+  periodId: string;
+  label: string;
+  closingCashMinor: number;
+  netChangeMinor: number;
+  runway: CashRunway;
+};
+
+export type HealthPnlPoint = {
+  periodId: string;
+  label: string;
+  revenueMinor: number;
+  cogsMinor: number;
+  opexMinor: number;
+  grossProfitMinor: number;
+  grossMarginBps: number | null;
+  netProfitMinor: number;
+};
+
+export type HealthTrends = {
+  periodId: string;
+  cashSeries: HealthCashPoint[];
+  pnlSeries: HealthPnlPoint[];
+  opexByCategory: CostMover[];
+  topCostMovers: CostMover[];
+};
+
+export type HealthPanel = {
+  scorecard: HealthScorecard;
+  trends: HealthTrends;
+  insights: HealthInsight[];
+};
+
+export type FirmHealthRow = {
+  clientId: string;
+  clientName: string;
+  periodId: string | null;
+  periodLabel: string | null;
+  periodStatus: string | null;
+  closeReady: boolean | null;
+  tbBalanced: boolean | null;
+  unmatchedBankLines: number;
+  pendingExpenses: number;
+  suspenseMinor: number;
+  vatDueDate: string | null;
+  vatDaysUntilDue: number | null;
+  assigneeUserId: string | null;
+  assigneeName: string | null;
+};
+
+function grossMarginBps(revenueMinor: number, grossProfitMinor: number): number | null {
+  const rev = Math.trunc(revenueMinor);
+  if (rev <= 0) return null;
+  return Math.floor((Math.trunc(grossProfitMinor) * 10_000) / rev);
+}
+
+export async function booksHealthPanel(
+  userId: string,
+  clientId: string,
+  periodId: string,
+): Promise<HealthPanel> {
+  if (!periodId) throw new BooksError("period_required", "invalid");
+  const periods = await loadPeriods(userId, clientId);
+  const idx = periods.findIndex((p) => p.id === periodId);
+  if (idx < 0) throw new BooksError("period_not_found", "not_found");
+  const period = periods[idx];
+  const window = periods.slice(Math.max(0, idx - 5), idx + 1); // up to 6 months for charts
+
+  const [summary, debtors, close, month, tb] = await Promise.all([
+    booksHealthSummary(userId, clientId, periodId),
+    booksHealthDebtorsCreditors(userId, clientId, periodId),
+    getBooksCloseChecklist(userId, clientId, periodId),
+    getBooksMonthChecklist(userId, clientId, { periodId }),
+    booksTrialBalance(userId, clientId, periodId, { includeZeroBalances: true }),
+  ]);
+
+  const scorecard: HealthScorecard = {
+    periodId: period.id,
+    periodLabel: period.label,
+    periodStatus: month.periodStatus.status,
+    closeReady: close.ready,
+    failingGateCount: close.failing.length,
+    failingGates: close.gates
+      .filter((g) => g.status === "fail")
+      .map((g) => ({ key: g.key, label: g.label })),
+    tbBalanced: Boolean(tb.balanced),
+    tbDifferenceMinor: Math.trunc(tb.totalClosingDebit) - Math.trunc(tb.totalClosingCredit),
+    arOverdueMinor: debtors.arOverdueMinor,
+    apOverdueMinor: debtors.apOverdueMinor,
+    documentsToReview: month.documentsToReview.count,
+    bankNeedsReview: month.bankLines.needsReview,
+    cashOnHandMinor: summary.cashOnHandMinor,
+    runway: summary.runway,
+    dsoDays: debtors.paymentBehaviour.dsoDays,
+    liabilitiesAssetsRatioBps: summary.liabilitiesAssetsRatioBps,
+  };
+
+  const cashSeries: HealthCashPoint[] = [];
+  const pnlSeries: HealthPnlPoint[] = [];
+  for (const p of window) {
+    const m = await metricsAtPeriod(userId, clientId, periods, p.id);
+    cashSeries.push({
+      periodId: p.id,
+      label: p.label,
+      closingCashMinor: m.cashOnHandMinor,
+      netChangeMinor: m.monthlyNetCashFlowsMinor[m.monthlyNetCashFlowsMinor.length - 1] ?? 0,
+      runway: m.runway,
+    });
+    const pnl = await booksProfitAndLoss(userId, clientId, {
+      mode: "range",
+      from: p.periodStart,
+      to: p.periodEnd,
+    });
+    const col = pnl.columns[0];
+    const revenueMinor = col?.sections.find((s) => s.key === "PL_revenue")?.totalMinor ?? 0;
+    const cogsMinor = col?.sections.find((s) => s.key === "PL_cogs")?.totalMinor ?? 0;
+    const opexMinor = col?.sections.find((s) => s.key === "PL_opex")?.totalMinor ?? 0;
+    const grossProfitMinor = col?.grossProfitMinor ?? revenueMinor - cogsMinor;
+    pnlSeries.push({
+      periodId: p.id,
+      label: p.label,
+      revenueMinor,
+      cogsMinor,
+      opexMinor,
+      grossProfitMinor,
+      grossMarginBps: grossMarginBps(revenueMinor, grossProfitMinor),
+      netProfitMinor: col?.netProfitMinor ?? 0,
+    });
+  }
+
+  // Opex by account: current vs prior month movement on PL_opex accounts.
+  const prior = idx > 0 ? periods[idx - 1] : null;
+  const [curPnlFull, priorPnlFull] = await Promise.all([
+    booksProfitAndLoss(userId, clientId, {
+      mode: "range",
+      from: period.periodStart,
+      to: period.periodEnd,
+    }),
+    prior
+      ? booksProfitAndLoss(userId, clientId, {
+          mode: "range",
+          from: prior.periodStart,
+          to: prior.periodEnd,
+        })
+      : Promise.resolve(null),
+  ]);
+  const curOpex = curPnlFull.columns[0]?.sections.find((s) => s.key === "PL_opex");
+  const priorOpex = priorPnlFull?.columns[0]?.sections.find((s) => s.key === "PL_opex");
+  const priorByCode = new Map((priorOpex?.accounts ?? []).map((a) => [a.code, a.amountMinor]));
+  const opexByCategory: CostMover[] = (curOpex?.accounts ?? [])
+    .map((a) => {
+      const priorMinor = priorByCode.get(a.code) ?? 0;
+      return {
+        code: a.code,
+        name: a.name,
+        currentMinor: Math.trunc(a.amountMinor),
+        priorMinor: Math.trunc(priorMinor),
+        momPct: momPctChange(a.amountMinor, priorMinor),
+      };
+    })
+    .sort((a, b) => b.currentMinor - a.currentMinor);
+
+  const topCostMovers = [...opexByCategory]
+    .filter((m) => m.momPct != null && m.momPct > 0)
+    .sort((a, b) => (b.momPct ?? 0) - (a.momPct ?? 0))
+    .slice(0, 8);
+
+  const overdueByParty = new Map<string, OverduePartyShare>();
+  for (const r of debtors.arRows) {
+    if (!r.highlightOverdue || r.amountMinor <= 0) continue;
+    const prev = overdueByParty.get(r.partyId);
+    if (prev) prev.overdueMinor += r.amountMinor;
+    else {
+      overdueByParty.set(r.partyId, {
+        partyId: r.partyId,
+        partyName: r.partyName,
+        overdueMinor: r.amountMinor,
+      });
+    }
+  }
+
+  const insights = buildHealthInsights({
+    runwayMonthsMilli: summary.runway.kind === "months" ? summary.runway.monthsMilli : null,
+    dsoDays: debtors.paymentBehaviour.dsoDays,
+    arOverdueMinor: debtors.arOverdueMinor,
+    overdueByParty: [...overdueByParty.values()],
+    costMovers: topCostMovers,
+  });
+
+  return {
+    scorecard,
+    trends: { periodId: period.id, cashSeries, pnlSeries, opexByCategory, topCostMovers },
+    insights,
+  };
+}
+
+export async function booksFirmHealthBoard(userId: string): Promise<{ rows: FirmHealthRow[] }> {
+  const clients = await withUser(userId, async (db) => {
+    const r = await db.query(
+      `SELECT c.id, c.name
+       FROM clients c
+       WHERE c.id IN (SELECT visible_client_ids()) AND c.is_synthetic = true
+       ORDER BY c.name`,
+    );
+    return r.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
+  });
+
+  const rows: FirmHealthRow[] = [];
+  for (const c of clients) {
+    try {
+      await assertSyntheticOnly(userId, c.id);
+      const periods = await loadPeriods(userId, c.id);
+      const today = new Date().toISOString().slice(0, 10);
+      const period =
+        periods.find((p) => p.periodStart <= today && p.periodEnd >= today) ||
+        periods[periods.length - 1] ||
+        null;
+      if (!period) {
+        rows.push({
+          clientId: c.id,
+          clientName: c.name,
+          periodId: null,
+          periodLabel: null,
+          periodStatus: null,
+          closeReady: null,
+          tbBalanced: null,
+          unmatchedBankLines: 0,
+          pendingExpenses: 0,
+          suspenseMinor: 0,
+          vatDueDate: null,
+          vatDaysUntilDue: null,
+          assigneeUserId: null,
+          assigneeName: null,
+        });
+        continue;
+      }
+
+      const [month, close, tb, counts] = await Promise.all([
+        getBooksMonthChecklist(userId, c.id, { periodId: period.id }),
+        getBooksCloseChecklist(userId, c.id, period.id),
+        booksTrialBalance(userId, c.id, period.id, { includeZeroBalances: true }),
+        firmCounts(userId, c.id, period.id),
+      ]);
+
+      const vat =
+        month.periodStatus.vat.set === true
+          ? {
+              dueDate: month.periodStatus.vat.dueDate,
+              daysUntilDue: month.periodStatus.vat.daysUntilDue,
+            }
+          : { dueDate: null as string | null, daysUntilDue: null as number | null };
+
+      rows.push({
+        clientId: c.id,
+        clientName: c.name,
+        periodId: period.id,
+        periodLabel: period.label,
+        periodStatus: month.periodStatus.status,
+        closeReady: close.ready,
+        tbBalanced: Boolean(tb.balanced),
+        unmatchedBankLines: month.bankLines.needsReview + month.bankLines.readyNotPosted,
+        pendingExpenses: counts.pendingExpenses,
+        suspenseMinor: counts.suspenseMinor,
+        vatDueDate: vat.dueDate,
+        vatDaysUntilDue: vat.daysUntilDue,
+        assigneeUserId: counts.assigneeUserId,
+        assigneeName: counts.assigneeName,
+      });
+    } catch {
+      // Skip clients the gate or RLS reject for this actor.
+    }
+  }
+  return { rows };
+}
+
+async function assertSyntheticOnly(userId: string, clientId: string) {
+  await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+  });
+}
+
+async function firmCounts(
+  userId: string,
+  clientId: string,
+  periodId: string,
+): Promise<{
+  pendingExpenses: number;
+  suspenseMinor: number;
+  assigneeUserId: string | null;
+  assigneeName: string | null;
+}> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const exp = await db.query(
+      `SELECT COUNT(*)::int AS n FROM books_expenses
+       WHERE client_id = $1 AND status IN ('draft', 'pending') AND deleted_at IS NULL`,
+      [clientId],
+    );
+    const sus = await db.query(
+      `SELECT COALESCE(SUM(l.debit_minor - l.credit_minor), 0)::bigint AS n
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_accounts a ON a.id = l.account_id
+       JOIN books_periods p ON p.id = $2
+       WHERE e.client_id = $1 AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
+         AND e.entry_date <= p.period_end AND a.code = '1390'`,
+      [clientId, periodId],
+    );
+    // Optional assignee from legacy pipeline status (accounting_periods); often null for books-only Cos.
+    let assigneeUserId: string | null = null;
+    let assigneeName: string | null = null;
+    try {
+      const assign = await db.query(
+        `SELECT ps.assignee_user_id AS uid, u.name AS name
+         FROM period_pipeline_status ps
+         LEFT JOIN users u ON u.id = ps.assignee_user_id
+         WHERE ps.client_id = $1 AND ps.assignee_user_id IS NOT NULL
+         ORDER BY ps.updated_at DESC NULLS LAST
+         LIMIT 1`,
+        [clientId],
+      );
+      if (assign.rows[0]?.uid) {
+        assigneeUserId = String(assign.rows[0].uid);
+        assigneeName = assign.rows[0].name ? String(assign.rows[0].name) : null;
+      }
+    } catch {
+      /* table may be empty / RLS — leave null */
+    }
+
+    return {
+      pendingExpenses: Number(exp.rows[0]?.n ?? 0),
+      suspenseMinor: Number(sus.rows[0]?.n ?? 0),
+      assigneeUserId,
+      assigneeName,
+    };
+  });
 }

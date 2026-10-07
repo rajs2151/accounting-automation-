@@ -222,7 +222,12 @@ import {
 } from "@/server/books/comments";
 import { booksCtEstimateBanner } from "@/server/books/ct-estimate";
 import { listBooksForecasts, upsertBooksForecast } from "@/server/books/forecasts";
-import { booksHealthDebtorsCreditors, booksHealthSummary } from "@/server/books/health";
+import {
+  booksFirmHealthBoard,
+  booksHealthDebtorsCreditors,
+  booksHealthPanel,
+  booksHealthSummary,
+} from "@/server/books/health";
 import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
 import { listBooksVatCodes } from "@/server/books/vat-codes";
 import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
@@ -597,6 +602,14 @@ export async function GET(request: Request, ctx: Ctx) {
       return NextResponse.json(
         await booksHealthDebtorsCreditors(session.userId, session.clientId, periodId),
       );
+    }
+    if (path[0] === "health" && path[1] === "panel" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(await booksHealthPanel(session.userId, session.clientId, periodId));
+    }
+    if (path[0] === "health" && path[1] === "firm" && path.length === 2) {
+      return NextResponse.json(await booksFirmHealthBoard(session.userId));
     }
     if (path[0] === "dashboard" && path[1] === "issues" && path.length === 2) {
       return NextResponse.json(
