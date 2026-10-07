@@ -153,7 +153,12 @@ const MESSAGES: Record<string, string> = {
   in_service_date_required: "Enter the in-service date.",
   depreciation_run_in_progress: "Depreciation for this period is already being run. Refresh to see it.",
   fx_rate_missing: "Enter the closing exchange rate for:",
-  fx_rate_required: "Enter the exchange rate.",
+  fx_rate_required:
+    "No exchange rate on or before this date. Add one in Settings → FX rates (or on the document) for:",
+  control_account_forbidden:
+    "Receivables, payables and VAT accounts can't be used in a manual entry — record an invoice, bill, receipt or payment instead. Account:",
+  control_account_requires_open_item:
+    "Match this bank line to an invoice or bill instead of categorising it to a receivables or payables account. Account:",
   fx_rate_date_required: "Enter the rate date.",
   fx_currency_invalid: "Use a three-letter currency code such as USD.",
   invalid_fx_rate: "That exchange rate is not valid.",
@@ -253,7 +258,8 @@ export function apiErrorMessage(data: unknown, fallback = "Something went wrong.
   if (code === "internal_error") {
     return body.ref ? `Something went wrong (ref ${String(body.ref)}). Please try again.` : fallback;
   }
-  if (code && MESSAGES[code]) return MESSAGES[code];
+  // A message written to take a detail ("…for:") reads as a sentence when there is none.
+  if (code && MESSAGES[code]) return MESSAGES[code].replace(/:$/, ".");
   // Codes can carry a detail after a colon, e.g. "year_has_open_periods:Apr 2026,May 2026".
   const [base, ...rest] = code.split(":");
   const detail = rest.join(":").trim();

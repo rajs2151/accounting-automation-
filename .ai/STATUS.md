@@ -12,6 +12,7 @@
   - DONE: VAT 201 unlinked VAT counted gross (settlement Dr 2210 ignored); fails VAT control close gate when boxes ≠ control movement
   - DONE: inbox confirm carries FX rate + due date; missing issue date errors (no silent "today")
   - NOT DONE: journal and open item written in one transaction (still create journal → post → separate open-item upsert)
+- 2026-10-07: **ING-1 review fixes** (stream B): the manual-journal control-account block broke two real flows — opening-balance import with AR/AP lines (now passes `allowControlAccounts`, it already matches party open items) and the Journals "VAT settlement" template (a journal whose every line is 2210/1430/2220/1440 is allowed; trade controls and mixed lines stay blocked). Close VAT gate movement now excludes settlement entries (lines on 2220/1440) so a quarter-end settlement doesn't fail Box 8/11 vs 2210/1430. Readable messages for `fx_rate_required`, `control_account_forbidden`, `control_account_requires_open_item`. New test `control-accounts-carveouts.test.ts`. Unit 338p/0f/7s; e2e 12/14 (2 MinIO-only).
 - 2026-10-07: Phase 7 CLOSED (P7-1..P7-4) — Company Health + firm board; unit 336p/0f/1s; e2e 10/10
 - 2026-10-07: P7-3+P7-4 PASS — scorecard, runway/profit tabs, insights, firm board
 - 2026-10-07: P7-2 PASS — AR/AP trackers, DSO/DPO/CCC/collection strip, Debtors tab + GET /health/debtors; unit 324p/0f/1s; e2e 9/9

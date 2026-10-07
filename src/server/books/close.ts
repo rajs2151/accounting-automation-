@@ -155,6 +155,13 @@ export async function vatControlMovement(
        AND e.entry_date BETWEEN $2::date AND $3::date
        AND a.client_id = $1
        AND a.code IN ('2210', '1430')
+       -- A VAT settlement (2210/1430 netted to 2220 payable / 1440 refund) clears the controls; it is
+       -- not VAT charged in the period, so it must not offset the Box 8 / Box 11 comparison.
+       AND NOT EXISTS (
+         SELECT 1 FROM books_journal_lines sl
+         JOIN books_accounts sa ON sa.id = sl.account_id
+         WHERE sl.entry_id = e.id AND sa.client_id = $1 AND sa.code IN ('2220', '1440')
+       )
      GROUP BY a.code`,
     [clientId, from, to],
   );

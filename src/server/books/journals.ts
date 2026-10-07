@@ -9,7 +9,7 @@ import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
 import { markPeriodChangedSinceClose } from "@/server/books/close";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
-import { isBooksControlAccountCode } from "@/server/books/control-accounts";
+import { isBooksControlAccountCode, isPureVatSettlement } from "@/server/books/control-accounts";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { enqueueBooksJob } from "@/server/books/jobs";
@@ -643,7 +643,8 @@ export async function createBooksJournal(
     await assertSyntheticTenant(db, clientId);
     await requireWritablePeriod(db, clientId, body.periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
-    if (!body.allowControlAccounts) {
+    const lineCodes = lines.map((l) => accountById.get(l.accountId)?.code ?? "");
+    if (!body.allowControlAccounts && !isPureVatSettlement(lineCodes)) {
       for (const line of lines) {
         const meta = accountById.get(line.accountId);
         if (meta && isBooksControlAccountCode(meta.code)) {

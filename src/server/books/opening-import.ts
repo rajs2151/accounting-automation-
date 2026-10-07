@@ -196,6 +196,8 @@ export async function postOpeningImport(
     voucherType: "Opening",
     lines: prepared.journalLines,
     post: false,
+    // AR/AP lines are matched to party open items above (party_open_items_mismatch_*).
+    allowControlAccounts: true,
   });
   const posted = await postBooksJournal(approverId, clientId, created.id);
 

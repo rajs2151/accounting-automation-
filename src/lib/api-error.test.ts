@@ -32,3 +32,10 @@ test("apiErrorMessage: Phase 3-5 codes and code:detail codes read as sentences",
   assert.equal(apiErrorMessage({ error: "fx_rate_missing:USD" }), "Enter the closing exchange rate for: USD.");
   assert.equal(apiErrorMessage({ error: "some_unknown_code" }), "Some unknown code");
 });
+
+test("ING-1 codes read as sentences, with or without a detail", () => {
+  assert.match(apiErrorMessage({ error: "fx_rate_required:USD" }), /Settings → FX rates .*for: USD\.$/);
+  assert.match(apiErrorMessage({ error: "fx_rate_required" }), /for\.$/);
+  assert.match(apiErrorMessage({ error: "control_account_forbidden:1210" }), /manual entry.*Account: 1210\.$/);
+  assert.match(apiErrorMessage({ error: "control_account_requires_open_item:2110" }), /Account: 2110\.$/);
+});
