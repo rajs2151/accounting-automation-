@@ -82,6 +82,8 @@ export function FsReportView({ statement }: { statement: Statement }) {
   const [accounts, setAccounts] = useState<AcctOpt[]>([]);
   const [reclassTo, setReclassTo] = useState("");
   const [reclassMsg, setReclassMsg] = useState("");
+  const [exportMsg, setExportMsg] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     void fetch("/api/books/periods")
@@ -279,6 +281,43 @@ export function FsReportView({ statement }: { statement: Statement }) {
     if (hit) setPeriodId(hit.id);
   }
 
+  async function exportPack(format: "xlsx" | "pdf") {
+    if (!query) return;
+    setExportMsg("");
+    setExporting(true);
+    try {
+      const res = await fetch("/api/books/reports/export-statements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format,
+          mode,
+          from: query.from,
+          to: query.to,
+          asOf,
+          preparedBy: meta.preparedBy,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setExportMsg(apiErrorMessage(j) || String(j.error || "export_failed"));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `financial-statements-${query.from}_${query.to}.${format === "pdf" ? "pdf" : "xlsx"}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportMsg(`Exported ${format.toUpperCase()}.`);
+    } catch {
+      setExportMsg("export_failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const title =
     statement === "pnl" ? "Profit & Loss" : statement === "bs" ? "Balance sheet" : "Cash flow";
   const navKey = statement === "pnl" ? "pnl" : statement === "bs" ? "bs" : "cf";
@@ -368,6 +407,24 @@ export function FsReportView({ statement }: { statement: Statement }) {
           <Button size="sm" variant="outline" onClick={jumpToday} data-testid="fs-today">
             Today
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={exporting || !query || Boolean(gateFails.length)}
+            onClick={() => void exportPack("xlsx")}
+            data-testid="fs-export-xlsx"
+          >
+            Export Excel
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={exporting || !query || Boolean(gateFails.length)}
+            onClick={() => void exportPack("pdf")}
+            data-testid="fs-export-pdf"
+          >
+            Export PDF
+          </Button>
         </div>
       </div>
 
@@ -377,8 +434,13 @@ export function FsReportView({ statement }: { statement: Statement }) {
           data-testid="fs-gate-banner"
           role="alert"
         >
-          Integrity gate failed: {gateFails.join(" · ")}
+          Integrity gate failed: {gateFails.join(" · ")}. Export is blocked until gates pass.
         </div>
+      ) : null}
+      {exportMsg ? (
+        <p className="text-sm text-muted-foreground print:hidden" data-testid="fs-export-msg">
+          {exportMsg}
+        </p>
       ) : null}
 
       {error ? (

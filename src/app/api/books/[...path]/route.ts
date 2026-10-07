@@ -189,6 +189,7 @@ import {
   booksEntrySource,
   booksLedgerReport,
 } from "@/server/books/ledger-report";
+import { exportBooksFinancialStatements } from "@/server/books/fs-export";
 import { createBooksReclassDraft } from "@/server/books/reclass";
 import { buildXlsx } from "@/server/books/xlsx";
 import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
@@ -1272,6 +1273,30 @@ export async function POST(request: Request, ctx: Ctx) {
         headers: {
           "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           "Content-Disposition": `attachment; filename="${name}.xlsx"`,
+        },
+      });
+    }
+    if (path[0] === "reports" && path[1] === "export-statements" && path.length === 2) {
+      const format = String(body.format || "xlsx") === "pdf" ? "pdf" : "xlsx";
+      const mode = parseMode(body.mode);
+      const from = String(body.from || "");
+      const to = String(body.to || "");
+      if (!from || !to) throw new BooksError("date_range_required", "invalid");
+      const result = await exportBooksFinancialStatements(session.userId, session.clientId, {
+        format,
+        mode,
+        from,
+        to,
+        asOf: body.asOf ? String(body.asOf) : undefined,
+        preparedBy: body.preparedBy ? String(body.preparedBy) : undefined,
+      });
+      const ext = format === "pdf" ? "pdf" : "xlsx";
+      const safe = result.fileName.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "financial-statements";
+      return new NextResponse(new Uint8Array(result.body), {
+        headers: {
+          "Content-Type": result.contentType,
+          "Content-Disposition": `attachment; filename="${safe}.${ext}"`,
+          "X-Content-Hash": result.contentHash,
         },
       });
     }

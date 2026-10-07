@@ -89,14 +89,47 @@ function zip(files: Array<{ name: string; data: Buffer }>) {
   return Buffer.concat([...locals, cd, end]);
 }
 
-/** Build a one-sheet workbook. Cells that are plain decimal numbers become numeric cells. */
-export function buildXlsx(rows: string[][], sheetName = "Report"): Buffer {
-  const safeSheet = esc(sheetName.replace(/[\\/?*[\]:]/g, " ").slice(0, 31) || "Report");
+function safeSheetName(name: string, used: Set<string>) {
+  const base = esc(name.replace(/[\\/?*[\]:]/g, " ").trim().slice(0, 31) || "Report");
+  let candidate = base;
+  let n = 2;
+  while (used.has(candidate.toLowerCase())) {
+    const suffix = ` (${n})`;
+    candidate = `${base.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
+    n += 1;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+/** Build a workbook with one or more sheets. Cells that are plain decimal numbers become numeric cells. */
+export function buildMultiSheetXlsx(sheets: Array<{ name: string; rows: string[][] }>): Buffer {
+  if (!sheets.length) throw new Error("xlsx_no_sheets");
+  const used = new Set<string>();
+  const named = sheets.map((s) => ({
+    name: safeSheetName(s.name, used),
+    rows: s.rows,
+  }));
   const f = (name: string, s: string) => ({ name, data: Buffer.from(s, "utf8") });
-  return zip([
+  const overrides = named
+    .map(
+      (_, i) =>
+        `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`,
+    )
+    .join("");
+  const sheetEls = named
+    .map((s, i) => `<sheet name="${s.name}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`)
+    .join("");
+  const rels = named
+    .map(
+      (_, i) =>
+        `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`,
+    )
+    .join("");
+  const files = [
     f(
       "[Content_Types].xml",
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`,
     ),
     f(
       "_rels/.rels",
@@ -104,12 +137,18 @@ export function buildXlsx(rows: string[][], sheetName = "Report"): Buffer {
     ),
     f(
       "xl/workbook.xml",
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${safeSheet}" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetEls}</sheets></workbook>`,
     ),
     f(
       "xl/_rels/workbook.xml.rels",
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`,
     ),
-    f("xl/worksheets/sheet1.xml", sheetXml(rows)),
-  ]);
+    ...named.map((s, i) => f(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows))),
+  ];
+  return zip(files);
+}
+
+/** Build a one-sheet workbook. Cells that are plain decimal numbers become numeric cells. */
+export function buildXlsx(rows: string[][], sheetName = "Report"): Buffer {
+  return buildMultiSheetXlsx([{ name: sheetName, rows }]);
 }
