@@ -23,6 +23,7 @@ import {
   type CfColumnLike,
   type PnlColumnLike,
 } from "@/lib/fs-report-tree";
+import { buildProjectedPnlColumn } from "@/lib/fs-projection";
 import { formatMinor } from "@/lib/money";
 
 type CtBanner = {
@@ -30,6 +31,8 @@ type CtBanner = {
   filingDue: string;
   taxableIncomeMinor: number;
   estimateMinor: number;
+  revenueMinor?: number;
+  smallBusinessReliefMayApply?: boolean;
   disclaimer: string;
 };
 
@@ -90,7 +93,14 @@ type LineRow = {
   amountMinor: number;
 };
 
-type AcctOpt = { id: string; code: string; name: string };
+type AcctOpt = {
+  id: string;
+  code: string;
+  name: string;
+  accountType?: string | null;
+  statementLine?: string | null;
+  subType?: string | null;
+};
 
 export function FsReportView({ statement }: { statement: Statement }) {
   const { periodId, setPeriodId } = useBooksShell();
@@ -253,35 +263,12 @@ export function FsReportView({ statement }: { statement: Statement }) {
       list.push(f);
       byPeriod.set(f.periodId, list);
     }
-    const extra: Array<PnlColumnLike & { projected?: boolean }> = future.map((p) => {
-      const rows = byPeriod.get(p.id) || [];
-      const revTotal = rows.reduce((s, r) => s + r.amountMinor, 0);
-      return {
-        column: { key: `proj:${p.id}`, label: p.label, from: p.periodStart, to: p.periodEnd },
-        sections: [
-          {
-            key: "PL_revenue",
-            label: "Revenue",
-            totalMinor: revTotal,
-            accounts: rows.map((r) => {
-              const acct = accounts.find((a) => a.id === r.accountId);
-              return {
-                accountId: r.accountId,
-                code: acct?.code || "",
-                name: acct?.name || "Projected",
-                amountMinor: r.amountMinor,
-              };
-            }),
-          },
-        ],
-        grossProfitMinor: revTotal,
-        ebitdaMinor: revTotal,
-        ebitMinor: revTotal,
-        ebtMinor: revTotal,
-        netProfitMinor: revTotal,
-        projected: true,
-      };
-    });
+    const extra: Array<PnlColumnLike & { projected?: boolean }> = future.map((p) => ({
+      column: { key: `proj:${p.id}`, label: p.label, from: p.periodStart, to: p.periodEnd },
+      // Same sections and subtotals as the real P&L (a forecast rent line is an expense, not revenue).
+      ...buildProjectedPnlColumn(byPeriod.get(p.id) || [], accounts),
+      projected: true,
+    }));
     return [...pnl, ...extra];
   }, [pnl, projectionsOn, statement, selected, periods, forecasts, accounts]);
 
@@ -649,6 +636,12 @@ export function FsReportView({ statement }: { statement: Statement }) {
             Estimate {formatMinor(ctBanner.estimateMinor)} AED on taxable income{" "}
             {formatMinor(ctBanner.taxableIncomeMinor)} ({ctBanner.disclaimer})
           </div>
+          {ctBanner.smallBusinessReliefMayApply ? (
+            <div className="text-muted-foreground" data-testid="fs-ct-sbr">
+              Revenue so far {formatMinor(ctBanner.revenueMinor ?? 0)} AED is within the AED 3,000,000 Small
+              Business Relief limit — if the company elects relief, no corporate tax is due for this period.
+            </div>
+          ) : null}
         </div>
       ) : null}
 

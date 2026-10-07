@@ -19,7 +19,7 @@ export async function listBooksAccounts(
               normal_balance AS "normalBalance",
               is_ar AS "isAr", is_ap AS "isAp", is_vat_control AS "isVatControl",
               is_bank AS "isBank", is_control AS "isControl",
-              cash_flow_class AS "cashFlowClass",
+              cash_flow_class AS "cashFlowClass", sub_type AS "subType",
               statement_line AS "statementLine", note_group AS "noteGroup",
               vat_class AS "vatClass", default_vat_code AS "defaultVatCode", active
        FROM books_accounts

@@ -24,15 +24,18 @@ export function estimateCtPayableMinor(taxableIncomeBeforeCtMinor: number): numb
   return Math.floor((excess * CT_ESTIMATE_RATE_BPS) / 10_000);
 }
 
-/** Filing due = 9 months after fiscal year end (calendar months; clamp day to month length). */
+/** Small Business Relief: revenue up to AED 3,000,000, for tax periods ending by 31 Dec 2026. */
+export const SBR_REVENUE_LIMIT_MINOR = 300_000_000;
+export const SBR_LAST_PERIOD_END = "2026-12-31";
+
+/** Filing due = the end of the 9th month after the tax period ends (30 Jun → 31 Mar, 28 Feb → 30 Nov). */
 export function ctFilingDueDate(fiscalYearEndIso: string): string {
-  const [ys, ms, ds] = fiscalYearEndIso.slice(0, 10).split("-").map(Number);
+  const [ys, ms] = fiscalYearEndIso.slice(0, 10).split("-").map(Number);
   const total = ys * 12 + (ms - 1) + 9;
   const y = Math.floor(total / 12);
   const m = (total % 12) + 1;
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const d = Math.min(ds, last);
-  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return `${y}-${String(m).padStart(2, "0")}-${String(last).padStart(2, "0")}`;
 }
 
 export type CtBanner = {
@@ -43,6 +46,11 @@ export type CtBanner = {
   filingDue: string;
   taxableIncomeMinor: number;
   estimateMinor: number;
+  /** Revenue for the year so far (fils). */
+  revenueMinor: number;
+  /** Revenue so far is within the Small Business Relief limit and the tax period qualifies:
+   *  the company may elect relief, in which case no CT is due. */
+  smallBusinessReliefMayApply: boolean;
   disclaimer: string;
 };
 
@@ -52,7 +60,10 @@ export function buildCtBanner(args: {
   fiscalYearEnd: string;
   /** YTD net profit before CT expense (fils). */
   taxableIncomeMinor: number;
+  /** YTD revenue (fils). */
+  revenueMinor?: number;
 }): CtBanner {
+  const revenueMinor = args.revenueMinor ?? 0;
   return {
     taxYearLabel: `FY${args.fiscalYear}`,
     fiscalYear: args.fiscalYear,
@@ -61,6 +72,9 @@ export function buildCtBanner(args: {
     filingDue: ctFilingDueDate(args.fiscalYearEnd),
     taxableIncomeMinor: args.taxableIncomeMinor,
     estimateMinor: estimateCtPayableMinor(args.taxableIncomeMinor),
+    revenueMinor,
+    smallBusinessReliefMayApply:
+      revenueMinor <= SBR_REVENUE_LIMIT_MINOR && args.fiscalYearEnd <= SBR_LAST_PERIOD_END,
     disclaimer: "estimate — not a tax computation",
   };
 }
@@ -95,11 +109,16 @@ export async function booksCtEstimateBanner(
     });
     const col = pnl.columns[0];
     const taxableIncomeMinor = col?.ebtMinor ?? 0;
+    // Revenue section of the same P&L column (what Small Business Relief is tested on).
+    const revenueMinor = col
+      ? col.sections.find((sec) => sec.key === "PL_revenue")?.totalMinor ?? 0
+      : 0;
     return buildCtBanner({
       fiscalYear: fy,
       fiscalYearStart: bounds.start,
       fiscalYearEnd: bounds.end,
       taxableIncomeMinor,
+      revenueMinor,
     });
   });
 }

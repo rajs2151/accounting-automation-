@@ -119,3 +119,20 @@ test("RPT-1: export rows carry the on-screen numbers, grand total and Difference
   });
   assert.deepEqual(off.at(-1), ["Difference", "0.10", ""]);
 });
+
+test("reportExportRows leaves projected (forecast) columns out of exports", () => {
+  const rows = reportExportRows({
+    title: "P&L",
+    company: "Co",
+    periodLabel: "Jun 2026",
+    labelHeader: "Account",
+    columns: [
+      { key: "jun", label: "Jun 2026", kind: "amount" },
+      { key: "jul", label: "Jul 2026", kind: "amount", projected: true },
+    ],
+    rows: [{ id: "a", label: "Revenue", values: { jun: 100, jul: 999 } }],
+  });
+  const header = rows.find((r) => r[0] === "Account")!;
+  assert.deepEqual(header, ["Account", "Jun 2026"]);
+  assert.ok(!rows.some((r) => r.includes("9.99")), "projected amount not exported");
+});

@@ -21,7 +21,6 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
   const [logScale, setLogScale] = useState(false);
   const series = useMemo(() => buildFsChartSeries(columns, metric), [columns, metric]);
 
-  const maxAbs = Math.max(1, ...series.map((p) => Math.abs(p.amountMinor)));
   const height = 140;
   const barW = 36;
   const gap = 16;
@@ -29,12 +28,24 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
   const padB = 28;
   const width = padL + series.length * (barW + gap) + gap;
 
-  function barHeight(minor: number): number {
-    const v = Math.abs(minor);
-    if (!logScale) return (v / maxAbs) * (height - 8);
-    if (v <= 0) return 0;
-    const maxLog = Math.log10(maxAbs + 1);
-    return (Math.log10(v + 1) / maxLog) * (height - 8);
+  // Zero baseline: profits rise above it, losses hang below it (a loss must not look like a profit).
+  const maxPos = Math.max(0, ...series.map((p) => p.amountMinor));
+  const maxNeg = Math.max(0, ...series.map((p) => -p.amountMinor));
+  const plot = height - 8;
+  const zeroY = 4 + (maxPos + maxNeg > 0 ? (plot * maxPos) / (maxPos + maxNeg) : plot);
+
+  function scaled(v: number, max: number, room: number): number {
+    if (v <= 0 || max <= 0) return 0;
+    if (!logScale) return (v / max) * room;
+    return (Math.log10(v + 1) / Math.log10(max + 1)) * room;
+  }
+
+  function bar(minor: number): { y: number; h: number } {
+    if (minor >= 0) {
+      const h = scaled(minor, maxPos, zeroY - 4);
+      return { y: zeroY - h, h };
+    }
+    return { y: zeroY, h: scaled(-minor, maxNeg, height - zeroY) };
   }
 
   const current = series[series.length - 1];
@@ -91,10 +102,10 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
         <text x={4} y={12} className="fill-muted-foreground" fontSize={9}>
           AED
         </text>
+        <line x1={padL - 4} x2={width} y1={zeroY} y2={zeroY} className="stroke-border" strokeWidth={1} />
         {series.map((p, i) => {
-          const h = barHeight(p.amountMinor);
+          const { y, h } = bar(p.amountMinor);
           const x = padL + i * (barW + gap);
-          const y = height - h;
           return (
             <g key={p.key}>
               <rect
@@ -103,7 +114,9 @@ export function FsMetricChart({ columns }: { columns: PnlColumnForChart[] }) {
                 width={barW}
                 height={Math.max(h, p.amountMinor === 0 ? 0 : 2)}
                 rx={3}
-                className={p.projected ? "fill-amber-400/80" : "fill-primary/80"}
+                className={
+                  p.amountMinor < 0 ? "fill-red-500/80" : p.projected ? "fill-amber-400/80" : "fill-primary/80"
+                }
               />
               <text
                 x={x + barW / 2}

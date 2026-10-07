@@ -212,6 +212,8 @@ export function reportExportRows(args: {
   footer?: Array<{ label: string; values: Record<string, number> }>;
   difference?: { debitKey: string; creditKey: string; totals: Record<string, number> } | null;
 }): string[][] {
+  // Exports are the books: forecast (projected) columns never leave the screen.
+  args = { ...args, columns: args.columns.filter((c) => !c.projected) };
   const out: string[][] = [
     [args.title],
     [args.company],

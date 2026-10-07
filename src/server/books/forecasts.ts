@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
+import { assertUuid } from "@/server/books/periods";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export type ForecastMethod = "trailing_avg_3" | "trailing_avg_6" | "linear" | "override";
@@ -86,10 +87,25 @@ export async function upsertBooksForecast(
   const methods = new Set(["trailing_avg_3", "trailing_avg_6", "linear", "override"]);
   if (!methods.has(body.method)) throw new BooksError("invalid_forecast_method", "invalid");
   const amount = Math.trunc(Number(body.amountMinor));
-  if (!Number.isFinite(amount)) throw new BooksError("invalid_forecast_amount", "invalid");
+  if (!Number.isSafeInteger(amount)) throw new BooksError("invalid_forecast_amount", "invalid");
+  assertUuid(body.accountId, "invalid_account_id");
+  assertUuid(body.periodId, "invalid_period_id");
+  if (body.growthPct != null) {
+    const g = Number(body.growthPct);
+    // growth_pct is numeric(8,4): keep it in range instead of a database overflow (500).
+    if (!Number.isFinite(g) || Math.abs(g) >= 10_000) throw new BooksError("invalid_growth_pct", "invalid");
+  }
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    // Account and period must belong to this company (foreign keys don't see RLS).
+    const acct = await db.query(
+      `SELECT 1 FROM books_accounts WHERE id = $1 AND client_id = $2 AND account_type IN ('income', 'expense')`,
+      [body.accountId, clientId],
+    );
+    if (!acct.rowCount) throw new BooksError("account_not_found", "not_found");
+    const per = await db.query(`SELECT 1 FROM books_periods WHERE id = $1 AND client_id = $2`, [body.periodId, clientId]);
+    if (!per.rowCount) throw new BooksError("period_not_found", "not_found");
     const id = randomUUID();
     const row = await db.query(
       `INSERT INTO books_forecasts (

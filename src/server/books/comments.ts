@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
+import { assertUuid } from "@/server/books/periods";
+import type { PoolClient } from "pg";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 /** Parse @Name or @"Full Name" mentions from body. */
@@ -40,36 +42,52 @@ export function resolveMentionUserIds(
   return [...hits];
 }
 
+/** Longest comment accepted (characters). */
+export const COMMENT_MAX_LENGTH = 4000;
+
+/**
+ * The account and period must belong to this company (foreign keys don't see RLS, so another
+ * company's ids would otherwise be accepted), and only roles that may write can comment.
+ */
+async function assertCommentTarget(db: PoolClient, userId: string, clientId: string, accountId: string, periodId: string) {
+  const role = await db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+  if (!["admin", "accountant", "approver"].includes(String(role.rows[0]?.role || ""))) {
+    throw new BooksError("comment_forbidden", "forbidden");
+  }
+  const acct = await db.query(`SELECT 1 FROM books_accounts WHERE id = $1 AND client_id = $2`, [accountId, clientId]);
+  if (!acct.rowCount) throw new BooksError("account_not_found", "not_found");
+  const per = await db.query(`SELECT 1 FROM books_periods WHERE id = $1 AND client_id = $2`, [periodId, clientId]);
+  if (!per.rowCount) throw new BooksError("period_not_found", "not_found");
+}
+
 export async function getOrCreateCommentThread(
   userId: string,
   clientId: string,
   accountId: string,
   periodId: string,
 ) {
+  assertUuid(accountId, "invalid_account_id");
+  assertUuid(periodId, "invalid_period_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    const existing = await db.query(
-      `SELECT id FROM books_comment_threads
-       WHERE client_id = $1 AND account_id = $2 AND period_id = $3`,
-      [clientId, accountId, periodId],
-    );
-    if (existing.rowCount) return { id: String(existing.rows[0].id), created: false };
+    await assertCommentTarget(db, userId, clientId, accountId, periodId);
     const id = randomUUID();
-    try {
-      await db.query(
-        `INSERT INTO books_comment_threads (id, client_id, account_id, period_id)
-         VALUES ($1,$2,$3,$4)`,
-        [id, clientId, accountId, periodId],
-      );
-    } catch (e: unknown) {
-      // Unique race — re-read.
-      const again = await db.query(
+    // ON CONFLICT instead of catch-and-reread: after a failed INSERT the transaction is aborted, so the
+    // old retry SELECT could never run (two first comments at once gave a 500).
+    const inserted = await db.query(
+      `INSERT INTO books_comment_threads (id, client_id, account_id, period_id)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (client_id, account_id, period_id) DO NOTHING
+       RETURNING id`,
+      [id, clientId, accountId, periodId],
+    );
+    if (!inserted.rowCount) {
+      const existing = await db.query(
         `SELECT id FROM books_comment_threads
          WHERE client_id = $1 AND account_id = $2 AND period_id = $3`,
         [clientId, accountId, periodId],
       );
-      if (again.rowCount) return { id: String(again.rows[0].id), created: false };
-      throw e;
+      return { id: String(existing.rows[0].id), created: false };
     }
     await writeBooksAudit(db, {
       clientId,
@@ -88,6 +106,7 @@ export async function listCommentThreadBadges(
   clientId: string,
   periodId: string,
 ): Promise<Array<{ accountId: string; threadId: string; messageCount: number; unreadCount: number }>> {
+  assertUuid(periodId, "invalid_period_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const rows = await db.query(
@@ -118,6 +137,7 @@ export async function listCommentMessages(
   clientId: string,
   threadId: string,
 ) {
+  assertUuid(threadId, "invalid_thread_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const t = await db.query(
@@ -159,6 +179,7 @@ export async function postCommentMessage(
 ) {
   const text = String(body.text || "").trim();
   if (!text) throw new BooksError("comment_body_required", "invalid");
+  if (text.length > COMMENT_MAX_LENGTH) throw new BooksError("comment_too_long", "invalid");
   if (!body.accountId || !body.periodId) throw new BooksError("comment_fields_required", "invalid");
 
   const thread = await getOrCreateCommentThread(userId, clientId, body.accountId, body.periodId);

@@ -50,7 +50,9 @@ test("P6-4b: estimateCtPayableMinor hand checks (AED → fils)", () => {
 
 test("P6-4b: filing due is 9 months after fiscal year end", () => {
   assert.equal(ctFilingDueDate("2026-12-31"), "2027-09-30");
-  assert.equal(ctFilingDueDate("2026-06-30"), "2027-03-30");
+  // Nine months after the end of the tax period: 30 Jun 2026 → 31 Mar 2027 (was asserted as 30 Mar).
+  assert.equal(ctFilingDueDate("2026-06-30"), "2027-03-31");
+  assert.equal(ctFilingDueDate("2027-02-28"), "2027-11-30");
 });
 
 test("P6-4b: buildCtBanner labels estimate disclaimer", () => {
@@ -109,6 +111,8 @@ test("P6-4b: YTD banner from posted journals; forecasts excluded", async (t) => 
     assert.equal(banner.estimateMinor, 1_125_000);
     assert.equal(banner.fiscalYear, 2026);
     assert.equal(banner.filingDue, "2027-09-30");
+    // AED 500k revenue in a period ending by 31 Dec 2026: Small Business Relief may be elected.
+    assert.equal(banner.smallBusinessReliefMayApply, true);
   } finally {
     await admin.end();
   }
