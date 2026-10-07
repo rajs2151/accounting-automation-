@@ -241,6 +241,6 @@ def _run_tesseract_fallback(image: Image.Image) -> OcrResult:
 
 
 def page_has_text_layer(text: str, min_chars: int | None = None) -> bool:
-    min_chars = min_chars or int(os.environ.get("PDF_PROBE_MIN_CHARS", "30"))
-    cleaned = "".join(ch for ch in (text or "") if not ch.isspace())
-    return len(cleaned) >= min_chars
+    from daftar.textclean import page_has_usable_text_layer
+
+    return page_has_usable_text_layer(text, min_chars=min_chars)

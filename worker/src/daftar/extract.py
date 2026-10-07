@@ -16,7 +16,6 @@ from daftar.errors import CodedError
 from daftar.mapping import detect_date_format, detect_separators, field_for_header, propose_column_map
 from daftar.money import MoneyError, decimal_string_from_excel, parse_amount
 from daftar.preview import render_table_png, union_bbox
-from daftar.textclean import text_layer_unreliable
 
 
 @dataclass
@@ -430,15 +429,11 @@ def _cluster_lines(tokens: list[Token]) -> list[list[Token]]:
 
 
 def _page_has_text(text: str) -> bool:
-    minimum = int(os.environ.get("PDF_PROBE_MIN_CHARS", "30"))
-    if text_layer_unreliable(text):
-        return False  # unmapped-font garbage -> OCR route
-    compact = re.sub(r"\s+", "", text or "")
-    if len(compact) < minimum:
-        return False
-    has_date = re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text) is not None
-    has_amount = re.search(r"\d+[.,]\d{2}", text) is not None
-    return has_date and has_amount
+    from daftar.textclean import page_has_usable_text_layer
+
+    # Approximate word count from whitespace so short digital totals pages skip OCR.
+    words = len(re.findall(r"\S+", text or ""))
+    return page_has_usable_text_layer(text, word_count=words)
 
 
 def _apply_meta(extraction: Extraction, meta: dict[str, str]) -> None:

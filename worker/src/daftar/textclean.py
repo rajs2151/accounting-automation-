@@ -39,6 +39,30 @@ def text_layer_unreliable(text: str, threshold: float = 0.2) -> bool:
     return garbled_ratio(text) > threshold
 
 
+def page_has_usable_text_layer(
+    text: str,
+    *,
+    min_chars: int | None = None,
+    word_count: int = 0,
+) -> bool:
+    """One rule for extract / pdf_words / ocr_engine: usable text layer → skip OCR.
+
+    Unreliable (garbled / unmapped-font) layers always OCR. Otherwise a page is
+    digital text when it has enough characters **or** enough real words (short
+    totals-only pages on multi-page invoices). Empty/tiny layers (scans) OCR.
+    """
+    import os
+
+    minimum = min_chars if min_chars is not None else int(os.environ.get("PDF_PROBE_MIN_CHARS", "30"))
+    if text_layer_unreliable(text):
+        return False
+    compact = re.sub(r"\s+", "", text or "")
+    if len(compact) >= minimum:
+        return True
+    # Short but real digital pages (e.g. page-2 totals) still have word tokens.
+    return word_count >= 3
+
+
 def clean_param(value: Any) -> Any:
     """Recursively clean DB parameters. JSON strings may carry escaped NULs ("\\u0000"), which jsonb rejects."""
     if isinstance(value, str):

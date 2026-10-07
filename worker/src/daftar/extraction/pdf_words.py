@@ -5,17 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from daftar.textclean import clean_text, text_layer_unreliable
+from daftar.textclean import clean_text, page_has_usable_text_layer, text_layer_unreliable
 
 
 def _has_text_layer(text: str, words: list) -> bool:
-    """True when the page has a usable text layer (not a scanned image page, not unmapped-font garbage)."""
-    if text_layer_unreliable(text):
-        return False
-    if words:
-        return True
-    compact = re.sub(r"\s+", "", text or "")
-    return len(compact) >= 20
+    """Same usable-text rule as extract_file / ocr_engine."""
+    return page_has_usable_text_layer(text, word_count=len(words or []))
 
 
 def collect_pdf_word_boxes(content: bytes) -> tuple[list[dict[str, Any]], list[str], list[tuple[int, str]]]:

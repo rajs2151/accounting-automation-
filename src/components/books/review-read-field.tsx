@@ -149,7 +149,9 @@ export function ReviewReadField({
           }}
         >
           <span className="min-w-0 flex-1 truncate tabular-nums">
-            {value || <span className="text-muted-foreground">—</span>}
+            {value || (
+              <span className="text-muted-foreground">Not found — enter it</span>
+            )}
           </span>
           <span className="ms-1 flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <button

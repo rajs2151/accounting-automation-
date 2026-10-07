@@ -5,7 +5,13 @@ import sys
 import types
 
 from daftar.pipeline import AppConn
-from daftar.textclean import clean_param, clean_text, garbled_ratio, text_layer_unreliable
+from daftar.textclean import (
+    clean_param,
+    clean_text,
+    garbled_ratio,
+    page_has_usable_text_layer,
+    text_layer_unreliable,
+)
 
 
 def test_clean_text_strips_nul_and_controls_keeps_layout():
@@ -64,7 +70,10 @@ def test_pdf_words_routes_garbled_page_to_ocr(monkeypatch):
         def get_text(self, kind):
             return self._text if kind == "text" else self._words
 
-    good = Page("Invoice INV-1 Total 105.00 " * 3, [(10, 10, 50, 20, "Invoice", 0, 0, 0)])
+    good = Page(
+        "Invoice INV-1 Date 15/05/2026 Total 105.00 " * 2,
+        [(10, 10, 50, 20, "Invoice", 0, 0, 0)],
+    )
     bad = Page("\x00\x01\x02" * 40, [(10, 10, 50, 20, "\x00\x01", 0, 0, 0)])
 
     class Doc(list):
@@ -81,3 +90,16 @@ def test_pdf_words_routes_garbled_page_to_ocr(monkeypatch):
     assert texts[1] == ""
     assert all(b.get("page") != 2 or "text" not in b for b in boxes)
     assert all("\x00" not in b.get("text", "") for b in boxes)
+
+
+def test_page_has_usable_text_layer_skips_ocr_on_digital_text():
+    assert page_has_usable_text_layer(
+        "TAX INVOICE INV-1 Date 15/05/2026 Subtotal 100.00 VAT 5.00 Total 105.00"
+    )
+    # Short totals page: few chars but real words → still digital.
+    assert page_has_usable_text_layer(
+        "VAT 5%                   5.00\nTotal                  105.00\n",
+        word_count=4,
+    )
+    assert not page_has_usable_text_layer("short")
+    assert not page_has_usable_text_layer("\x00\x01" * 40)

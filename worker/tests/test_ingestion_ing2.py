@@ -111,6 +111,42 @@ def test_xlsx_bank_parsed_without_ocr():
     assert any("Sale" in (r.cells.get("Description") or "") for r in extraction.rows)
 
 
+def test_fixture_xlsx_bank_statement_no_ocr():
+    from pathlib import Path
+
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "extraction"
+        / "xlsx"
+        / "bank_statement_a.xlsx"
+    )
+    assert fixture.is_file(), "synthetic XLSX bank fixture missing"
+    with patch("daftar.extract._ocr_image") as ocr:
+        extraction = extract_file(fixture.read_bytes(), "xlsx")
+        ocr.assert_not_called()
+    assert extraction.kind == "xlsx"
+    assert extraction.rows
+
+
+def test_phone_jpg_routes_through_ocr_mocked():
+    from pathlib import Path
+
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures"
+        / "extraction"
+        / "scans"
+        / "phone_skew_01.jpg"
+    )
+    assert fixture.is_file(), "synthetic skewed phone JPG fixture missing"
+    content = fixture.read_bytes()
+    with patch("daftar.extract._ocr_image", side_effect=_fake_ocr_image):
+        extraction = extract_file(content, "image")
+    assert extraction.raw_pages
+    assert "TAX INVOICE" in extraction.raw_pages[0]
+
+
 def test_card_statement_pdf_no_longer_crashes():
     pdf = b"%PDF-1.4\n" + b"\xff\xfe card statement binary " + b"\x00" * 32
     card = CardGenericParser()

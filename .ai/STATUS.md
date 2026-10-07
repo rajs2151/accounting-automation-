@@ -2,7 +2,14 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **stopped after ING-2 push** — owner reviews ING-2 before ING-3
+- Current task: **ING-2b leftovers then ING-3** (in progress)
+- 2026-10-07: **ING-2b** extraction leftovers (no new db migration; no RLS)
+  - DONE: company on neither party → `purchase_bill` @ 0.5 + `company_not_on_invoice` (stream B `e29c8e6`)
+  - DONE: one usable text-layer rule (`page_has_usable_text_layer`) shared by extract / pdf_words / ocr_engine
+  - DONE: review empty copy “Not found — enter it”; lines/totals never invent 0.00 / Off by 0.00
+  - DONE: fixtures `phone_skew_01.jpg`, `xlsx/bank_statement_a.xlsx`; gitignore `/real-docs/` `/lab-out/`
+  - DONE: `npm run lab:extract-one` → `/lab-out/` (owner measures digital/scanned/image timings locally)
+  - NOT DONE (→ ING-3): intake/review UI chrome
 - 2026-10-07: **ING-1b** atomic document journal + open item (no new db migration; no RLS)
   - Gates (shared with ING-2 ship): typecheck 0; eslint src+e2e 0 errors / 7 warnings (pre-existing); unit 346p/0f/1s; pytest 114p; next build exit 0; local e2e 10/10
   - DONE: approve posts journal + open item + document update in **one** approver transaction; draft discarded on failure

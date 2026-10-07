@@ -1,0 +1,7 @@
+{
+  "doc_type": "bank_statement",
+  "currency": "AED",
+  "opening_minor": 100000,
+  "closing_minor": 115000,
+  "lines": 2
+}

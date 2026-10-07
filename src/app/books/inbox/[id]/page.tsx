@@ -34,6 +34,7 @@ import {
   mapWorkerFieldsToDisplay,
   type ReviewFieldState,
 } from "@/lib/review-fields";
+import { normalizeReviewLines, REVIEW_EMPTY_FIELD } from "@/lib/review-lines";
 import { partyMismatchDiffs } from "@/lib/party-mismatch";
 import { prevNextInReviewQueue, reviewQueuePositionLabel } from "@/lib/review-queue-nav";
 import { validateInvoiceLineSum } from "@/lib/invoice-validation";
@@ -116,21 +117,10 @@ function moneyMinorFromDisplay(value: string | undefined): number | null {
   }
 }
 
+const EMPTY_FIELD = REVIEW_EMPTY_FIELD;
+
 function normalizeLines(items: ReviewPayload["lineItems"]) {
-  return (items || []).map((l, i) => {
-    const raw =
-      l.vatCode ??
-      (l as { vat_code?: string | null }).vat_code ??
-      null;
-    const code = raw == null || String(raw).trim() === "" ? "" : String(raw).trim();
-    return {
-      description: l.description || `Line ${i + 1}`,
-      // Never invent SR — blank means accountant must pick before confirm.
-      vatCode: code,
-      netMinor: Number(l.netMinor ?? l.amount_minor ?? 0),
-      vatMinor: Number(l.vatMinor ?? 0),
-    };
-  });
+  return normalizeReviewLines(items);
 }
 
 const REVIEW_VAT_CODES = ["SR", "ZR", "EX", "OOS"] as const;
@@ -193,7 +183,12 @@ export default function InboxReviewPage() {
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [fields, setFields] = useState<Record<string, FieldState>>({});
   const [lineItems, setLineItems] = useState<
-    Array<{ description: string; vatCode: string; netMinor: number; vatMinor: number }>
+    Array<{
+      description: string;
+      vatCode: string;
+      netMinor: number | null;
+      vatMinor: number | null;
+    }>
   >([]);
   const [activeField, setActiveField] = useState<string | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
@@ -397,6 +392,10 @@ export default function InboxReviewPage() {
       toast.error("Pick a VAT code for every line before confirm (do not assume 5%).");
       return;
     }
+    if (lineItems.some((l) => l.netMinor == null)) {
+      toast.error("Enter a net amount for every line before confirm.");
+      return;
+    }
     const res = await fetch(`/api/books/inbox/${params.id}/confirm`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -405,10 +404,10 @@ export default function InboxReviewPage() {
         periodId,
         docType: resolveConfirmDocType(),
         lines: lineItems.map((l) => ({
-          description: l.description,
+          description: l.description || "Line",
           vatCode: l.vatCode || null,
           netMinor: l.netMinor,
-          vatMinor: l.vatMinor,
+          vatMinor: l.vatMinor ?? 0,
         })),
       }),
     });
@@ -495,7 +494,8 @@ export default function InboxReviewPage() {
         vatTotalMinor: vat,
         grandTotalMinor: grand,
         offByMinor: null as number | null,
-        balanced: flags.length === 0,
+        // Missing totals are incomplete — never show Balanced or Off by 0.00.
+        balanced: null as boolean | null,
       };
     }
     const v = validateInvoiceLineSum({
@@ -521,7 +521,15 @@ export default function InboxReviewPage() {
   const fieldStatus = Object.fromEntries(
     Object.entries(fields).map(([k, f]) => [k, { status: f.status, confidence: f.confidence }]),
   );
-  const vatRows = vatByCodeSummary(lineItems);
+  const vatRows = vatByCodeSummary(
+    lineItems
+      .filter((l) => l.netMinor != null)
+      .map((l) => ({
+        vatCode: l.vatCode,
+        netMinor: l.netMinor as number,
+        vatMinor: l.vatMinor ?? 0,
+      })),
+  );
   const docType =
     review?.detectedType ||
     fields.doc_type?.value ||
@@ -862,11 +870,15 @@ export default function InboxReviewPage() {
                 </thead>
                 <tbody>
                   {lineItems.map((l, idx) => (
-                    <tr key={`${l.description}-${idx}`} className="border-t border-border">
-                      <td className="py-1">{l.description}</td>
+                    <tr key={`${l.description || "line"}-${idx}`} className="border-t border-border">
+                      <td className="py-1">
+                        {l.description || (
+                          <span className="text-muted-foreground">{EMPTY_FIELD}</span>
+                        )}
+                      </td>
                       {lineMode === "accounting" ? (
                         <td className="text-muted-foreground" data-testid={`line-account-${idx}`}>
-                          —
+                          {EMPTY_FIELD}
                         </td>
                       ) : null}
                       <td>
@@ -889,8 +901,20 @@ export default function InboxReviewPage() {
                           ))}
                         </select>
                       </td>
-                      <td className="text-right tabular-nums">{formatMinor(l.netMinor)}</td>
-                      <td className="text-right tabular-nums">{formatMinor(l.vatMinor)}</td>
+                      <td className="text-right tabular-nums">
+                        {l.netMinor != null ? (
+                          formatMinor(l.netMinor)
+                        ) : (
+                          <span className="text-muted-foreground">{EMPTY_FIELD}</span>
+                        )}
+                      </td>
+                      <td className="text-right tabular-nums">
+                        {l.vatMinor != null ? (
+                          formatMinor(l.vatMinor)
+                        ) : (
+                          <span className="text-muted-foreground">{EMPTY_FIELD}</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -901,7 +925,11 @@ export default function InboxReviewPage() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Subtotal</span>
                 <span className="tabular-nums">
-                  {balance.subtotalMinor != null ? formatMinor(balance.subtotalMinor) : "—"}
+                  {balance.subtotalMinor != null ? (
+                    formatMinor(balance.subtotalMinor)
+                  ) : (
+                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                  )}
                 </span>
               </div>
               {vatRows.map((row) => (
@@ -916,30 +944,38 @@ export default function InboxReviewPage() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">VAT total</span>
                 <span className="tabular-nums">
-                  {balance.vatTotalMinor != null ? formatMinor(balance.vatTotalMinor) : "—"}
+                  {balance.vatTotalMinor != null ? (
+                    formatMinor(balance.vatTotalMinor)
+                  ) : (
+                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                  )}
                 </span>
               </div>
               <div className="flex items-center justify-between border-t-2 border-double border-foreground/80 pt-2 text-sm font-semibold">
                 <span>Grand total</span>
                 <span className="tabular-nums">
-                  {balance.grandTotalMinor != null ? formatMinor(balance.grandTotalMinor) : "—"}
+                  {balance.grandTotalMinor != null ? (
+                    formatMinor(balance.grandTotalMinor)
+                  ) : (
+                    <span className="text-muted-foreground font-normal">{EMPTY_FIELD}</span>
+                  )}
                 </span>
               </div>
               <div className="pt-1">
-                {balance.balanced ? (
+                {balance.balanced === true ? (
                   <StatusBadge
                     meta={{ label: "Balanced", tone: "success" }}
                     data-testid="totals-balance-badge"
                   />
-                ) : (
+                ) : balance.balanced === false && balance.offByMinor != null ? (
                   <StatusBadge
                     meta={{
-                      label: `Off by ${formatMinor(Math.abs(balance.offByMinor ?? 0))}`,
+                      label: `Off by ${formatMinor(Math.abs(balance.offByMinor))}`,
                       tone: "danger",
                     }}
                     data-testid="totals-balance-badge"
                   />
-                )}
+                ) : null}
               </div>
             </section>
 
