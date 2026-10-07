@@ -1,8 +1,17 @@
 name: acceptance
 
 on:
+  # One run per change: PRs run on pull_request; push only for main (merges).
+  # Running on both push and pull_request doubled Actions minutes for every PR commit.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A newer commit cancels the older run of the same PR/branch instead of finishing it.
+concurrency:
+  group: acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
