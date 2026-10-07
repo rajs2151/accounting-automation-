@@ -63,6 +63,8 @@ class Extraction:
     thousands_sep: str = ","
     date_format: str = "%Y-%m-%d"
     kind: str = "csv"
+    # Per-page text used by field extraction (text layer and/or OCR). Never drop OCR here.
+    raw_pages: list[str] = field(default_factory=list)
 
 
 OPENING_RE = re.compile(r"opening(?:\s+balance)?\s*[:|,]?\s*([-(]?\d[\d.,]*\)?)", re.I)
@@ -197,6 +199,13 @@ def _finish_tabular(headers, rows, meta, encoding, kind) -> Extraction:
     )
 
 
+def _max_pdf_pages() -> int:
+    try:
+        return max(1, int(os.environ.get("BOOKS_EXTRACT_MAX_PAGES", "50")))
+    except ValueError:
+        return 50
+
+
 def _extract_pdf(content: bytes, password: str | None) -> Extraction:
     document = fitz.open(stream=content, filetype="pdf")
     try:
@@ -205,12 +214,14 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 raise CodedError("password_required")
             if not document.authenticate(password):
                 raise CodedError("bad_password")
+        max_pages = _max_pdf_pages()
+        if document.page_count > max_pages:
+            raise CodedError(f"too_many_pages:{document.page_count}>{max_pages}")
         extraction = Extraction(headers=[], rows=[], page_count=document.page_count, kind="pdf")
         meta_text = []
         next_row = 1
         for index, page in enumerate(document, start=1):
             text = page.get_text("text") or ""
-            meta_text.append(text)
             if _page_has_text(text):
                 words = page.get_text("words") or []
                 zoom = 1400 / max(page.rect.width, 1)
@@ -229,12 +240,13 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 extraction.rows.extend(rows)
                 extraction.pages.append(PageImage(index, pixmap.tobytes("png"), pixmap.width, pixmap.height))
                 extraction.methods.append((index, "pdf_text"))
+                extraction.raw_pages.append(text)
+                meta_text.append(text)
             else:
                 zoom = 2
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
                 image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
                 headers, rows, png, width, height, ocr_text = _ocr_image(image, index)
-                meta_text.append(ocr_text)
                 for row in rows:
                     row.row_no = next_row
                     next_row += 1
@@ -244,6 +256,8 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 extraction.pages.append(PageImage(index, png, width, height))
                 engine = getattr(recognize, "last_engine", "ocr")
                 extraction.methods.append((index, engine))
+                extraction.raw_pages.append(ocr_text)
+                meta_text.append(ocr_text)
         meta = _metadata_from_free_text("\n".join(meta_text))
         _apply_meta(extraction, meta)
         return extraction
@@ -265,6 +279,7 @@ def _extract_image(content: bytes) -> Extraction:
         pages=[PageImage(1, png, width, height)],
         methods=[(1, engine)],
         kind="image",
+        raw_pages=[ocr_text],
     )
     _apply_meta(extraction, _metadata_from_free_text(ocr_text))
     return extraction

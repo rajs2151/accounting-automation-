@@ -306,7 +306,7 @@ export default function PurchasesPage() {
             <input
               type="file"
               multiple
-              accept=".pdf,image/*"
+              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
               className="hidden"
               onChange={(e) => void onUpload(e.target.files)}
             />

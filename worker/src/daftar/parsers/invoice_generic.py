@@ -50,6 +50,10 @@ class InvoiceGenericParser:
             return 0
         if "invoice" in name or "bill" in name or "tax" in name:
             return 50
+        if name.endswith((".png", ".jpg", ".jpeg", ".heic", ".tif", ".tiff", ".webp")) or (
+            mime or ""
+        ).startswith("image/"):
+            return 40
         if mime in ("application/pdf", "text/plain") and (
             b"TAX INVOICE" in sample.upper() or b"Tax Invoice" in sample
         ):
@@ -92,20 +96,50 @@ class InvoiceGenericParser:
                 extras=data,
             )
 
-        is_pdf = filename.lower().endswith(".pdf") or "pdf" in (mime or "").lower()
+        name = filename.lower()
+        is_pdf = name.endswith(".pdf") or "pdf" in (mime or "").lower()
+        is_image = (
+            name.endswith((".png", ".jpg", ".jpeg", ".heic", ".tif", ".tiff", ".webp"))
+            or (mime or "").startswith("image/")
+        )
         word_boxes: list = []
         page_texts: list[str] = []
         methods: list[tuple[int, str]] = []
+        ocr_used = False
+        route = "text"
         if is_pdf:
+            # Word boxes from the text layer (review highlights); page text from extract_file
+            # so scanned pages contribute OCR text to field extraction.
             page_texts, word_boxes, methods = _pdf_pages(content)
+            try:
+                from daftar.extract import extract_file
+
+                extraction = extract_file(content, "pdf")
+                ocr_pages = list(getattr(extraction, "raw_pages", []) or [])
+                if ocr_pages:
+                    page_texts = ocr_pages
+                    methods = list(extraction.methods or methods)
+                    ocr_used = any(m != "pdf_text" for _, m in methods)
+            except Exception:
+                pass
             text = "\n".join(page_texts)
+            route = "ocr" if ocr_used else "text"
+        elif is_image:
+            from daftar.extract import extract_file
+
+            extraction = extract_file(content, "image")
+            page_texts = list(getattr(extraction, "raw_pages", []) or [])
+            methods = list(extraction.methods or [(1, "ocr")])
+            text = "\n".join(page_texts)
+            ocr_used = True
+            route = "ocr"
         else:
             text = content.decode("utf-8", errors="ignore")
             page_texts = [text]
 
         fields = extract_invoice_fields(
             text,
-            route="text",
+            route=route,
             page_texts=page_texts,
             word_boxes=word_boxes,
         )
@@ -172,7 +206,7 @@ class InvoiceGenericParser:
             currency=currency or "",
             lines=parsed_lines,
             confidence=conf,
-            ocr_used=False,
+            ocr_used=ocr_used,
             extras={
                 "invoice_no": invoice_no,
                 "document_number": invoice_no,

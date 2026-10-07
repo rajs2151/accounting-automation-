@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+
+from daftar.errors import CodedError
 from daftar.parsers.base import ParsedDocument, ParsedLine
 
 
@@ -10,6 +12,9 @@ class CardGenericParser:
 
     def can_parse(self, filename: str, mime: str, sample: bytes) -> int:
         name = filename.lower()
+        # PDF card statements belong on the bank/card PDF path — never UTF-8-decode binary.
+        if name.endswith(".pdf") or sample.startswith(b"%PDF") or "pdf" in (mime or "").lower():
+            return 0
         head = sample.decode("utf-8", errors="ignore").lower()
         if "card" in name or "credit card" in head:
             return 80
@@ -18,7 +23,12 @@ class CardGenericParser:
         return 0
 
     def parse(self, filename: str, mime: str, content: bytes) -> ParsedDocument:
-        text = content.decode("utf-8-sig")
+        if content.startswith(b"%PDF") or filename.lower().endswith(".pdf"):
+            raise CodedError("card_pdf_not_csv")
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeError as exc:
+            raise CodedError("card_decode_failed") from exc
         reader = csv.DictReader(io.StringIO(text))
         lines: list[ParsedLine] = []
         for row in reader:

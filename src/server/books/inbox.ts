@@ -201,6 +201,10 @@ export async function uploadBooksInboxFiles(
 ) {
   return withUser(userId, async (db) => {
     if (clientId) await assertSyntheticTenant(db, clientId);
+    const { assertBooksUploadAllowed } = await import("@/lib/books-upload");
+    for (const file of files) {
+      assertBooksUploadAllowed(file.filename, file.bytes.length);
+    }
     const intendedType = opts?.intendedType || null;
     const userDocType = opts?.userDocType || null;
     const intendedAccountId: string | null = opts?.accountId ? String(opts.accountId) : null;
@@ -317,8 +321,10 @@ export async function uploadBooksInboxFiles(
           storageKey,
           filename: file.filename,
         };
-        // Statements page (and manual picks) pass userDocType so the worker skips auto-classify.
-        if (userDocType) payload.userDocType = userDocType;
+        // Statements / purchases / sales: pass intended type so the worker does not default to sale.
+        const docHint = userDocType || intendedType;
+        if (docHint) payload.userDocType = docHint;
+        if (intendedType) payload.intendedType = intendedType;
         if (intendedAccountId) payload.accountId = intendedAccountId;
         await enqueueBooksJob(db, clientId, "extract_document", payload);
         await writeBooksAudit(db, {

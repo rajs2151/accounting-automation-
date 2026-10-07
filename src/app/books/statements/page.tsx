@@ -136,7 +136,7 @@ export default function StatementsListPage() {
               ref={fileRef}
               type="file"
               multiple
-              accept=".pdf,.csv,application/pdf,text/csv"
+              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
               className="hidden"
               onChange={(e) => void onUpload(e.target.files)}
             />

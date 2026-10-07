@@ -2,7 +2,26 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-1 money correctness** shipping; next **ING-2 extraction wiring**
+- Current task: **stopped after ING-2 push** — owner reviews ING-2 before ING-3
+- 2026-10-07: **ING-1b** atomic document journal + open item (no new db migration; no RLS)
+  - Gates (shared with ING-2 ship): typecheck 0; eslint src+e2e 0 errors / 7 warnings (pre-existing); unit 346p/0f/1s; pytest 114p; next build exit 0; local e2e 10/10
+  - DONE: approve posts journal + open item + document update in **one** approver transaction; draft discarded on failure
+  - DONE: MONEY-6 happy path; MONEY-7 forces failure after journal post → no posted journal without open item, document stays draft
+- 2026-10-07: **ING-2** extraction wiring (no new db migration; no RLS)
+  - Same gates as ING-1b above
+  - DONE: intendedType from inbox → worker payload / `books_inbox_items.intended_type`
+  - DONE: inbox status `extracting` on start; retry with backoff; final failure → inbox `failed`
+  - DONE: stuck `running` extract/classify jobs requeued (`requeued_stuck`, 20 min)
+  - DONE: PNG/image always OCR → `raw_pages` → invoice fields (mocked OCR in pytest)
+  - DONE: scanned PDF OCR page text fills invoice fields (invoice no + totals)
+  - DONE: XLSX bank/tabular via `extract_file` without calling OCR
+  - DONE: card-statement PDF no longer UTF-8-decoded / does not crash (`can_parse` 0; `card_pdf_not_csv`)
+  - DONE: 25 MB upload cap + shared extension list (`books-upload.ts`) + UI `accept`; oversize rejected
+  - DONE: page cap `BOOKS_EXTRACT_MAX_PAGES`; OCR model preload on worker start
+  - DONE: pytest `test_ingestion_ing2.py` covers PNG mock OCR, scanned PDF fields, XLSX no OCR, card PDF, failed→inbox failed, stuck requeue; TS `books-upload.test.ts` covers >25 MB
+  - NOT DONE: ING-3 upload + review UI (owner gate — do not start until review)
+  - NOT DONE: surface AR/AP control drift on Health (ING-1 follow-up still queued)
+  - NOT DONE: Textract / external OCR-LLM (blocked until security PASS)
 - 2026-10-07: **ING-1 money correctness** on feat/books-phase1 (no new db migration)
   - Gates: eslint src+e2e 0 errors / 7 warnings (pre-existing); next build exit 0; local e2e 10/10; unit 341p/0f/1s; typecheck 0
   - DONE: exchange rate required on bank, receipt/payment and inbox postings; no 1.0 fallback for foreign currency (AED uses identity scale); bank recon still compares account-currency/original amounts (correct once journals store original + AED)
@@ -11,7 +30,7 @@
   - DONE: control vs open-items check on the issues badge (and month checklist); NOT on the Health page itself
   - DONE: VAT 201 unlinked VAT counted gross (settlement Dr 2210 ignored); fails VAT control close gate when boxes ≠ control movement
   - DONE: inbox confirm carries FX rate + due date; missing issue date errors (no silent "today")
-  - NOT DONE: journal and open item written in one transaction (still create journal → post → separate open-item upsert)
+  - DONE (completed in ING-1b): journal and open item written in one transaction
 - 2026-10-07: **ING-1 review fixes** (stream B): the manual-journal control-account block broke two real flows — opening-balance import with AR/AP lines (now passes `allowControlAccounts`, it already matches party open items) and the Journals "VAT settlement" template (a journal whose every line is 2210/1430/2220/1440 is allowed; trade controls and mixed lines stay blocked). Close VAT gate movement now excludes settlement entries (lines on 2220/1440) so a quarter-end settlement doesn't fail Box 8/11 vs 2210/1430. Readable messages for `fx_rate_required`, `control_account_forbidden`, `control_account_requires_open_item`. New test `control-accounts-carveouts.test.ts`. Unit 338p/0f/7s; e2e 12/14 (2 MinIO-only).
 - 2026-10-07: Phase 7 CLOSED (P7-1..P7-4) — Company Health + firm board; unit 336p/0f/1s; e2e 10/10
 - 2026-10-07: P7-3+P7-4 PASS — scorecard, runway/profit tabs, insights, firm board
@@ -76,11 +95,10 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. **ING-2** extraction wiring (§2 ingestion-review) — images OCR, scanned-PDF OCR→fields, XLSX, error handling, extracting/failed + timeout/retry/stuck recovery, 25 MB + format list, intendedType, preload OCR models, mocked OCR in unit tests. No Textract/AI extraction; no demo seed change.
-2. **ING-3** upload + review UI — layout only from AI Accountant pattern; our wording/colours.
-3. ING-1 follow-up: atomic document journal + open item in one transaction; surface AR/AP control drift on Health.
-4. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
-5. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
+1. **ING-3** upload + review UI — layout only from AI Accountant pattern; our wording/colours. (blocked on owner review of ING-2)
+2. ING-1 follow-up: surface AR/AP control drift on Health
+3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
+4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -95,6 +113,8 @@
   (not the worker) — tracked as E1d.
 
 ## Log
+- 2026-10-07 | ING-1b | PASS | atomic journal+OI + MONEY-7; pushed feat/books-phase1
+- 2026-10-07 | ING-2 | PASS | extraction wiring + pytest 114; pushed feat/books-phase1; stop before ING-3
 (the loop appends one line per run: date | task | iteration | decision | run folder)
 - 2026-10-04 15:53 | POC-001 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261004-153155-POC-001-i1
 - 2026-10-04 20:13 | POC-001 | i1 | PASS | .ai/runs/20261004-200719-POC-001-i1

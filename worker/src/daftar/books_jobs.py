@@ -57,12 +57,34 @@ def _actor_from_job(conn, job: dict) -> str:
     raise ValueError("actor_unresolved")
 
 
+MAX_EXTRACT_ATTEMPTS = 3
+STUCK_RUNNING_MINUTES = 20
+
+
+def recover_stuck_books_jobs(conn) -> int:
+    """Re-queue extract jobs left in running (worker crash / timeout)."""
+    rows = conn.execute(
+        """
+        UPDATE books_jobs
+        SET status = 'queued', error = 'requeued_stuck', finished_at = NULL
+        WHERE status = 'running'
+          AND kind IN ('extract_document', 'classify_document')
+          AND created_at < now() - make_interval(mins => %s)
+        RETURNING id
+        """,
+        (STUCK_RUNNING_MINUTES,),
+    ).fetchall()
+    return len(rows or [])
+
+
 def run_books_job(conn, job: dict) -> None:
     kind = job["kind"]
+    inbox_id = None
     try:
         if kind in ("extract_document", "classify_document"):
             # Prefer uploader from books_files; fall back to Omar preparer seed.
             p = _payload(job)
+            inbox_id = p.get("inboxItemId") or p.get("inbox_item_id")
             actor = p.get("actorUserId") or "55555555-5555-4555-8555-555555555555"
             file_id = p.get("fileId") or p.get("file_id")
             if file_id:
@@ -94,10 +116,54 @@ def run_books_job(conn, job: dict) -> None:
         conn.commit()
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
+        err = str(exc)[:500]
+        p = _payload(job)
+        attempts = int(p.get("attempt") or p.get("attempts") or 0) + 1
+        inbox_id = inbox_id or p.get("inboxItemId") or p.get("inbox_item_id")
+        if kind in ("extract_document", "classify_document") and attempts < MAX_EXTRACT_ATTEMPTS:
+            # Retry with backoff; keep inbox on extracting until final failure.
+            delay_sec = min(60 * attempts, 300)
+            p["attempt"] = attempts
+            conn.execute(
+                """
+                UPDATE books_jobs
+                SET status = 'queued', run_at = now() + make_interval(secs => %s),
+                    error = %s, finished_at = NULL, payload = %s::jsonb
+                WHERE id = %s
+                """,
+                (delay_sec, err, json.dumps(p), job["id"]),
+            )
+            if inbox_id:
+                conn.execute(
+                    """
+                    UPDATE books_inbox_items
+                    SET status = 'queued', error = %s, updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (f"retry:{attempts}:{err}"[:500], inbox_id),
+                )
+            conn.commit()
+            logger.warning(
+                "books_job retry id=%s kind=%s attempt=%s err=%s",
+                job["id"],
+                kind,
+                attempts,
+                exc,
+            )
+            return
         conn.execute(
             "SELECT books_complete_job(%s::uuid, 'failed', %s)",
-            (job["id"], str(exc)[:500]),
+            (job["id"], err),
         )
+        if inbox_id:
+            conn.execute(
+                """
+                UPDATE books_inbox_items
+                SET status = 'failed', error = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (err, inbox_id),
+            )
         conn.commit()
         logger.error("books_job failed id=%s kind=%s err=%s", job["id"], kind, exc)
 

@@ -256,7 +256,7 @@ export default function BankingPage() {
               ref={fileRef}
               type="file"
               multiple
-              accept=".pdf,.csv,.xlsx,image/*"
+              accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
               className="hidden"
               data-testid="banking-upload"
               onChange={(e) => {
@@ -514,7 +514,7 @@ export default function BankingPage() {
         ref={rowFileRef}
         type="file"
         multiple
-        accept=".pdf,.csv,.xlsx,image/*"
+        accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xlsx,.xls"
         className="hidden"
         data-testid="banking-row-upload-input"
         onChange={(e) => {
