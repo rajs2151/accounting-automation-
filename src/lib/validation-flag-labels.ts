@@ -14,6 +14,7 @@ const READABLE: Record<string, string> = {
   "company_match:mismatch": "Company mismatch",
   unassigned: "Unassigned",
   party_roles_uncertain: "Party roles uncertain",
+  company_not_on_invoice: "Your company isn't on this invoice — confirm sale or purchase",
   vat_code_missing: "VAT code missing",
   line_sum_mismatch: "Line sum mismatch",
   account_attribution_ambiguous: "Account attribution ambiguous",

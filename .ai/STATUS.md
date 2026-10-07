@@ -115,6 +115,7 @@
 ## Log
 - 2026-10-07 | ING-1b | PASS | atomic journal+OI + MONEY-7; pushed feat/books-phase1
 - 2026-10-07 | ING-2 | PASS | extraction wiring + pytest 114; pushed feat/books-phase1; stop before ING-3
+- 2026-10-07 | ING-2 review (stream B) | PASS | ING-1b atomic post OK (same pattern as settlements). Reran: unit 340p/0f/7s, pytest 113p + 4 OCR tests that need docTR/EasyOCR weight downloads (blocked in cloud; same 4 fail before ING-2). Fixed: invoice with the company on neither side was classified sales_invoice (owner screenshot) → now purchase_bill at 0.5 + `company_not_on_invoice` flag ("Your company isn't on this invoice — confirm sale or purchase"); `.gitignore` /real-docs/ /lab-out/. Still open from the ING-2 brief: one text-layer rule (extract.py vs pdf_words.py); review-page fallbacks (no file name as line description, empty fields not 0.00) → do in ING-3; `scripts/lab/extract-one` diagnostic for owner's real files.
 (the loop appends one line per run: date | task | iteration | decision | run folder)
 - 2026-10-04 15:53 | POC-001 | i1 | NEEDS_HUMAN_DECISION | .ai/runs/20261004-153155-POC-001-i1
 - 2026-10-04 20:13 | POC-001 | i1 | PASS | .ai/runs/20261004-200719-POC-001-i1

@@ -65,3 +65,7 @@ docs/reference/outputs/*
 /.ai/PAUSE
 /.ai/state.json
 /.ai/*.txt
+
+# Real client documents and lab output stay local — never commit (see .ai/NEXT_TASK_ING-2-3.md §0)
+/real-docs/
+/lab-out/

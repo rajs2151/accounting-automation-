@@ -144,6 +144,11 @@ def classify_document(
             return hit("sales_invoice", 0.92, "company_is_issuer")
         if side == "customer":
             return hit("purchase_bill", 0.92, "company_is_customer")
+        if company_trn or company_name:
+            # We know who the company is and it is on neither side: the Bill To / vendor wording can't
+            # tell us whether this is our sale or our purchase. Best guess is a supplier bill (our own
+            # sales invoices carry our TRN); low confidence forces a human to confirm the side.
+            return hit("purchase_bill", 0.5, "company_not_on_invoice")
         if "bill to" in lower or "sold to" in lower:
             return hit("sales_invoice", 0.88, "tax_invoice_bill_to")
         if "vendor" in lower or "supplier invoice" in lower:
