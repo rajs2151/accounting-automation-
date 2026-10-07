@@ -656,8 +656,9 @@ export function FsReportView({ statement }: { statement: Statement }) {
             disabled={exporting || !query || Boolean(gateFails.length)}
             onClick={() => void exportPack("xlsx")}
             data-testid="fs-export-xlsx"
+            title="P&L, balance sheet and cash flow together, with integrity checks"
           >
-            Export Excel
+            Statements pack (Excel)
           </Button>
           <Button
             size="sm"
@@ -665,8 +666,9 @@ export function FsReportView({ statement }: { statement: Statement }) {
             disabled={exporting || !query || Boolean(gateFails.length)}
             onClick={() => void exportPack("pdf")}
             data-testid="fs-export-pdf"
+            title="P&L, balance sheet and cash flow together, with integrity checks"
           >
-            Export PDF
+            Statements pack (PDF)
           </Button>
           {statement === "pnl" ? (
             <label className="flex items-center gap-2 text-xs">

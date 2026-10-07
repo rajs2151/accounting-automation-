@@ -112,7 +112,7 @@ export function MfaDownloadModal({
         <DialogHeader>
           <DialogTitle>Verify before download</DialogTitle>
           <DialogDescription>
-            Enter the demo MFA code to download release packs. This prompt appears only for downloads, not on every page.
+            Enter the demo MFA code to download reports and release packs. This prompt appears only for downloads, not on every page.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap items-end gap-2">
