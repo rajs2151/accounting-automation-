@@ -557,8 +557,8 @@ const BOOKS_ENTRY_TYPES = new Set([
   "opening",
   "reversal",
   "depreciation",
+  "fx_revaluation",
 ]);
-
 export async function createBooksJournal(
   userId: string,
   clientId: string,

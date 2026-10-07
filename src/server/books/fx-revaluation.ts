@@ -1,0 +1,641 @@
+/**
+ * P5-3: manual FX rates + month-end unrealised revaluation.
+ *
+ * Rounding: revalued AED fils = aedFromOriginal(original_minor, rate_scaled)
+ * (round half up via src/lib/fx.ts). Diff per item = revalued − carried AED fils.
+ * One JV (entry_type=fx_revaluation) with a line per adjusted item + one net 7310 line;
+ * auto-reverse on the 1st of the next month (create with autoReverseNextPeriod).
+ */
+import { randomUUID } from "node:crypto";
+
+import type { PoolClient } from "pg";
+
+import { withUser } from "@/lib/db";
+import { aedFromOriginal, parseFxRateToScaled } from "@/lib/fx";
+import { writeBooksAudit } from "@/server/books/audit";
+import { BooksError } from "@/server/books/errors";
+import {
+  createBooksJournal,
+  softDeleteBooksJournalDraft,
+  type BooksLineInput,
+} from "@/server/books/journals";
+import { assertSyntheticTenant } from "@/server/security-gate";
+
+const FX_UNREALISED = "7310";
+const AR_CONTROL = "1210";
+const AP_CONTROL = "2110";
+
+export type FxRateRow = {
+  id: string;
+  currency: string;
+  rateDate: string;
+  rateScaled: number;
+  source: string;
+  enteredBy: string;
+};
+
+export type FxRevalItem = {
+  kind: "bank" | "ar" | "ap";
+  refId: string;
+  label: string;
+  accountId: string;
+  accountCode: string;
+  currency: string;
+  originalMinor: number;
+  carriedAedMinor: number;
+  revaluedAedMinor: number;
+  diffAedMinor: number;
+};
+
+function iso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+export async function listBooksFxRates(
+  userId: string,
+  clientId: string,
+  opts?: { currency?: string },
+): Promise<FxRateRow[]> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const rows = await db.query(
+      `SELECT id, currency, rate_date AS "rateDate", rate_scaled AS "rateScaled",
+              source, entered_by AS "enteredBy"
+       FROM books_fx_rates
+       WHERE client_id = $1 AND ($2::text IS NULL OR currency = $2)
+       ORDER BY rate_date DESC, currency`,
+      [clientId, opts?.currency || null],
+    );
+    return rows.rows.map((r) => ({
+      id: String(r.id),
+      currency: String(r.currency),
+      rateDate: iso(r.rateDate),
+      rateScaled: Number(r.rateScaled),
+      source: String(r.source),
+      enteredBy: String(r.enteredBy),
+    }));
+  });
+}
+
+export async function upsertBooksFxRate(
+  userId: string,
+  clientId: string,
+  body: { currency: string; rateDate: string; rateScaled?: number; rate?: string | number },
+): Promise<FxRateRow> {
+  const currency = String(body.currency || "")
+    .trim()
+    .toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency) || currency === "AED") {
+    throw new BooksError("fx_currency_invalid", "invalid");
+  }
+  const rateDate = String(body.rateDate || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rateDate)) {
+    throw new BooksError("fx_rate_date_required", "invalid");
+  }
+  let rateScaled: number;
+  if (body.rateScaled != null) {
+    rateScaled = Number(body.rateScaled);
+    if (!Number.isInteger(rateScaled) || rateScaled <= 0) {
+      throw new BooksError("invalid_fx_rate", "invalid");
+    }
+  } else if (body.rate != null) {
+    rateScaled = Number(parseFxRateToScaled(body.rate));
+  } else {
+    throw new BooksError("fx_rate_required", "invalid");
+  }
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const id = randomUUID();
+    const upserted = await db.query(
+      `INSERT INTO books_fx_rates (id, client_id, currency, rate_date, rate_scaled, source, entered_by)
+       VALUES ($1,$2,$3,$4,$5,'manual',$6)
+       ON CONFLICT (client_id, currency, rate_date) DO UPDATE SET
+         rate_scaled = EXCLUDED.rate_scaled,
+         entered_by = EXCLUDED.entered_by,
+         source = 'manual'
+       RETURNING id, currency, rate_date AS "rateDate", rate_scaled AS "rateScaled",
+                 source, entered_by AS "enteredBy"`,
+      [id, clientId, currency, rateDate, rateScaled, userId],
+    );
+    const row = upserted.rows[0];
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "upsert",
+      entity: "books_fx_rate",
+      entityId: String(row.id),
+      after: { currency, rateDate, rateScaled },
+    });
+    return {
+      id: String(row.id),
+      currency: String(row.currency),
+      rateDate: iso(row.rateDate),
+      rateScaled: Number(row.rateScaled),
+      source: String(row.source),
+      enteredBy: String(row.enteredBy),
+    };
+  });
+}
+
+async function loadPeriod(
+  db: PoolClient,
+  clientId: string,
+  periodId: string,
+): Promise<{ id: string; start: string; end: string; status: string; label: string }> {
+  const period = await db.query(
+    `SELECT id, label, status, period_start, period_end
+     FROM books_periods WHERE id = $1 AND client_id = $2`,
+    [periodId, clientId],
+  );
+  if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
+  return {
+    id: String(period.rows[0].id),
+    label: String(period.rows[0].label),
+    status: String(period.rows[0].status),
+    start: iso(period.rows[0].period_start),
+    end: iso(period.rows[0].period_end),
+  };
+}
+
+async function rateMapForDate(
+  db: PoolClient,
+  clientId: string,
+  rateDate: string,
+  currencies: string[],
+): Promise<{ rates: Map<string, number>; missing: string[] }> {
+  const rates = new Map<string, number>();
+  const missing: string[] = [];
+  for (const ccy of [...new Set(currencies)]) {
+    const row = await db.query(
+      `SELECT rate_scaled FROM books_fx_rates
+       WHERE client_id = $1 AND currency = $2 AND rate_date = $3`,
+      [clientId, ccy, rateDate],
+    );
+    if (!row.rowCount) missing.push(ccy);
+    else rates.set(ccy, Number(row.rows[0].rate_scaled));
+  }
+  return { rates, missing };
+}
+
+/** Foreign bank/card balances + open AR/AP in non-AED with open_original ≠ 0. */
+export async function collectFxMonetaryItems(
+  db: PoolClient,
+  clientId: string,
+  asOf: string,
+): Promise<
+  Array<{
+    kind: "bank" | "ar" | "ap";
+    refId: string;
+    label: string;
+    accountId: string;
+    accountCode: string;
+    currency: string;
+    originalMinor: number;
+    carriedAedMinor: number;
+  }>
+> {
+  const out: Array<{
+    kind: "bank" | "ar" | "ap";
+    refId: string;
+    label: string;
+    accountId: string;
+    accountCode: string;
+    currency: string;
+    originalMinor: number;
+    carriedAedMinor: number;
+  }> = [];
+
+  const banks = await db.query(
+    `SELECT a.id, a.code, a.name, UPPER(a.currency) AS currency
+     FROM books_accounts a
+     WHERE a.client_id = $1 AND a.active = true AND a.is_postable = true
+       AND UPPER(a.currency) <> 'AED'
+       AND (
+         a.is_bank = true OR a.is_card = true OR a.is_gateway = true
+         OR COALESCE(a.sub_type, '') IN ('bank','cash','card','gateway')
+       )`,
+    [clientId],
+  );
+
+  for (const acct of banks.rows) {
+    const ccy = String(acct.currency);
+    const bal = await db.query(
+      `SELECT
+         COALESCE(SUM(CASE
+           WHEN UPPER(l.currency) = $3::text THEN
+             CASE WHEN l.debit_minor > 0 THEN COALESCE(l.original_minor, 0)
+                  ELSE -COALESCE(l.original_minor, 0) END
+           ELSE 0 END), 0)::bigint AS orig,
+         COALESCE(SUM(l.debit_minor - l.credit_minor), 0)::bigint AS aed
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       WHERE e.client_id = $1 AND l.account_id = $2
+         AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
+         AND e.entry_date <= $4::date`,
+      [clientId, acct.id, ccy, asOf],
+    );
+    const originalMinor = Number(bal.rows[0].orig);
+    const carriedAedMinor = Number(bal.rows[0].aed);
+    if (originalMinor === 0 && carriedAedMinor === 0) continue;
+    out.push({
+      kind: "bank",
+      refId: String(acct.id),
+      label: `${acct.code} ${acct.name}`,
+      accountId: String(acct.id),
+      accountCode: String(acct.code),
+      currency: ccy,
+      originalMinor,
+      carriedAedMinor,
+    });
+  }
+
+  const open = await db.query(
+    `SELECT oi.id, oi.side, oi.currency, oi.open_original_minor, oi.open_aed_minor,
+            p.name AS party_name
+     FROM books_open_items oi
+     JOIN books_parties p ON p.id = oi.party_id
+     LEFT JOIN books_documents d ON d.id = oi.document_id
+     WHERE oi.client_id = $1
+       AND oi.status IN ('open', 'partial')
+       AND UPPER(oi.currency) <> 'AED'
+       AND oi.open_original_minor <> 0
+       AND (d.issue_date IS NULL OR d.issue_date <= $2::date)`,
+    [clientId, asOf],
+  );
+
+  for (const row of open.rows) {
+    const side = String(row.side) === "AP" ? "ap" : "ar";
+    const controlCode = side === "ap" ? AP_CONTROL : AR_CONTROL;
+    const acct = await db.query(
+      `SELECT id, code FROM books_accounts
+       WHERE client_id = $1 AND code = $2 AND active = true`,
+      [clientId, controlCode],
+    );
+    if (!acct.rowCount) continue;
+    out.push({
+      kind: side,
+      refId: String(row.id),
+      label: `${side.toUpperCase()} ${row.party_name}`,
+      accountId: String(acct.rows[0].id),
+      accountCode: String(acct.rows[0].code),
+      currency: String(row.currency).toUpperCase(),
+      originalMinor: Number(row.open_original_minor),
+      carriedAedMinor: Number(row.open_aed_minor),
+    });
+  }
+
+  return out;
+}
+
+export function buildFxRevaluationLines(
+  items: FxRevalItem[],
+  fxAccountId: string,
+): BooksLineInput[] {
+  const lines: BooksLineInput[] = [];
+  let net7310 = 0; // >0 → Dr 7310 (net loss); <0 → Cr 7310 (net gain)
+
+  for (const item of items) {
+    if (item.diffAedMinor === 0) continue;
+    const abs = Math.abs(item.diffAedMinor);
+    if (item.kind === "bank" || item.kind === "ar") {
+      // Asset: revalued > carried → Dr account / gain; else Cr account / loss
+      if (item.diffAedMinor > 0) {
+        lines.push({
+          accountId: item.accountId,
+          debitMinor: abs,
+          creditMinor: 0,
+          lineMemo: `FX reval ${item.label}`,
+        });
+        net7310 -= abs;
+      } else {
+        lines.push({
+          accountId: item.accountId,
+          debitMinor: 0,
+          creditMinor: abs,
+          lineMemo: `FX reval ${item.label}`,
+        });
+        net7310 += abs;
+      }
+    } else {
+      // Liability AP: revalued > carried → Cr AP / loss; else Dr AP / gain
+      if (item.diffAedMinor > 0) {
+        lines.push({
+          accountId: item.accountId,
+          debitMinor: 0,
+          creditMinor: abs,
+          lineMemo: `FX reval ${item.label}`,
+        });
+        net7310 += abs;
+      } else {
+        lines.push({
+          accountId: item.accountId,
+          debitMinor: abs,
+          creditMinor: 0,
+          lineMemo: `FX reval ${item.label}`,
+        });
+        net7310 -= abs;
+      }
+    }
+  }
+
+  if (net7310 > 0) {
+    lines.push({
+      accountId: fxAccountId,
+      debitMinor: net7310,
+      creditMinor: 0,
+      lineMemo: "FX unrealised (net)",
+    });
+  } else if (net7310 < 0) {
+    lines.push({
+      accountId: fxAccountId,
+      debitMinor: 0,
+      creditMinor: -net7310,
+      lineMemo: "FX unrealised (net)",
+    });
+  }
+  return lines;
+}
+
+async function enrichItems(
+  raw: Awaited<ReturnType<typeof collectFxMonetaryItems>>,
+  rates: Map<string, number>,
+): Promise<FxRevalItem[]> {
+  return raw.map((r) => {
+    const rate = rates.get(r.currency)!;
+    const revaluedAedMinor = aedFromOriginal(r.originalMinor, rate);
+    return {
+      ...r,
+      revaluedAedMinor,
+      diffAedMinor: revaluedAedMinor - r.carriedAedMinor,
+    };
+  });
+}
+
+export async function previewBooksFxRevaluation(
+  userId: string,
+  clientId: string,
+  periodId: string,
+): Promise<{
+  periodEnd: string;
+  items: FxRevalItem[];
+  missingRates: string[];
+  totalDiffAedMinor: number;
+}> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const period = await loadPeriod(db, clientId, periodId);
+    const raw = await collectFxMonetaryItems(db, clientId, period.end);
+    const { rates, missing } = await rateMapForDate(
+      db,
+      clientId,
+      period.end,
+      raw.map((r) => r.currency),
+    );
+    if (missing.length) {
+      return {
+        periodEnd: period.end,
+        items: [],
+        missingRates: missing,
+        totalDiffAedMinor: 0,
+      };
+    }
+    const items = await enrichItems(raw, rates);
+    return {
+      periodEnd: period.end,
+      items,
+      missingRates: [],
+      totalDiffAedMinor: items.reduce((s, i) => s + i.diffAedMinor, 0),
+    };
+  });
+}
+
+/**
+ * Create/replace draft FX revaluation JV for the period (dual-control post later).
+ * Idempotent: replaces draft; refuses if a posted run exists (until reversed).
+ */
+export async function runBooksFxRevaluation(
+  userId: string,
+  clientId: string,
+  periodId: string,
+): Promise<{
+  journalEntryId: string | null;
+  status: string | null;
+  kind: "journal" | "noop";
+  created: boolean;
+  replaced: boolean;
+  missingRates: string[];
+  itemCount: number;
+  totalDiffAedMinor: number;
+}> {
+  const prep = await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const period = await loadPeriod(db, clientId, periodId);
+    if (!["OPEN", "REOPENED"].includes(period.status)) {
+      throw new BooksError("period_locked", "period_closed");
+    }
+
+    const existing = await db.query(
+      `SELECT r.id, r.journal_entry_id AS "journalEntryId", r.kind, e.status AS "entryStatus"
+       FROM books_fx_revaluation_runs r
+       LEFT JOIN books_journal_entries e ON e.id = r.journal_entry_id AND e.deleted_at IS NULL
+       WHERE r.client_id = $1 AND r.period_id = $2`,
+      [clientId, periodId],
+    );
+    if (existing.rowCount) {
+      const ex = existing.rows[0];
+      if (ex.kind === "journal" && String(ex.entryStatus) === "posted") {
+        throw new BooksError("fx_revaluation_already_posted", "conflict");
+      }
+    }
+
+    const raw = await collectFxMonetaryItems(db, clientId, period.end);
+    const { rates, missing } = await rateMapForDate(
+      db,
+      clientId,
+      period.end,
+      raw.map((r) => r.currency),
+    );
+    if (missing.length) {
+      throw new BooksError(`fx_rate_missing:${missing.sort().join(",")}`, "invalid");
+    }
+
+    const fxAcct = await db.query(
+      `SELECT id FROM books_accounts WHERE client_id = $1 AND code = $2 AND active = true`,
+      [clientId, FX_UNREALISED],
+    );
+    if (!fxAcct.rowCount) throw new BooksError(`account_missing:${FX_UNREALISED}`, "not_found");
+
+    const items = await enrichItems(raw, rates);
+    const nonzero = items.filter((i) => i.diffAedMinor !== 0);
+    return {
+      period,
+      items,
+      nonzero,
+      fxAccountId: String(fxAcct.rows[0].id),
+      existingRunId: existing.rowCount ? String(existing.rows[0].id) : null,
+      existingJournalId: existing.rows[0]?.journalEntryId
+        ? String(existing.rows[0].journalEntryId)
+        : null,
+      existingStatus: existing.rows[0]?.entryStatus ? String(existing.rows[0].entryStatus) : null,
+      existingKind: existing.rows[0]?.kind ? String(existing.rows[0].kind) : null,
+    };
+  });
+
+  let replaced = false;
+  if (prep.existingJournalId && prep.existingStatus === "draft") {
+    await softDeleteBooksJournalDraft(userId, clientId, prep.existingJournalId);
+    replaced = true;
+  }
+
+  if (prep.nonzero.length === 0) {
+    await withUser(userId, async (db) => {
+      if (prep.existingRunId) {
+        await db.query(
+          `UPDATE books_fx_revaluation_runs
+           SET journal_entry_id = NULL, kind = 'noop'
+           WHERE id = $1`,
+          [prep.existingRunId],
+        );
+      } else {
+        await db.query(
+          `INSERT INTO books_fx_revaluation_runs (id, client_id, period_id, journal_entry_id, kind)
+           VALUES ($1,$2,$3,NULL,'noop')`,
+          [randomUUID(), clientId, periodId],
+        );
+      }
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "create",
+        entity: "books_fx_revaluation_run",
+        entityId: periodId,
+        after: { kind: "noop", itemCount: prep.items.length },
+      });
+    });
+    return {
+      journalEntryId: null,
+      status: null,
+      kind: "noop",
+      created: true,
+      replaced,
+      missingRates: [],
+      itemCount: prep.items.length,
+      totalDiffAedMinor: 0,
+    };
+  }
+
+  const lines = buildFxRevaluationLines(prep.nonzero, prep.fxAccountId);
+  const journal = await createBooksJournal(userId, clientId, {
+    periodId,
+    entryDate: prep.period.end,
+    memo: `FX revaluation ${prep.period.label}`,
+    voucherType: "Journal",
+    entryType: "fx_revaluation",
+    autoReverseNextPeriod: true,
+    lines,
+    post: false,
+  });
+
+  await withUser(userId, async (db) => {
+    if (prep.existingRunId) {
+      await db.query(
+        `UPDATE books_fx_revaluation_runs
+         SET journal_entry_id = $2, kind = 'journal'
+         WHERE id = $1`,
+        [prep.existingRunId, journal.id],
+      );
+    } else {
+      await db.query(
+        `INSERT INTO books_fx_revaluation_runs (id, client_id, period_id, journal_entry_id, kind)
+         VALUES ($1,$2,$3,$4,'journal')`,
+        [randomUUID(), clientId, periodId, journal.id],
+      );
+    }
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "create",
+      entity: "books_fx_revaluation_run",
+      entityId: journal.id,
+      after: {
+        periodId,
+        itemCount: prep.nonzero.length,
+        totalDiffAedMinor: prep.nonzero.reduce((s, i) => s + i.diffAedMinor, 0),
+      },
+    });
+  });
+
+  return {
+    journalEntryId: journal.id,
+    status: journal.status,
+    kind: "journal",
+    created: true,
+    replaced,
+    missingRates: [],
+    itemCount: prep.nonzero.length,
+    totalDiffAedMinor: prep.nonzero.reduce((s, i) => s + i.diffAedMinor, 0),
+  };
+}
+
+/** Close-gate helper. */
+export async function fxRevaluationGateState(
+  db: PoolClient,
+  clientId: string,
+  periodId: string,
+  periodEnd: string,
+): Promise<{
+  status: "pass" | "fail";
+  count: number;
+  detail: string;
+  missingRates: string[];
+}> {
+  const raw = await collectFxMonetaryItems(db, clientId, periodEnd);
+  if (raw.length === 0) {
+    return { status: "pass", count: 0, detail: "No foreign-currency monetary balances", missingRates: [] };
+  }
+  const { missing } = await rateMapForDate(
+    db,
+    clientId,
+    periodEnd,
+    raw.map((r) => r.currency),
+  );
+  if (missing.length) {
+    return {
+      status: "fail",
+      count: missing.length,
+      detail: `Missing rates for ${periodEnd}: ${missing.sort().join(", ")}`,
+      missingRates: missing,
+    };
+  }
+
+  const run = await db.query(
+    `SELECT r.kind, r.journal_entry_id, e.status
+     FROM books_fx_revaluation_runs r
+     LEFT JOIN books_journal_entries e ON e.id = r.journal_entry_id AND e.deleted_at IS NULL
+     WHERE r.client_id = $1 AND r.period_id = $2`,
+    [clientId, periodId],
+  );
+  if (!run.rowCount) {
+    return {
+      status: "fail",
+      count: raw.length,
+      detail: `Missing FX revaluation run (${raw.length} monetary item(s))`,
+      missingRates: [],
+    };
+  }
+  const kind = String(run.rows[0].kind);
+  if (kind === "noop") {
+    return { status: "pass", count: 0, detail: "FX revaluation noop (no differences)", missingRates: [] };
+  }
+  if (String(run.rows[0].status) === "posted") {
+    return { status: "pass", count: 0, detail: "FX revaluation posted for period", missingRates: [] };
+  }
+  return {
+    status: "fail",
+    count: 1,
+    detail: "FX revaluation draft exists — approver must post",
+    missingRates: [],
+  };
+}

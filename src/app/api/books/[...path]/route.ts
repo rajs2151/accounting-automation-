@@ -39,6 +39,12 @@ import {
   runBooksDepreciation,
 } from "@/server/books/fixed-assets";
 import {
+  listBooksFxRates,
+  previewBooksFxRevaluation,
+  runBooksFxRevaluation,
+  upsertBooksFxRate,
+} from "@/server/books/fx-revaluation";
+import {
   beginBooksJournalCorrection,
   bulkAddBooksJournalTags,
   bulkPostBooksJournals,
@@ -557,6 +563,20 @@ export async function GET(request: Request, ctx: Ctx) {
         await previewBooksFixedAssetSchedule(session.userId, session.clientId, path[1]),
       );
     }
+    if (path[0] === "fx-rates" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksFxRates(session.userId, session.clientId, {
+          currency: url.searchParams.get("currency") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "fx-revaluation" && path[1] === "preview" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await previewBooksFxRevaluation(session.userId, session.clientId, periodId),
+      );
+    }
     if (path[0] === "expenses" && path.length === 2) {
       return NextResponse.json(await getBooksExpense(session.userId, session.clientId, path[1]));
     }
@@ -790,6 +810,25 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "fixed-assets" && path[1] === "run-depreciation" && path.length === 2) {
       return NextResponse.json(
         await runBooksDepreciation(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "fx-rates" && path.length === 1) {
+      return NextResponse.json(
+        await upsertBooksFxRate(session.userId, session.clientId, {
+          currency: String(body.currency || ""),
+          rateDate: String(body.rateDate || ""),
+          rateScaled: body.rateScaled == null ? undefined : Number(body.rateScaled),
+          rate: body.rate == null ? undefined : body.rate,
+        }),
+      );
+    }
+    if (path[0] === "fx-revaluation" && path[1] === "run" && path.length === 2) {
+      return NextResponse.json(
+        await runBooksFxRevaluation(
           session.userId,
           session.clientId,
           String(body.periodId || ""),

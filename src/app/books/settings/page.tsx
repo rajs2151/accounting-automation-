@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { FxRatesSection } from "@/components/books/fx-rates-section";
 import { VatSettingsSection } from "@/components/books/vat-settings-section";
 import { Button } from "@/components/ui/button";
 import {
@@ -828,6 +829,8 @@ export default function BooksSettingsPage() {
       </section>
 
       <VatSettingsSection />
+
+      <FxRatesSection />
 
       <section className="space-y-2 rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-medium">Fixed assets</h2>

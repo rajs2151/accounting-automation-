@@ -13,6 +13,7 @@ import { getBooksMonthChecklist, vatPeriodForMonth, type VatFrequency } from "@/
 import { requireApproverOrAdmin } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { missingPostedDepreciation } from "@/server/books/fixed-assets";
+import { fxRevaluationGateState } from "@/server/books/fx-revaluation";
 import { lockBooksPeriod, reopenBooksPeriod } from "@/server/books/periods";
 import { queryPlaceOfSupplyGaps } from "@/server/books/place-of-supply";
 import { booksTrialBalance } from "@/server/books/trial-balance";
@@ -386,15 +387,15 @@ export async function getBooksCloseChecklist(
           ? "All active assets have posted depreciation for this period (or none due)"
           : `Missing posted run: ${missingDepr.map((a) => a.name).join(", ")}`,
     };
-    // Placeholder for P5-3
+    const fxState = await fxRevaluationGateState(db, clientId, periodId, end);
     const fx: CloseGate = {
       key: "fx_revaluation",
       label: "FX revaluation",
-      status: "not_set_up",
-      blocking: false,
-      count: 0,
-      href: "/books/close",
-      detail: "Not set up (P5-3)",
+      status: fxState.status,
+      blocking: true,
+      count: fxState.count,
+      href: "/books/settings#fx-rates",
+      detail: fxState.detail,
     };
 
     const gates = [

@@ -29,5 +29,7 @@ test("close page shows gates; approver can open waive/lock controls", async ({ p
     "href",
     "/books/fixed-assets",
   );
+  await expect(page.getByRole("link", { name: "FX revaluation" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Revalue FX" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Lock period|Unlock/ })).toBeVisible();
 });

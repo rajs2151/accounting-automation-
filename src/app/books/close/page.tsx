@@ -75,6 +75,7 @@ export default function BooksClosePage() {
   const [unlockReason, setUnlockReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
+  const [revaluing, setRevaluing] = useState(false);
 
   useEffect(() => {
     fetch("/api/session")
@@ -188,6 +189,26 @@ export default function BooksClosePage() {
     checklist?.period.label || periods.find((p) => p.id === periodId)?.label || "—";
   const locked = checklist?.period.status === "LOCKED";
 
+  async function revalueFx() {
+    if (!periodId) return;
+    setRevaluing(true);
+    setError("");
+    try {
+      const res = await fetch("/api/books/fx-revaluation/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiErrorMessage(data) || data.error || "revalue_failed");
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "revalue_failed");
+    } finally {
+      setRevaluing(false);
+    }
+  }
+
   return (
     <div className="space-y-6 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -201,6 +222,13 @@ export default function BooksClosePage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={!periodId || locked || revaluing || busy}
+            onClick={() => void revalueFx()}
+          >
+            {revaluing ? "Revaluing…" : "Revalue FX"}
+          </Button>
           {locked ? (
             <Button
               variant="outline"
