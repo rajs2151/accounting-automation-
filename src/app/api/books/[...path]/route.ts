@@ -196,6 +196,13 @@ import {
   saveCsvProfile,
   updateStatementLines,
 } from "@/server/books/statement-extractions";
+import {
+  booksBalanceSheet,
+  booksCashFlow,
+  booksFinancialStatementsPack,
+  booksProfitAndLoss,
+  parseMode,
+} from "@/server/books/financial-statements";
 import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
 import { listBooksVatCodes } from "@/server/books/vat-codes";
 import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
@@ -452,6 +459,43 @@ export async function GET(request: Request, ctx: Ctx) {
         await booksAgeing(session.userId, session.clientId, {
           side: side === "AP" ? "AP" : side === "AR" ? "AR" : (side as "AR"),
           asOf: url.searchParams.get("asOf") || "",
+        }),
+      );
+    }
+    if (
+      path[0] === "reports" &&
+      (path[1] === "pnl" || path[1] === "balance-sheet" || path[1] === "cash-flow") &&
+      path.length === 2
+    ) {
+      const mode = parseMode(url.searchParams.get("mode"));
+      const from = url.searchParams.get("from") || "";
+      const to = url.searchParams.get("to") || "";
+      if (!from || !to) throw new BooksError("date_range_required", "invalid");
+      const q = {
+        mode,
+        from,
+        to,
+        asOf: url.searchParams.get("asOf") || undefined,
+      };
+      if (path[1] === "pnl") {
+        return NextResponse.json(await booksProfitAndLoss(session.userId, session.clientId, q));
+      }
+      if (path[1] === "balance-sheet") {
+        return NextResponse.json(await booksBalanceSheet(session.userId, session.clientId, q));
+      }
+      return NextResponse.json(await booksCashFlow(session.userId, session.clientId, q));
+    }
+    if (path[0] === "reports" && path[1] === "financial-statements" && path.length === 2) {
+      const mode = parseMode(url.searchParams.get("mode"));
+      const from = url.searchParams.get("from") || "";
+      const to = url.searchParams.get("to") || "";
+      if (!from || !to) throw new BooksError("date_range_required", "invalid");
+      return NextResponse.json(
+        await booksFinancialStatementsPack(session.userId, session.clientId, {
+          mode,
+          from,
+          to,
+          asOf: url.searchParams.get("asOf") || undefined,
         }),
       );
     }
