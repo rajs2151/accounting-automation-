@@ -1,29 +1,21 @@
-TASK ID: P6-2
-PHASE: Phase 6 - Reports screens: P&L | Balance Sheet | Cash Flow | Trial Balance tabs + drill-down panel
+TASK ID: P6-3
+PHASE: Phase 6 - Financial statement exports (Excel + PDF) gated on integrity
 
 OBJECTIVE:
-Screens for the P6-1 engine on the existing ReportTable, with the CrossVal-style layout and a cell drill-down panel
-that can re-categorise an item via an audited reclass entry.
+Export P&L, Balance Sheet, Cash Flow, Trial Balance and notes to Excel (one sheet each) and a branded PDF, only when
+the P6-1 integrity gates pass.
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 359-385; reference screenshots
-docs/reference/crossval/ (P&L screens) and docs/reference/tofu/UI-PATTERNS.md section 13. Existing:
-src/components/books/report-table.tsx (tree, pinned totals, drill-down, keyboard, exports), reports pages from
-RPT-1, P6-1 API.
+READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 398-400. Reuse the export code
+RPT-1 added to ReportTable (XLSX/CSV/print) - no new dependency without stopping to ask.
 
 REQUIREMENTS:
-1. /books/reports with tabs Profit & Loss | Balance Sheet | Cash Flow | Trial Balance (TB = existing page in the tab).
-2. Column mode switch Monthly / Quarterly / Yearly / Range + "Today" jump; MTD columns labelled; previous-period
-   comparison column optional.
-3. Tree group -> sub-group -> account (-> bank/card source rows for P&L where available); negatives in brackets;
-   K/M abbreviations with exact AED value on hover; frozen first column + horizontal scroll; subtotal rows
-   (GP, EBITDA, EBIT, EBT, Net profit) styled as totals. Gate failures shown as a red banner naming the gate.
-4. Cell click -> right drill-down panel: account, period, transaction count, search, list (date, description,
-   amount, link to entry). "Re-categorise" per item -> creates a DRAFT reclass journal (Dr new account / Cr old,
-   same amount, memo linking the original) for an approver to post - blocked in locked periods (period_locked),
-   audited. Never edits the original entry.
-5. Keyboard and print behave like the existing ReportTable.
-TESTS: unit for the reclass-draft server function (exact lines, locked period refused, preparer cannot post own);
-e2e: open P&L monthly, expand a section, click a cell, panel lists the entries; switch to Balance Sheet - balanced;
-Cash Flow ties banner absent.
-ACCEPTANCE: screens render the engine's numbers exactly, drill-down + reclass draft work, full gates green.
-DO NOT: comments, charts, projections (P6-4); exports (P6-3).
+- Excel: sheets P&L, Balance Sheet, Cash Flow, Trial Balance, Notes (accounting policies placeholder, gate results,
+  prepared-by, generated-at, company, period, currency AED); numbers as numbers (not text), 2 decimals, same values
+  as on screen.
+- PDF: Arnifi-branded header (company, period, "prepared by", page numbers), one statement per section.
+- Server refuses export when any gate fails (export_blocked_gates + which gate); UI shows which gate failed.
+- Export is audited (who, when, period, statement set, hash of payload - see legacy hashStatementsPayload).
+TESTS: export with passing gates produces sheets with exact totals (parse the generated file in the test);
+blocked when BS does not balance (simulate via a deliberately unbalanced test fixture only if the engine allows -
+otherwise unit-test the gate check); audit row written.
+ACCEPTANCE: files match screen numbers, gates enforced server-side, full gates green.

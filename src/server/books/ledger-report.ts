@@ -111,6 +111,73 @@ export async function booksLedgerReport(
   });
 }
 
+/** Posted lines for one account in a date range (FS drill-down; excludes closing + closing-reversals). */
+export async function booksAccountLinesInRange(
+  userId: string,
+  clientId: string,
+  opts: { accountId: string; from: string; to: string },
+): Promise<{
+  account: { id: string; code: string; name: string };
+  from: string;
+  to: string;
+  lines: Array<{
+    entryId: string;
+    entryNo: string | null;
+    date: string;
+    memo: string;
+    debitMinor: number;
+    creditMinor: number;
+    amountMinor: number;
+  }>;
+}> {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const a = await db.query(
+      `SELECT id, code, name FROM books_accounts WHERE id = $1 AND client_id = $2`,
+      [opts.accountId, clientId],
+    );
+    if (!a.rowCount) throw new BooksError("account_not_found", "not_found");
+    const rows = await db.query(
+      `SELECT e.id, e.entry_no, e.entry_date, e.memo, l.debit_minor, l.credit_minor
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       WHERE l.account_id = $1 AND e.client_id = $2
+         AND e.status IN ('posted', 'reversed')
+         AND e.deleted_at IS NULL
+         AND e.entry_date >= $3::date AND e.entry_date <= $4::date
+         AND e.entry_type IS DISTINCT FROM 'closing'
+         AND NOT EXISTS (
+           SELECT 1 FROM books_journal_entries c
+           WHERE c.id = e.reverses_entry_id AND c.entry_type = 'closing'
+         )
+       ORDER BY e.entry_date, e.created_at, l.id`,
+      [opts.accountId, clientId, opts.from, opts.to],
+    );
+    return {
+      account: {
+        id: String(a.rows[0].id),
+        code: String(a.rows[0].code),
+        name: String(a.rows[0].name),
+      },
+      from: opts.from,
+      to: opts.to,
+      lines: rows.rows.map((r) => {
+        const debitMinor = Number(r.debit_minor);
+        const creditMinor = Number(r.credit_minor);
+        return {
+          entryId: String(r.id),
+          entryNo: r.entry_no ? String(r.entry_no) : null,
+          date: iso(r.entry_date),
+          memo: String(r.memo || ""),
+          debitMinor,
+          creditMinor,
+          amountMinor: debitMinor - creditMinor,
+        };
+      }),
+    };
+  });
+}
+
 export type EntrySource = {
   documentId: string;
   docType: string;

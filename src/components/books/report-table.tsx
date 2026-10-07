@@ -12,6 +12,7 @@ import {
   differenceRow,
   flattenReportRows,
   formatReportAmount,
+  formatReportAmountExact,
   reportExportRows,
   type ReportColumn,
   type ReportRow,
@@ -87,7 +88,11 @@ export function ReportTable(props: {
   footer?: ReportFooterRow[];
   difference?: { debitKey: string; creditKey: string; totals: Record<string, number> } | null;
   brackets?: boolean;
+  /** K/M abbreviations in cells; exact AED stays on the cell title. */
+  abbreviate?: boolean;
   onDrill?: (row: RowWithText) => void;
+  /** When set, amount cells call this with the column key (FS drill-down). */
+  onCellDrill?: (row: RowWithText, columnKey: string) => void;
   onUp?: () => void;
   exportName: string;
   emptyText?: string;
@@ -234,13 +239,26 @@ export function ReportTable(props: {
     download(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }), `${props.exportName}.csv`);
   }
 
-  const amount = (v: number | undefined) => formatReportAmount(v ?? 0, { brackets: props.brackets });
+  const amount = (v: number | undefined) =>
+    formatReportAmount(v ?? 0, { brackets: props.brackets, abbreviate: props.abbreviate });
+  const amountTitle = (v: number | undefined) =>
+    formatReportAmountExact(v ?? 0, { brackets: props.brackets });
   const cell = (r: { values: Record<string, number>; text?: Record<string, string> }, c: ReportColumn) =>
     c.kind === "text" ? (r.text?.[c.key] ?? "") : amount(r.values[c.key]);
 
   return (
     <div className="space-y-2" data-testid={props.testId}>
-      <style>{`@media print { @page { margin: 14mm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9px; } } }`}</style>
+      <style>{`
+        @media print { @page { margin: 14mm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9px; } } }
+        [data-report-scroll] table th:first-child,
+        [data-report-scroll] table td:first-child {
+          position: sticky;
+          left: 0;
+          z-index: 1;
+          background: hsl(var(--card));
+        }
+        [data-report-scroll] table thead th:first-child { z-index: 2; background: hsl(var(--muted)); }
+      `}</style>
       <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
         <div className="flex gap-2">
           {groups.length ? (
@@ -281,6 +299,7 @@ export function ReportTable(props: {
         aria-label={props.title}
         onKeyDown={onKeyDown}
         onScroll={() => save()}
+        data-report-scroll=""
         className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring print:max-h-none print:overflow-visible"
       >
         <table className="w-full min-w-[640px] text-sm" data-own-style="">
@@ -335,7 +354,21 @@ export function ReportTable(props: {
                   </span>
                 </td>
                 {columns.map((c) => (
-                  <td key={c.key} className={cn("px-3 py-1.5", c.kind === "text" ? "text-start" : "text-end tabular-nums")}>
+                  <td
+                    key={c.key}
+                    title={c.kind === "text" ? undefined : amountTitle(r.values[c.key]) || undefined}
+                    className={cn("px-3 py-1.5", c.kind === "text" ? "text-start" : "text-end tabular-nums")}
+                    onClick={
+                      props.onCellDrill && c.kind !== "text" && !r.hasChildren
+                        ? (e) => {
+                            e.stopPropagation();
+                            setFocus(i);
+                            save({ focus: i });
+                            props.onCellDrill?.(r, c.key);
+                          }
+                        : undefined
+                    }
+                  >
                     {cell(r, c)}
                   </td>
                 ))}
@@ -390,13 +423,16 @@ export function useReportMeta() {
 }
 
 const REPORT_TABS = [
+  { href: "/books/reports/pnl", label: "Profit & Loss", key: "pnl" },
+  { href: "/books/reports/balance-sheet", label: "Balance sheet", key: "bs" },
+  { href: "/books/reports/cash-flow", label: "Cash flow", key: "cf" },
   { href: "/books/reports/trial-balance", label: "Trial balance", key: "tb" },
   { href: "/books/reports/day-book", label: "Day book", key: "daybook" },
   { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", key: "ar" },
   { href: "/books/reports/ageing?side=ap", label: "Payables ageing", key: "ap" },
 ] as const;
 
-/** Reports tab strip (P&L / Balance sheet / Cash flow are added here in Phase 6). */
+/** Reports tab strip (Phase 6 FS tabs first, then RPT-1 reports). */
 export function ReportsNav({ active }: { active: (typeof REPORT_TABS)[number]["key"] }) {
   return (
     <div className="flex flex-wrap gap-2 border-b border-border pb-2 text-sm print:hidden" data-testid="reports-nav">
@@ -405,6 +441,7 @@ export function ReportsNav({ active }: { active: (typeof REPORT_TABS)[number]["k
           key={t.key}
           href={t.href}
           className={cn("rounded-md px-3 py-1", t.key === active ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+          data-testid={`reports-tab-${t.key}`}
         >
           {t.label}
         </Link>

@@ -184,7 +184,12 @@ import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/com
 import { booksAgeing } from "@/server/books/ageing";
 import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
 import { booksDayBook } from "@/server/books/day-book";
-import { booksEntrySource, booksLedgerReport } from "@/server/books/ledger-report";
+import {
+  booksAccountLinesInRange,
+  booksEntrySource,
+  booksLedgerReport,
+} from "@/server/books/ledger-report";
+import { createBooksReclassDraft } from "@/server/books/reclass";
 import { buildXlsx } from "@/server/books/xlsx";
 import { generateVat201Draft, VatReturnBlockedError } from "@/server/books/vat201";
 import {
@@ -439,6 +444,15 @@ export async function GET(request: Request, ctx: Ctx) {
           periodId: url.searchParams.get("periodId") || "",
           accountId: url.searchParams.get("accountId") || "",
         }),
+      );
+    }
+    if (path[0] === "reports" && path[1] === "account-lines" && path.length === 2) {
+      const accountId = url.searchParams.get("accountId") || "";
+      const from = url.searchParams.get("from") || "";
+      const to = url.searchParams.get("to") || "";
+      if (!accountId || !from || !to) throw new BooksError("account_lines_params", "invalid");
+      return NextResponse.json(
+        await booksAccountLinesInRange(session.userId, session.clientId, { accountId, from, to }),
       );
     }
     if (path[0] === "reports" && path[1] === "entry-source" && path.length === 3) {
@@ -1051,6 +1065,18 @@ export async function POST(request: Request, ctx: Ctx) {
           year: body.year != null ? Number(body.year) : undefined,
           prefix: body.prefix != null ? String(body.prefix) : undefined,
           lastN: body.lastN != null ? Number(body.lastN) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "journals" && path[1] === "reclass-draft" && path.length === 2) {
+      return NextResponse.json(
+        await createBooksReclassDraft(session.userId, session.clientId, {
+          periodId: String(body.periodId || ""),
+          entryDate: String(body.entryDate || ""),
+          fromAccountId: String(body.fromAccountId || ""),
+          toAccountId: String(body.toAccountId || ""),
+          amountMinor: Number(body.amountMinor || 0),
+          sourceEntryId: String(body.sourceEntryId || ""),
         }),
       );
     }
