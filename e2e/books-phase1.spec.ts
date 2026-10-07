@@ -563,8 +563,8 @@ test("phase1 screenshots: review from NEW upload, statement, purchases, settings
   await savePhase1("purchases.png", await page.screenshot({ fullPage: true }));
 
   await page.goto("/books/receipts");
-  await expect(page.getByRole("heading", { name: /Receipt/i })).toBeVisible({ timeout: 15000 });
-  await expect(page.getByRole("button", { name: "Post receipt" })).toBeVisible();
+  await expect(page.getByTestId("receipts-page")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("receipt-record")).toBeVisible();
   await expect(page.getByText(/as Layla/i)).toHaveCount(0);
   await savePhase1("receipts.png", await page.screenshot({ fullPage: true }));
 
