@@ -1,8 +1,9 @@
 # arnibooks - Project status (maintained by the AI loop + reviewer)
 
 ## Now
-- Phase: **5 (Close + TB)** on feat/books-phase1 — Stream A
-- Current task: P5-4 (next — after P5-3 PASS)
+- Phase: **6 (FS)** on feat/books-phase1 — Stream A (Phase 5 closed)
+- Current task: P6-1 (next — after P5-4 PASS)
+- 2026-10-07: P5-4 PASS — year-end close to RE + Golden v5 TB; TB as-of picker deferred (period picker covers)
 - 2026-10-07: P5-3 PASS — FX rates + unrealised revaluation + close gate (db/59); push enabled per owner
 - 2026-10-07: P5-2 PASS — fixed assets + straight-line depreciation + close gate (db/58); unit 240p/0f/1s; e2e 7/7
 - 2026-10-07: P5-1 PASS — close checklist + waive/lock/unlock + changed-since-close (db/57); unit 237p/0f/1s; e2e 7/7
@@ -134,3 +135,4 @@
 - 2026-10-07 | P5-1 | PASS | db/57 close waivers/events; /books/close; lock gate; unit 237p e2e 7/7
 - 2026-10-07 | P5-2 | PASS | db/58 fixed assets + depr runs; /books/fixed-assets; close Depreciation gate; unit 240p/1s e2e 7/7
 - 2026-10-07 | P5-3 | PASS | db/59 FX rates + reval JV (auto-reverse); Settings FX + Close Revalue FX; gate wired
+- 2026-10-07 | P5-4 | PASS | db/60 year-end closes; Close year; Golden v5; Phase 5 closed; pushed

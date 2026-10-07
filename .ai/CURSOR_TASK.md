@@ -1,26 +1,38 @@
-TASK ID: P5-4
-PHASE: Phase 5 - Trial Balance completeness + year-end closing entry + Golden v5
+TASK ID: P6-1
+PHASE: Phase 6 - Financial statements engine (server only): P&L, Balance Sheet, Cash Flow + period engine + gates
 
 OBJECTIVE:
-Finish Phase 5: TB matches the spec (opening / Dr movement / Cr movement / closing, grouped by type with subtotals,
-red banner if out of balance, period or as-of picker, drill-down - RPT-1 built most of it on ReportTable; fill only
-the gaps), a system year-end closing entry, and a Golden v5 month test.
+One read-only server module that builds P&L, Balance Sheet and indirect Cash Flow for any set of period columns,
+with integrity gates. No UI in this task (P6-2 builds the screens).
 
-READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 341-349. PORT the year-end logic
-from legacy src/server/statements.ts yearEndCloseToRE. Existing: src/server/books/trial-balance.ts,
-src/app/books/reports/trial-balance/page.tsx, report-table.tsx, P5-1 close checklist.
+READ FIRST: .ai/HOW_TO_WORK.md; spec docs/plan/arnibooks-cursor-prompts.md lines 354-404 (sections 2-4 and 9 gates).
+PORT from legacy src/server/statements.ts (buildFinancialStatements, evaluateIntegrity, StatementLine types) -
+same ideas, books tables. Data: books journals (posted + reversed, same rule as trial-balance.ts), books_accounts
+(statement_line BS_* / PL_*, sub_type), P5-4 closing entry flag (exclude from P&L), fiscal year on the company.
 
 REQUIREMENTS:
-1. TB: verify the columns/grouping/banner/as-of/drill-down against the spec; add only what is missing. Numbers must
-   stay identical (existing TB tests + "Desert Falcon Jun TB matches hand-computed golden" unchanged).
-2. Year-end close: for the last period of the fiscal year (fiscal-year start month on the company), "Close year"
-   (approver) creates ONE system entry entry_type 'closing' dated the last day of the year: every income/expense
-   account (PL_*) zeroed against 3200 Retained earnings. Allowed only when that period's close checklist passes
-   (P5-1); idempotent (refuse a second closing entry for the same year); reversible only by an approver with reason.
-   P&L reports for the year must exclude the closing entry (expose a flag so P6 can exclude it).
-3. Golden v5: one synthetic test company month with: sales invoice (SR), purchase bill, bank receipt + payment
-   matched, depreciation (P5-2), FX revaluation (P5-3), one accrual via P4-3 template. Expected TB written by hand
-   in the test (comment the arithmetic). TB must equal it exactly and balance.
-TESTS: closing entry lines exact (hand-computed), refused before checklist passes, refused twice, P&L for the year
-after closing still shows the year's profit (closing excluded), RE increases by net profit; golden v5 exact.
-ACCEPTANCE: Phase 5 spec items all covered or explicitly deferred; full gates green.
+1. Period engine: columns Monthly / Quarterly / Yearly / custom range, fiscal-year aware; a column covering a
+   partial current period is labelled MTD/QTD/YTD and compared like-for-like (same number of days last period) -
+   never a half month vs a full month.
+2. P&L (movements per column): Revenue (PL_revenue) -> COGS (PL_cogs) -> Gross profit -> Operating expenses
+   (PL_opex excluding sub_type depr/amort) -> EBITDA -> Depreciation & amortisation (sub_type depr/amort) -> EBIT
+   -> Other income / finance costs (PL_other: interest, FX, disposal) -> EBT -> Corporate tax (PL_tax) -> Net
+   profit. Tree: section -> account; each row carries account ids for drill-down.
+3. Balance Sheet (balances at column end): Assets (current BS_current_assets / non-current BS_nca incl. contra
+   accounts) = Liabilities (BS_current_liab / BS_ncl) + Equity (BS_equity + current-year profit to date, before the
+   year-end closing entry). Gate: must balance exactly.
+4. Cash Flow (indirect, per column): net profit -> non-cash (depreciation/amortisation sub_type, unrealised FX 7310)
+   -> working capital changes (AR 1210, AP 2110, prepaid, accrued, VAT 2210/1430, inventory, deferred revenue 2310,
+   clearing accounts) -> operating; investing (BS_nca fixed/intangible movement net of non-cash); financing
+   (capital 3100, drawings 3400, loans BS_ncl) -> net change -> opening cash -> closing cash. Cash = accounts flagged
+   bank/card/cash (1110/1120/1121...; reuse the money-account definition from P2B-3/B4, excluding P&L accounts).
+   Gate: closing cash = sum of those account balances.
+5. Integrity gates object: tbBalances, bsBalances, cfTies (each bool + difference in fils). Exports (P6-3) are
+   blocked unless all are true.
+6. API: GET reports/pnl, reports/balance-sheet, reports/cash-flow with ?mode=monthly|quarterly|yearly|range&from&to
+   (append-only route registrations). RLS session as other reports. Read-only.
+TESTS (hand-computed in the test): a test company with revenue, COGS, opex, depreciation, interest, FX unrealised,
+CT expense, AR/AP/VAT movements, a fixed asset purchase, capital injection, drawings -> exact P&L subtotals
+(GP, EBITDA, EBIT, EBT, NP), BS balances, CF ties to cash; monthly vs quarterly columns sum correctly; MTD column
+labelled and compared like-for-like; closing entry excluded from P&L but reflected in BS equity.
+ACCEPTANCE: exact numbers, three gates, full gates green. Golden v6 for A/B/C is NOT in this task (owner values).

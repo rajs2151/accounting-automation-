@@ -76,6 +76,7 @@ export default function BooksClosePage() {
   const [busy, setBusy] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
   const [revaluing, setRevaluing] = useState(false);
+  const [closingYear, setClosingYear] = useState(false);
 
   useEffect(() => {
     fetch("/api/session")
@@ -209,6 +210,26 @@ export default function BooksClosePage() {
     }
   }
 
+  async function closeYear() {
+    if (!periodId) return;
+    setClosingYear(true);
+    setError("");
+    try {
+      const res = await fetch("/api/books/year-end/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiErrorMessage(data) || data.error || "year_end_failed");
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "year_end_failed");
+    } finally {
+      setClosingYear(false);
+    }
+  }
+
   return (
     <div className="space-y-6 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -228,6 +249,14 @@ export default function BooksClosePage() {
             onClick={() => void revalueFx()}
           >
             {revaluing ? "Revaluing…" : "Revalue FX"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!periodId || !canApprove || locked || closingYear || busy || !checklist?.ready}
+            onClick={() => void closeYear()}
+            title="Only on the last month of the fiscal year, when the checklist is ready"
+          >
+            {closingYear ? "Closing…" : "Close year"}
           </Button>
           {locked ? (
             <Button

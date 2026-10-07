@@ -44,6 +44,7 @@ import {
   runBooksFxRevaluation,
   upsertBooksFxRate,
 } from "@/server/books/fx-revaluation";
+import { closeBooksYearToRE, reverseBooksYearEndClose } from "@/server/books/year-end";
 import {
   beginBooksJournalCorrection,
   bulkAddBooksJournalTags,
@@ -832,6 +833,27 @@ export async function POST(request: Request, ctx: Ctx) {
           session.userId,
           session.clientId,
           String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "year-end" && path[1] === "close" && path.length === 2) {
+      return NextResponse.json(
+        await closeBooksYearToRE(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.note || ""),
+        ),
+      );
+    }
+    if (path[0] === "year-end" && path[1] === "reverse" && path.length === 2) {
+      return NextResponse.json(
+        await reverseBooksYearEndClose(
+          session.userId,
+          session.clientId,
+          Number(body.fiscalYear),
+          String(body.reason || ""),
+          String(body.entryDate || ""),
         ),
       );
     }
