@@ -14,6 +14,7 @@ import {
   CellTypePill,
   type AccountCell,
 } from "@/components/books/cells";
+import { BooksDateInput } from "@/components/books/date-input";
 import {
   CreateEntrySheet,
   type CreateEntryPrefill,
@@ -32,6 +33,13 @@ import {
 } from "@/components/books/journal-drawer";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateUae } from "@/lib/date";
@@ -61,6 +69,8 @@ type JournalRow = {
   reversedByEntryId?: string | null;
   correctsEntryId?: string | null;
   recurringId?: string | null;
+  recurringIndex?: number | null;
+  recurringTotal?: number | null;
 };
 
 type JournalDetail = {
@@ -83,10 +93,10 @@ type JournalDetail = {
   reversesEntryId?: string | null;
   reversedByEntryId?: string | null;
   correctsEntryId?: string | null;
-  autoReverseNextPeriod?: boolean;
   reversesEntryNo?: string | null;
   reversedByEntryNo?: string | null;
   correctsEntryNo?: string | null;
+  autoReverseNextPeriod?: boolean;
   attachments?: Array<{ id: string; originalName: string }>;
   lines: Array<{
     id: string;
@@ -102,6 +112,7 @@ type JournalDetail = {
     vatTreatment?: string | null;
     vatCode?: string | null;
     vatAmountMinor?: number;
+    linkedVatLineId?: string | null;
     tags?: string[];
   }>;
 };
@@ -129,6 +140,7 @@ export default function BooksJournalsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<JournalDetail | null>(null);
+  const detailRequestId = useRef<string | null>(null);
   const [audit, setAudit] = useState<AuditRow[]>([]);
   const [tab, setTab] = useState("overview");
   const [error, setError] = useState("");
@@ -148,6 +160,10 @@ export default function BooksJournalsPage() {
   const [editNote, setEditNote] = useState("");
   const [editTags, setEditTags] = useState("");
   const [savingMeta, setSavingMeta] = useState(false);
+  const [reverseOpen, setReverseOpen] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseDate, setReverseDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reversing, setReversing] = useState(false);
 
   const searchQuery = toolbarSearch || globalSearch;
 
@@ -204,24 +220,23 @@ export default function BooksJournalsPage() {
     [rows, selectedIds],
   );
 
-  // Latest row asked for: responses for an earlier click must not land in the drawer.
-  const openRowIdRef = useRef<string | null>(null);
-
   async function openRow(row: JournalRow) {
-    if (openRowIdRef.current !== row.id) {
-      // Switching rows: never show the previous entry's lines / audit while the new one loads.
+    const rowId = row.id;
+    // Clear stale drawer content only when switching to a different row.
+    if (selectedId !== rowId) {
       setDetail(null);
       setAudit([]);
     }
-    openRowIdRef.current = row.id;
-    setSelectedId(row.id);
+    setSelectedId(rowId);
+    detailRequestId.current = rowId;
     setTab("overview");
     const [d, a] = await Promise.all([
-      fetch(`/api/books/journals/${row.id}`).then((r) => r.json()).catch(() => null),
-      fetch(`/api/books/journals/${row.id}/audit`).then((r) => r.json()).catch(() => null),
+      fetch(`/api/books/journals/${rowId}`).then((r) => r.json()),
+      fetch(`/api/books/journals/${rowId}/audit`).then((r) => r.json()),
     ]);
-    if (openRowIdRef.current !== row.id) return;
-    if (d?.id) {
+    // Drop responses that arrived after the user selected another row.
+    if (detailRequestId.current !== rowId) return;
+    if (d?.id === rowId) {
       setDetail(d);
       setEditMemo(String(d.memo || ""));
       setEditNote(String(d.note || ""));
@@ -262,6 +277,34 @@ export default function BooksJournalsPage() {
     }
   }
 
+  async function confirmDrawerReverse() {
+    if (!detail || !reverseReason.trim()) return;
+    setReversing(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/books/journals/${detail.id}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entryDate: reverseDate,
+          reason: reverseReason.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(String(data.error || "reverse_failed"));
+        return;
+      }
+      setReverseOpen(false);
+      setReverseReason("");
+      const origId = detail.id;
+      await reload();
+      await openRow({ id: origId } as JournalRow);
+    } finally {
+      setReversing(false);
+    }
+  }
+
   async function startCorrection() {
     if (!detail) return;
     const res = await fetch(`/api/books/journals/${detail.id}/correct`, {
@@ -285,33 +328,31 @@ export default function BooksJournalsPage() {
 
   function openDraftEditor() {
     if (!detail) return;
+    // Primaries store linkedVatLineId → companion; exclude companions so the
+    // sheet regenerates a single VAT line instead of doubling.
+    const companionIds = new Set(
+      detail.lines
+        .map((l) => l.linkedVatLineId)
+        .filter((id): id is string => Boolean(id))
+        .map(String),
+    );
     setCreatePrefill({
       entryDate: detail.entryDate,
       memo: detail.memo,
       voucherType: detail.voucherType || "Journal",
       tags: detail.tags || [],
       autoReverseNextPeriod: Boolean(detail.autoReverseNextPeriod),
-      // Stored VAT companion lines (1430 / 2210 "VAT … on …") are regenerated by the sheet from the
-      // base line's VAT code — passing them too would double the VAT and unbalance the entry.
       lines: detail.lines
-        .filter(
-          (l) =>
-            !(
-              (l.accountCode === "1430" || l.accountCode === "2210") &&
-              !l.vatCode &&
-              /^VAT\b/.test(String(l.lineMemo || "")) &&
-              detail.lines.some((b) => b.vatCode === "SR" || b.vatCode === "RC")
-            ),
-        )
+        .filter((l) => !companionIds.has(l.id))
         .map((l) => ({
-        accountId: String(l.accountId || ""),
-        debitMinor: l.debitMinor,
-        creditMinor: l.creditMinor,
-        lineMemo: l.lineMemo,
-        vatCode: l.vatCode,
-        vatAmountMinor: l.vatAmountMinor,
-        tags: l.tags || [],
-      })),
+          accountId: String(l.accountId || ""),
+          debitMinor: l.debitMinor,
+          creditMinor: l.creditMinor,
+          lineMemo: l.lineMemo,
+          vatCode: l.vatCode,
+          vatAmountMinor: l.vatAmountMinor,
+          tags: l.tags || [],
+        })),
     });
     setEditEntryId(detail.id);
     setCreateOpen(true);
@@ -352,8 +393,13 @@ export default function BooksJournalsPage() {
         <div className="space-y-0.5">
           <CellReadMore text={r.description || r.memo || ""} max={40} />
           {r.recurringId ? (
-            <span className="inline-flex rounded bg-sky-50 px-1.5 py-0 text-[10px] font-medium text-sky-800 border border-sky-200">
-              Recurring
+            <span
+              className="inline-flex rounded bg-sky-50 px-1.5 py-0 text-[10px] font-medium text-sky-800 border border-sky-200"
+              data-testid="journal-recurring-badge"
+            >
+              {r.recurringIndex != null && r.recurringTotal != null
+                ? `Entry ${r.recurringIndex} of ${r.recurringTotal}`
+                : "Recurring"}
             </span>
           ) : null}
         </div>
@@ -524,7 +570,7 @@ export default function BooksJournalsPage() {
         open={Boolean(selectedId)}
         onOpenChange={(open) => {
           if (!open) {
-            openRowIdRef.current = null;
+            detailRequestId.current = null;
             setSelectedId(null);
             setDetail(null);
             setAudit([]);
@@ -596,6 +642,20 @@ export default function BooksJournalsPage() {
                   >
                     Edit date / accounts / amounts
                   </Button>
+                  {isAdmin ? (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => {
+                        setReverseDate(detail.entryDate?.slice(0, 10) || new Date().toISOString().slice(0, 10));
+                        setReverseReason("");
+                        setReverseOpen(true);
+                      }}
+                      data-testid="drawer-reverse"
+                    >
+                      Reverse
+                    </Button>
+                  ) : null}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Editing amounts creates an automatic reversal and a prefilled correction entry.
@@ -811,6 +871,44 @@ export default function BooksJournalsPage() {
           </div>
         ) : null}
       </BooksSideDrawer>
+
+      <Dialog open={reverseOpen} onOpenChange={setReverseOpen}>
+        <DialogContent data-testid="drawer-reverse-dialog">
+          <DialogHeader>
+            <DialogTitle>Reverse journal entry</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Posts a linked opposite entry. The original stays on the books as reversed (immutable).
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Reversal date</label>
+            <BooksDateInput
+              data-testid="drawer-reverse-date"
+              value={reverseDate}
+              onChange={setReverseDate}
+            />
+          </div>
+          <Textarea
+            value={reverseReason}
+            onChange={(e) => setReverseReason(e.target.value)}
+            placeholder="Reason for reversal (required)"
+            data-testid="drawer-reverse-reason"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReverseOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={reversing || !reverseReason.trim() || !reverseDate}
+              data-testid="drawer-reverse-confirm"
+              onClick={() => void confirmDrawerReverse()}
+            >
+              {reversing ? "Reversing…" : "Reverse"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

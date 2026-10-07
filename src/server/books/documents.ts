@@ -1160,6 +1160,7 @@ export async function voidBooksDocument(
     clientId,
     String(doc.journal_entry_id),
     String(doc.issue_date instanceof Date ? doc.issue_date.toISOString() : doc.issue_date).slice(0, 10),
+    reason,
   );
 
   await withUser(userId, async (db) => {

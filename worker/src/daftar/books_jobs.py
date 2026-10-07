@@ -159,6 +159,7 @@ def _schedule_post(conn, job: dict) -> None:
                     {
                         "entryId": str(entry_id),
                         "actorUserId": str(row["created_by"]),
+                        "reverseOn": run_on.isoformat(),
                     }
                 ),
                 run_on.isoformat(),
@@ -280,7 +281,26 @@ def _recurring_materialize(conn, job: dict) -> None:
         )
 
 
+def _first_of_next_month(d: date) -> date:
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+def _as_date(value) -> date:
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
 def _auto_reverse(conn, job: dict) -> None:
+    """Post a reversing entry dated the 1st of the month after the original.
+
+    Payload may include reverseOn (YYYY-MM-DD). Older jobs without reverseOn
+    fall back to first-of-next-month from the original entry_date (not today).
+    Missing or locked target period fails the job instead of posting into the
+    original month.
+    """
     p = _payload(job)
     entry_id = p.get("entryId") or p.get("entry_id")
     orig = conn.execute(
@@ -289,43 +309,42 @@ def _auto_reverse(conn, job: dict) -> None:
     ).fetchone()
     if not orig:
         return
-    # Accrual reversals land on the 1st of the month after the original entry, in the period that
-    # contains that date (never back in the accrual's own period, which would cancel it out).
-    reverse_on = p.get("reverseOn")
-    if reverse_on:
-        reverse_on = date.fromisoformat(str(reverse_on)[:10])
+
+    reverse_on_raw = p.get("reverseOn") or p.get("reverse_on")
+    if reverse_on_raw:
+        rev_date = _as_date(reverse_on_raw)
     else:
-        d = orig["entry_date"]
-        if isinstance(d, str):
-            d = date.fromisoformat(d[:10])
-        reverse_on = date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+        rev_date = _first_of_next_month(_as_date(orig["entry_date"]))
+
     period = conn.execute(
         """
         SELECT id, status FROM books_periods
-        WHERE client_id = %s AND %s BETWEEN period_start AND period_end
-        ORDER BY period_start DESC LIMIT 1
+        WHERE client_id = %s
+          AND period_start <= %s AND period_end >= %s
+        ORDER BY period_start DESC
+        LIMIT 1
         """,
-        (orig["client_id"], reverse_on),
+        (orig["client_id"], rev_date, rev_date),
     ).fetchone()
     if not period:
-        raise ValueError(f"auto_reverse_no_period:{reverse_on.isoformat()}")
-    if period["status"] == "LOCKED":
-        raise ValueError(f"auto_reverse_period_locked:{reverse_on.isoformat()}")
+        raise ValueError(f"auto_reverse_period_missing:{rev_date.isoformat()}")
+    if period["status"] not in ("OPEN", "REOPENED"):
+        raise ValueError(f"auto_reverse_period_locked:{rev_date.isoformat()}")
+
     rev_id = str(uuid4())
-    today = reverse_on
     conn.execute(
         """
         INSERT INTO books_journal_entries (
           id, client_id, period_id, memo, entry_date, status, reverses_entry_id,
-          entry_type, content_hash, created_by
-        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,'reversal',%s,%s)
+          entry_type, voucher_type, content_hash, created_by
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,'reversal','Journal',%s,%s)
         """,
         (
             rev_id,
             orig["client_id"],
             period["id"],
             f"Auto-reversal of {orig.get('entry_no') or entry_id}",
-            today,
+            rev_date,
             entry_id,
             f"auto-rev-{rev_id}",
             orig["created_by"],
@@ -357,7 +376,7 @@ def _auto_reverse(conn, job: dict) -> None:
                 line.get("tags") or [],
             ),
         )
-    year = today.year
+    year = rev_date.year
     entry_no = conn.execute(
         "SELECT books_next_entry_no(%s::uuid, %s::int) AS n",
         (orig["client_id"], year),

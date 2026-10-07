@@ -274,6 +274,7 @@ export function LedgerToolbar({
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [reverseOpen, setReverseOpen] = useState(false);
   const [reverseReason, setReverseReason] = useState("");
+  const [reverseDate, setReverseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const [bulkTagMode, setBulkTagMode] = useState<"add" | "remove">("add");
   const [bulkTagName, setBulkTagName] = useState("");
@@ -455,6 +456,7 @@ export function LedgerToolbar({
               <li>Posted — locked lines, affects balances</li>
               <li>Reversed — original entry superseded by reversal pair</li>
               <li>Scheduled — will post on scheduled date</li>
+              <li>Blocked — schedule could not post (period locked)</li>
             </ul>
           </PopoverContent>
         </Popover>
@@ -621,8 +623,9 @@ export function LedgerToolbar({
               size="sm"
               variant="outline"
               disabled={!isAdmin}
-              title={isAdmin ? undefined : "Admin only"}
+              title={isAdmin ? undefined : "Approver or admin only"}
               onClick={() => setReverseOpen(true)}
+              data-testid="ledger-bulk-reverse"
             >
               Reverse
             </Button>
@@ -856,27 +859,40 @@ export function LedgerToolbar({
       </Dialog>
 
       <Dialog open={reverseOpen} onOpenChange={setReverseOpen}>
-        <DialogContent>
+        <DialogContent data-testid="ledger-reverse-dialog">
           <DialogHeader>
             <DialogTitle>Reverse selected entries</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">Admin action — requires a reason for audit.</p>
+          <p className="text-sm text-muted-foreground">
+            Approver action — original stays immutable; a linked reversal is posted. Reason is required for
+            audit.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Reversal date</label>
+            <BooksDateInput
+              data-testid="ledger-reverse-date"
+              value={reverseDate}
+              onChange={setReverseDate}
+            />
+          </div>
           <Textarea
             value={reverseReason}
             onChange={(e) => setReverseReason(e.target.value)}
             placeholder="Reason for reversal"
+            data-testid="ledger-reverse-reason"
           />
           <DialogFooter>
             <Button
               variant="destructive"
-              disabled={!reverseReason.trim() || !isAdmin}
+              disabled={!reverseReason.trim() || !isAdmin || !reverseDate}
+              data-testid="ledger-reverse-confirm"
               onClick={async () => {
                 const res = await fetch("/api/books/journals/bulk/reverse", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     entryIds: selectedIds,
-                    entryDate: new Date().toISOString().slice(0, 10),
+                    entryDate: reverseDate,
                     reason: reverseReason.trim(),
                   }),
                 });

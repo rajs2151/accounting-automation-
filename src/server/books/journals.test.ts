@@ -115,12 +115,30 @@ test("period lock blocks posting; reverse links a new posted entry", async (t) =
     assert.equal(posted.status, "posted");
     assert.match(String(posted.entryNo), /^(JV|JE)-2026-\d{4}$/);
 
-    const reversed = await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-07-03");
+    await assert.rejects(
+      () => reverseBooksJournal(LAYLA, clientId, draft.id, "2026-07-03", "  "),
+      (error: unknown) =>
+        error instanceof BooksError && error.message.includes("reversal_reason_required"),
+    );
+    await assert.rejects(
+      () => reverseBooksJournal(OMAR, clientId, draft.id, "2026-07-03", "preparer reverse"),
+      (error: unknown) =>
+        error instanceof BooksError &&
+        (String(error.message).includes("preparer_cannot_approve") ||
+          String(error.message).includes("reverse_requires_approver")),
+    );
+
+    const reversed = await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-07-03", "P4-5 test reverse");
     assert.equal(reversed.status, "reversed");
     assert.ok(reversed.reversalId);
     assert.equal(reversed.reversedByEntryId, reversed.reversalId);
     assert.equal(reversed.reversesEntryId, draft.id);
     assert.match(String(reversed.entryNo), /^(JV|JE)-2026-\d{4}$/);
+
+    await assert.rejects(
+      () => reverseBooksJournal(LAYLA, clientId, draft.id, "2026-07-03", "again"),
+      (error: unknown) => error instanceof BooksError && error.message.includes("not_posted"),
+    );
 
     await lockBooksPeriod(LAYLA, clientId, periodId);
     await assert.rejects(

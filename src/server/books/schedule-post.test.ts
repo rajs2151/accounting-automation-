@@ -137,6 +137,31 @@ test("schedule_post posts due rent; VAT settlement is two-step", async (t) => {
     );
     assert.match(String(fn.rows[0].def), /status = 'blocked'/);
     assert.match(String(fn.rows[0].def), /LOCKED/);
+
+    // P4-4: auto-reverse job is queued for 1st of next month, not immediately
+    const accrual = await createBooksJournal(OMAR, clientId, {
+      periodId: periodMay,
+      entryDate: "2026-05-31",
+      memo: "May accrual",
+      autoReverseNextPeriod: true,
+      lines: [
+        { accountId: rent, debitMinor: 2500 },
+        { accountId: bank, creditMinor: 2500 },
+      ],
+      post: false,
+    });
+    await postBooksJournal(LAYLA, clientId, accrual.id);
+    const arJob = await admin.query(
+      `SELECT run_at::date AS run_day, kind, status
+       FROM books_jobs
+       WHERE client_id = $1 AND kind = 'auto_reverse'
+         AND payload->>'entryId' = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [clientId, accrual.id],
+    );
+    assert.equal(arJob.rowCount, 1);
+    assert.equal(String(arJob.rows[0].run_day).slice(0, 10), "2026-06-01");
   } finally {
     await admin.end().catch(() => undefined);
   }

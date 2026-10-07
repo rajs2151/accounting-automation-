@@ -23,7 +23,28 @@ import {
   uploadBooksJournalAttachment,
 } from "@/server/books/attachments";
 import { listBooksAudit } from "@/server/books/audit";
+import {
+  CloseGatesFailingError,
+  getBooksCloseChecklist,
+  listBooksCloseEvents,
+  lockBooksPeriodWithChecklist,
+  unlockBooksPeriodWithReason,
+  waiveBooksCloseGate,
+} from "@/server/books/close";
 import { BooksError } from "@/server/books/errors";
+import {
+  listBooksFixedAssets,
+  previewBooksFixedAssetSchedule,
+  registerBooksFixedAsset,
+  runBooksDepreciation,
+} from "@/server/books/fixed-assets";
+import {
+  listBooksFxRates,
+  previewBooksFxRevaluation,
+  runBooksFxRevaluation,
+  upsertBooksFxRate,
+} from "@/server/books/fx-revaluation";
+import { closeBooksYearToRE, reverseBooksYearEndClose } from "@/server/books/year-end";
 import {
   beginBooksJournalCorrection,
   bulkAddBooksJournalTags,
@@ -189,6 +210,21 @@ function fail(error: unknown) {
   }
   if (error instanceof MoneyTypeError) {
     return NextResponse.json({ error: "invalid_money", message: error.message }, { status: 400 });
+  }
+  if (error instanceof CloseGatesFailingError) {
+    return NextResponse.json(
+      {
+        error: error.message,
+        code: error.code,
+        failingGates: error.failingGates.map((g) => ({
+          key: g.key,
+          label: g.label,
+          count: g.count,
+          detail: g.detail,
+        })),
+      },
+      { status: 409 },
+    );
   }
   if (error instanceof LedgerError || error instanceof BooksError) {
     const status =
@@ -409,6 +445,20 @@ export async function GET(request: Request, ctx: Ctx) {
         }),
       );
     }
+    if (path[0] === "close" && path.length === 1) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await getBooksCloseChecklist(session.userId, session.clientId, periodId),
+      );
+    }
+    if (path[0] === "close" && path[1] === "events" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await listBooksCloseEvents(session.userId, session.clientId, periodId),
+      );
+    }
     if (path[0] === "dashboard" && path.length === 1) {
       return NextResponse.json(
         await getBooksMonthChecklist(session.userId, session.clientId, {
@@ -504,6 +554,28 @@ export async function GET(request: Request, ctx: Ctx) {
           status: url.searchParams.get("status") || undefined,
           q: url.searchParams.get("q") || undefined,
         }),
+      );
+    }
+    if (path[0] === "fixed-assets" && path.length === 1) {
+      return NextResponse.json(await listBooksFixedAssets(session.userId, session.clientId));
+    }
+    if (path[0] === "fixed-assets" && path[2] === "schedule" && path.length === 3) {
+      return NextResponse.json(
+        await previewBooksFixedAssetSchedule(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "fx-rates" && path.length === 1) {
+      return NextResponse.json(
+        await listBooksFxRates(session.userId, session.clientId, {
+          currency: url.searchParams.get("currency") || undefined,
+        }),
+      );
+    }
+    if (path[0] === "fx-revaluation" && path[1] === "preview" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || "";
+      if (!periodId) throw new BooksError("period_required", "invalid");
+      return NextResponse.json(
+        await previewBooksFxRevaluation(session.userId, session.clientId, periodId),
       );
     }
     if (path[0] === "expenses" && path.length === 2) {
@@ -685,6 +757,106 @@ export async function POST(request: Request, ctx: Ctx) {
         await reopenBooksPeriod(session.userId, session.clientId, path[1], String(body.reason || "")),
       );
     }
+    if (path[0] === "close" && path[1] === "lock" && path.length === 2) {
+      return NextResponse.json(
+        await lockBooksPeriodWithChecklist(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "close" && path[1] === "unlock" && path.length === 2) {
+      return NextResponse.json(
+        await unlockBooksPeriodWithReason(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.reason || ""),
+        ),
+      );
+    }
+    if (path[0] === "close" && path[1] === "waive" && path.length === 2) {
+      return NextResponse.json(
+        await waiveBooksCloseGate(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.gateKey || ""),
+          String(body.reason || ""),
+        ),
+      );
+    }
+    if (path[0] === "fixed-assets" && path.length === 1) {
+      return NextResponse.json(
+        await registerBooksFixedAsset(session.userId, session.clientId, {
+          name: String(body.name || ""),
+          costMinor: Number(body.costMinor),
+          residualMinor: body.residualMinor == null ? 0 : Number(body.residualMinor),
+          inServiceDate: String(body.inServiceDate || ""),
+          lifeMonths: Number(body.lifeMonths),
+          assetAccountId: body.assetAccountId ? String(body.assetAccountId) : undefined,
+          accumulatedAccountId: body.accumulatedAccountId
+            ? String(body.accumulatedAccountId)
+            : undefined,
+          expenseAccountId: body.expenseAccountId ? String(body.expenseAccountId) : undefined,
+          sourceJournalEntryId: body.sourceJournalEntryId
+            ? String(body.sourceJournalEntryId)
+            : null,
+          sourceDocumentId: body.sourceDocumentId ? String(body.sourceDocumentId) : null,
+          disposedAt: body.disposedAt ? String(body.disposedAt) : null,
+        }),
+      );
+    }
+    if (path[0] === "fixed-assets" && path[1] === "run-depreciation" && path.length === 2) {
+      return NextResponse.json(
+        await runBooksDepreciation(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "fx-rates" && path.length === 1) {
+      return NextResponse.json(
+        await upsertBooksFxRate(session.userId, session.clientId, {
+          currency: String(body.currency || ""),
+          rateDate: String(body.rateDate || ""),
+          rateScaled: body.rateScaled == null ? undefined : Number(body.rateScaled),
+          rate: body.rate == null ? undefined : body.rate,
+        }),
+      );
+    }
+    if (path[0] === "fx-revaluation" && path[1] === "run" && path.length === 2) {
+      return NextResponse.json(
+        await runBooksFxRevaluation(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "year-end" && path[1] === "close" && path.length === 2) {
+      return NextResponse.json(
+        await closeBooksYearToRE(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+          String(body.note || ""),
+        ),
+      );
+    }
+    if (path[0] === "year-end" && path[1] === "reverse" && path.length === 2) {
+      return NextResponse.json(
+        await reverseBooksYearEndClose(
+          session.userId,
+          session.clientId,
+          Number(body.fiscalYear),
+          String(body.reason || ""),
+          String(body.entryDate || ""),
+        ),
+      );
+    }
     if (path[0] === "company" && path.length === 1) {
       return NextResponse.json(
         await updateBooksCompanyProfile(session.userId, session.clientId, {
@@ -753,12 +925,17 @@ export async function POST(request: Request, ctx: Ctx) {
     }
     if (path[0] === "journals" && path[1] === "bulk" && path[2] === "reverse") {
       const entryIds = Array.isArray(body.entryIds) ? body.entryIds.map(String) : [];
+      const reason = String(body.reason || "").trim();
+      if (!reason) {
+        return NextResponse.json({ error: "reversal_reason_required" }, { status: 400 });
+      }
       return NextResponse.json(
         await bulkReverseBooksJournals(
           session.userId,
           session.clientId,
           entryIds,
           String(body.entryDate || new Date().toISOString().slice(0, 10)),
+          reason,
         ),
       );
     }
@@ -835,12 +1012,17 @@ export async function POST(request: Request, ctx: Ctx) {
       return NextResponse.json(await postBooksJournal(session.userId, session.clientId, path[1]));
     }
     if (path[0] === "journals" && path[2] === "reverse" && path.length === 3) {
+      const reason = String(body.reason || "").trim();
+      if (!reason) {
+        return NextResponse.json({ error: "reversal_reason_required" }, { status: 400 });
+      }
       return NextResponse.json(
         await reverseBooksJournal(
           session.userId,
           session.clientId,
           path[1],
           String(body.entryDate || new Date().toISOString().slice(0, 10)),
+          reason,
         ),
       );
     }
@@ -1398,7 +1580,15 @@ export async function PATCH(request: Request, ctx: Ctx) {
                 ? null
                 : String(body.scheduledFor),
           autoReverseNextPeriod:
-            typeof body.autoReverseNextPeriod === "boolean" ? body.autoReverseNextPeriod : undefined,
+            body.autoReverseNextPeriod === undefined
+              ? undefined
+              : Boolean(body.autoReverseNextPeriod),
+          templateKey:
+            body.templateKey === undefined
+              ? undefined
+              : body.templateKey == null
+                ? null
+                : String(body.templateKey),
           lines: Array.isArray(body.lines) ? body.lines : [],
         }),
       );

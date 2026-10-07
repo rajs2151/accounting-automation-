@@ -57,8 +57,8 @@ export type CreateEntryPrefill = {
   voucherType?: string;
   tags?: string[];
   correctsEntryId?: string;
-  /** Draft editing: keep the stored accrual auto-reverse flag. */
   autoReverseNextPeriod?: boolean;
+  templateKey?: string | null;
   lines?: Array<{
     accountId: string;
     debitMinor?: number;
@@ -310,11 +310,15 @@ export function CreateEntrySheet({
 
   useEffect(() => {
     if (!open || !prefill) return;
-    // A prefill (draft edit, correction) starts from a clean template state.
+    // Prefill (draft edit / correction) always starts from a clean template so
+    // accrual auto-reverse / template hints do not leak into the next entry.
     setTemplate("blank");
     setTemplateHint("");
     setTemplateWarning("");
+    setVatPaymentHint("");
     setDismissedVatKeys(new Set());
+    setSchedule(false);
+    setRecurring(false);
     setAutoReverse(Boolean(prefill.autoReverseNextPeriod));
     if (prefill.entryDate) setEntryDate(prefill.entryDate);
     if (prefill.memo) setDescription(prefill.memo);
@@ -619,7 +623,6 @@ export function CreateEntrySheet({
       setSchedule(false);
       setRecurring(false);
       setVatPaymentHint("");
-      // Template choices must not leak into the next entry (e.g. auto-reversing an ordinary journal).
       setTemplate("blank");
       setAutoReverse(false);
       setTemplateHint("");
@@ -956,8 +959,13 @@ export function CreateEntrySheet({
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={schedule} onChange={(e) => setSchedule(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm" data-testid="create-entry-schedule">
+              <input
+                type="checkbox"
+                checked={schedule}
+                onChange={(e) => setSchedule(e.target.checked)}
+                data-testid="create-entry-schedule-checkbox"
+              />
               Schedule for later post
             </label>
             {schedule ? (

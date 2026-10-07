@@ -266,6 +266,11 @@ test("phase1: sales purchases parties inbox visible", async ({ page }) => {
   await createSheet.getByTestId("create-entry-template-prepayment").click();
   await expect(createSheet.getByTestId("create-entry-template-warning")).toContainText(/1410|asset/i);
   await expect(createSheet.getByTestId("create-entry-auto-reverse-checkbox")).not.toBeChecked();
+
+  // P4-4: schedule for later → Save draft creates scheduled status (excluded from TB until job posts)
+  await createSheet.getByTestId("create-entry-template-blank").click();
+  await createSheet.getByTestId("create-entry-schedule-checkbox").check();
+  await expect(createSheet.getByTestId("create-entry-scheduled-for")).toBeVisible();
   await createSheet.getByRole("button", { name: "Cancel" }).click();
 
   await page.goto("/books/inbox");
@@ -987,4 +992,70 @@ test("P2A-4: Unmatched → pick invoice → post → journal link back", async (
   } finally {
     await admin.end().catch(() => undefined);
   }
+});
+
+test("P4-5: reverse posted journal requires reason; original immutable status=reversed", async ({
+  page,
+  context,
+}) => {
+  const ACCT_1120 = "e3000001-0000-4000-8000-000000000001";
+  const ACCT_4100 = "e3000001-0000-4000-8000-000000000007";
+
+  const periods = await page.request.get("/api/books/periods");
+  const periodRows = (await periods.json()) as Array<{ id: string; label: string }>;
+  const may = periodRows.find((p) => /May 2026/i.test(p.label));
+  expect(may?.id, "May 2026 period").toBeTruthy();
+
+  // Omar prepares
+  await setSession(context, OMAR);
+  const created = await page.request.post("/api/books/journals", {
+    data: {
+      periodId: may!.id,
+      entryDate: "2026-05-20",
+      memo: `P4-5 reverse e2e ${Date.now()}`,
+      voucherType: "Journal",
+      lines: [
+        { accountId: ACCT_1120, debitMinor: 777 },
+        { accountId: ACCT_4100, creditMinor: 777 },
+      ],
+      post: false,
+    },
+  });
+  const draft = await created.json();
+  expect(created.ok(), `create: ${JSON.stringify(draft)}`).toBeTruthy();
+
+  // Layla posts + reverses (dual control)
+  await setSession(context, LAYLA);
+  const postRes = await page.request.post(`/api/books/journals/${draft.id}/post`);
+  const posted = await postRes.json();
+  expect(postRes.ok(), `post: ${JSON.stringify(posted)}`).toBeTruthy();
+
+  const noReason = await page.request.post(`/api/books/journals/${draft.id}/reverse`, {
+    data: { entryDate: "2026-05-21", reason: "" },
+  });
+  expect(noReason.status()).toBe(400);
+
+  const revRes = await page.request.post(`/api/books/journals/${draft.id}/reverse`, {
+    data: { entryDate: "2026-05-21", reason: "P4-5 e2e reverse" },
+  });
+  const rev = await revRes.json();
+  expect(revRes.ok(), `reverse: ${JSON.stringify(rev)}`).toBeTruthy();
+  expect(rev.reversalId).toBeTruthy();
+  expect(rev.status).toBe("reversed");
+
+  const orig = await page.request.get(`/api/books/journals/${draft.id}`).then((r) => r.json());
+  expect(orig.status).toBe("reversed");
+  expect(String(orig.reversedByEntryId)).toBe(String(rev.reversalId));
+
+  const reversal = await page.request
+    .get(`/api/books/journals/${rev.reversalId}`)
+    .then((r) => r.json());
+  expect(reversal.status).toBe("posted");
+  expect(String(reversal.reversesEntryId)).toBe(String(draft.id));
+  expect(String(reversal.entryType || "")).toBe("reversal");
+
+  // Ledger UI: Reverse control available to approver
+  await page.goto("/books/journals");
+  await expect(page.getByTestId("ledger-page-chrome")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("create-journal-open")).toBeVisible();
 });

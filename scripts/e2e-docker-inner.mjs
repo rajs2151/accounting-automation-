@@ -70,7 +70,7 @@ if (process.env.E2E_UPDATE_SNAPSHOTS === "1") pwArgs.push("--update-snapshots");
 // Phase 1 ship gate (default): only books-phase1 specs. Legacy suite via E2E_PHASE1_GATE=0.
 const phase1Gate = process.env.E2E_PHASE1_GATE !== "0";
 if (phase1Gate) {
-  pwArgs.push("e2e/books-phase1.spec.ts");
-  console.log("+ E2E_PHASE1_GATE: running e2e/books-phase1.spec.ts only");
+  pwArgs.push("e2e/books-phase1.spec.ts", "e2e/books-close.spec.ts");
+  console.log("+ E2E_PHASE1_GATE: running e2e/books-phase1.spec.ts + e2e/books-close.spec.ts");
 }
 run("npx", pwArgs);

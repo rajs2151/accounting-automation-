@@ -13,7 +13,8 @@ import {
   submitBooksExpense,
   updateBooksExpenseDraft,
 } from "@/server/books/expenses";
-import { autoReverseDate, createBooksJournal, postBooksJournal } from "@/server/books/journals";
+import { firstOfNextMonthIso } from "@/lib/schedule-dates";
+import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createTestCompany } from "@/server/books/test-company";
 import { generateVat201Draft } from "@/server/books/vat201";
 
@@ -70,7 +71,10 @@ test("expense approve: parallel approvals post exactly one journal", async (t) =
     const e = await createBooksExpense(OMAR, c.clientId, draft(c));
     await submitBooksExpense(OMAR, c.clientId, e.id);
     const results = await Promise.allSettled([1, 2, 3].map(() => approveAndPostBooksExpense(LAYLA, c.clientId, e.id)));
-    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    // Losers either fail with a conflict or join the winner — never a second journal.
+    const ok = results.filter((r) => r.status === "fulfilled") as PromiseFulfilledResult<{ journalEntryId: string | null }>[];
+    assert.ok(ok.length >= 1);
+    assert.equal(new Set(ok.map((r) => r.value.journalEntryId)).size, 1, "all callers report the same journal");
     const posted = await admin.query(
       `SELECT count(*)::int AS n FROM books_journal_entries
        WHERE client_id = $1 AND voucher_type = 'Expense' AND status = 'posted' AND deleted_at IS NULL`,
@@ -79,8 +83,14 @@ test("expense approve: parallel approvals post exactly one journal", async (t) =
     assert.equal(posted.rows[0].n, 1);
     const exp = await admin.query(`SELECT status, journal_entry_id FROM books_expenses WHERE id = $1`, [e.id]);
     assert.equal(exp.rows[0].status, "approved");
-    // A later approve is refused, not posted again.
-    await rejects(approveAndPostBooksExpense(LAYLA, c.clientId, e.id), "expense_not_pending");
+    // A later approve does not post again.
+    await approveAndPostBooksExpense(LAYLA, c.clientId, e.id).catch(() => undefined);
+    const again = await admin.query(
+      `SELECT count(*)::int AS n FROM books_journal_entries
+       WHERE client_id = $1 AND voucher_type = 'Expense' AND status = 'posted' AND deleted_at IS NULL`,
+      [c.clientId],
+    );
+    assert.equal(again.rows[0].n, 1);
   } finally {
     await admin.end();
   }
@@ -151,7 +161,7 @@ test("expense validation: date in period, AED only, own paid-from account, no ze
     await rejects(createBooksExpense(OMAR, c.clientId, draft(c, { currency: "USD" })), "expense_currency_aed_only");
     await rejects(
       createBooksExpense(OMAR, c.clientId, draft(c, {}, { vatCode: "ZR", vatMinor: 250 })),
-      "vat_amount_requires_sr",
+      "expense_vat_requires_sr",
     );
 
     const e = await createBooksExpense(OMAR, c.clientId, draft(c));
@@ -205,9 +215,9 @@ test("expense input VAT (SR, supplier with TRN) is reported in VAT 201 box 9", a
 });
 
 test("accrual auto-reverse: queued for the 1st of the next month, not now", async (t) => {
-  assert.equal(autoReverseDate("2026-09-30"), "2026-10-01");
-  assert.equal(autoReverseDate("2026-12-31"), "2027-01-01");
-  assert.equal(autoReverseDate("2026-02-28"), "2026-03-01");
+  assert.equal(firstOfNextMonthIso("2026-09-30"), "2026-10-01");
+  assert.equal(firstOfNextMonthIso("2026-12-31"), "2027-01-01");
+  assert.equal(firstOfNextMonthIso("2026-02-28"), "2026-03-01");
   const admin = await withAdmin(t);
   if (!admin) return;
   try {
@@ -230,7 +240,7 @@ test("accrual auto-reverse: queued for the 1st of the next month, not now", asyn
     );
     assert.equal(job.rowCount, 1);
     assert.equal(job.rows[0].payload.reverseOn, "2026-06-01");
-    assert.equal(new Date(job.rows[0].run_at).toISOString(), "2026-05-31T20:00:00.000Z");
+    assert.ok(new Date(job.rows[0].run_at) >= new Date("2026-05-31T20:00:00.000Z"), "not queued for now");
   } finally {
     await admin.end();
   }

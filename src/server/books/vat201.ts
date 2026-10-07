@@ -121,15 +121,26 @@ export async function generateVat201Draft(
     );
     const map = new Map<string, VatBoxMapRow>(mapRows.rows.map((r) => [String(r.code), r as VatBoxMapRow]));
 
+    // Expense vouchers post recoverable input VAT without a books_documents row.
+    // Treat them (and their reversals) as purchases so box 9 / 13 include them.
     const lines = await db.query(
       `SELECT a.code AS account, l.vat_treatment AS treatment, l.debit_minor, l.credit_minor,
-              d.doc_type, d.place_of_supply, COALESCE(e.reverses_entry_id, e.id) AS base_entry,
-              -- Posted expense vouchers (P3) are purchases too: their input VAT belongs on the return.
-              (d.id IS NOT NULL OR be.voucher_type = 'Expense') AS linked
+              COALESCE(
+                d.doc_type,
+                CASE
+                  WHEN e.voucher_type = 'Expense' OR orig.voucher_type = 'Expense'
+                  THEN 'purchase_bill'
+                END
+              ) AS doc_type,
+              d.place_of_supply,
+              COALESCE(e.reverses_entry_id, e.id) AS base_entry,
+              (d.id IS NOT NULL
+                OR e.voucher_type = 'Expense'
+                OR orig.voucher_type = 'Expense') AS linked
        FROM books_journal_lines l
        JOIN books_journal_entries e ON e.id = l.entry_id
-       JOIN books_journal_entries be ON be.id = COALESCE(e.reverses_entry_id, e.id)
        JOIN books_accounts a ON a.id = l.account_id
+       LEFT JOIN books_journal_entries orig ON orig.id = e.reverses_entry_id
        LEFT JOIN books_documents d
          ON d.journal_entry_id = COALESCE(e.reverses_entry_id, e.id) AND d.client_id = e.client_id
             AND d.doc_type IN ('sales_invoice', 'purchase_bill', 'credit_note', 'debit_note')

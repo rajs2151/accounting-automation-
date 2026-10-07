@@ -6,6 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   BookOpen,
+  Building2,
+  CalendarCheck,
   ChartColumn,
   FileText,
   HandCoins,
@@ -95,6 +97,8 @@ const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
     label: "Accounting",
     items: [
       { href: "/books/journals", label: "Journals", icon: BookOpen },
+      { href: "/books/fixed-assets", label: "Fixed assets", icon: Building2 },
+      { href: "/books/close", label: "Close", icon: CalendarCheck },
       { href: "/books/reports/trial-balance", label: "Reports", icon: ChartColumn, also: ["/books/reports"] },
     ],
   },

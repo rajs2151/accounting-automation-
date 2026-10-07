@@ -5,6 +5,8 @@ import type { PoolClient } from "pg";
 import { withUser } from "@/lib/db";
 import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
+import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
+import { markPeriodChangedSinceClose } from "@/server/books/close";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
 import { requireDualControlActor } from "@/server/books/dual-control";
@@ -61,28 +63,6 @@ export function assertBooksBalanced(lines: BooksLineInput[]) {
     throw new BooksError(`unbalanced debit=${result.debit} credit=${result.credit}`, "journal_unbalanced");
   }
   return result;
-}
-
-/** 1st day of the month after `entryDate` (YYYY-MM-DD) — when an accrual's auto-reversal lands. */
-export function autoReverseDate(entryDate: string): string {
-  const [y, m] = entryDate.slice(0, 10).split("-").map(Number);
-  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
-}
-
-/**
- * Queue the auto-reversal for the start of the next month (UAE time). The worker resolves the period
- * containing that date and fails the job (visible in jobs) if it is missing or locked — never posts
- * the reversal back into the accrual's own period.
- */
-async function enqueueAutoReverse(db: PoolClient, clientId: string, entryId: string, entryDate: string, actorUserId?: string) {
-  const reverseOn = autoReverseDate(entryDate);
-  await enqueueBooksJob(
-    db,
-    clientId,
-    "auto_reverse",
-    { entryId, reverseOn, ...(actorUserId ? { actorUserId } : {}) },
-    new Date(`${reverseOn}T00:00:00+04:00`),
-  );
 }
 
 function hashEntry(memo: string, entryDate: string, lines: BooksLineInput[]) {
@@ -152,12 +132,16 @@ async function assignEntryNo(
     [clientId, vt, year],
   );
   const entryNo = String(no.rows[0].entry_no);
-  await db.query(
+  const posted = await db.query(
     `UPDATE books_journal_entries
      SET status = 'posted', posted_at = now(), entry_no = $3, voucher_type = $4
-     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')`,
+     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')
+     RETURNING period_id`,
     [entryId, clientId, entryNo, vt],
   );
+  if (posted.rowCount) {
+    await markPeriodChangedSinceClose(db, clientId, String(posted.rows[0].period_id));
+  }
   return entryNo;
 }
 
@@ -388,6 +372,22 @@ export async function listBooksJournals(
               e.posted_at AS "postedAt",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.created_at AS "createdAt", e.created_by AS "createdBy",
               e.corrects_entry_id AS "correctsEntryId",
               e.reverses_entry_id AS "reversesEntryId",
@@ -451,6 +451,8 @@ export async function listBooksJournals(
       amount: Number(row.debitTotal),
       debitLineCount: Number(row.debitLineCount || 0),
       creditLineCount: Number(row.creditLineCount || 0),
+      recurringIndex: row.recurringIndex == null ? null : Number(row.recurringIndex),
+      recurringTotal: row.recurringTotal == null ? null : Number(row.recurringTotal),
       tags: Array.isArray(row.tags) ? row.tags : [],
       debitAccount: row.debitAccount ?? null,
       creditAccount: row.creditAccount ?? null,
@@ -471,6 +473,22 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
               e.corrects_entry_id AS "correctsEntryId",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.content_hash AS "contentHash", e.created_by AS "createdBy",
               cu.name AS "createdByName",
               e.posted_at AS "postedAt", e.created_at AS "createdAt",
@@ -514,6 +532,10 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
     return {
       ...entry.rows[0],
       autoReverseNextPeriod: Boolean(entry.rows[0].autoReverseNextPeriod),
+      recurringIndex:
+        entry.rows[0].recurringIndex == null ? null : Number(entry.rows[0].recurringIndex),
+      recurringTotal:
+        entry.rows[0].recurringTotal == null ? null : Number(entry.rows[0].recurringTotal),
       lines: lines.rows.map((line) => ({
         ...line,
         debitMinor: Number(line.debitMinor),
@@ -528,6 +550,15 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
   });
 }
 
+const BOOKS_ENTRY_TYPES = new Set([
+  "manual",
+  "auto",
+  "closing",
+  "opening",
+  "reversal",
+  "depreciation",
+  "fx_revaluation",
+]);
 export async function createBooksJournal(
   userId: string,
   clientId: string,
@@ -538,6 +569,8 @@ export async function createBooksJournal(
     reference?: string;
     tags?: string[];
     voucherType?: string;
+    /** Defaults to manual. P5-2 depreciation runs use entry_type=depreciation. */
+    entryType?: string;
     correctsEntryId?: string | null;
     lines: BooksLineInput[];
     post?: boolean;
@@ -557,6 +590,8 @@ export async function createBooksJournal(
   const voucherType: VoucherType = isVoucherType(body.voucherType || "")
     ? (body.voucherType as VoucherType)
     : "Journal";
+  const entryType =
+    body.entryType && BOOKS_ENTRY_TYPES.has(body.entryType) ? body.entryType : "manual";
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
@@ -580,9 +615,9 @@ export async function createBooksJournal(
 
     await db.query(
       `INSERT INTO books_journal_entries (
-         id, client_id, period_id, memo, reference, entry_date, status, content_hash, created_by,
+         id, client_id, period_id, memo, reference, entry_date, status, entry_type, content_hash, created_by,
          scheduled_for, auto_reverse_next_period, template_key, voucher_type, tags, corrects_entry_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::text[],$15)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::text[],$16)`,
       [
         id,
         clientId,
@@ -591,6 +626,7 @@ export async function createBooksJournal(
         reference,
         body.entryDate,
         initialStatus,
+        entryType,
         hash,
         userId,
         wantSchedule ? scheduleDate : null,
@@ -681,7 +717,14 @@ export async function createBooksJournal(
         after: { status: "posted", entryNo, voucherType },
       });
       if (body.autoReverseNextPeriod) {
-        await enqueueAutoReverse(db, clientId, id, body.entryDate, userId);
+        const reverseOn = firstOfNextMonthIso(body.entryDate);
+        await enqueueBooksJob(
+          db,
+          clientId,
+          "auto_reverse",
+          { entryId: id, actorUserId: userId, reverseOn },
+          firstOfNextMonthUtc(body.entryDate),
+        );
       }
     }
 
@@ -748,7 +791,15 @@ export async function postBooksJournal(userId: string, clientId: string, entryId
       after: { status: "posted", entryNo },
     });
     if (entry.rows[0].auto_reverse_next_period) {
-      await enqueueAutoReverse(db, clientId, entryId, String(entry.rows[0].entry_date));
+      const entryDate = String(entry.rows[0].entry_date).slice(0, 10);
+      const reverseOn = firstOfNextMonthIso(entryDate);
+      await enqueueBooksJob(
+        db,
+        clientId,
+        "auto_reverse",
+        { entryId, actorUserId: userId, reverseOn },
+        firstOfNextMonthUtc(entryDate),
+      );
     }
     return { id: entryId, status: "posted", entryNo };
   });
@@ -776,11 +827,12 @@ export async function bulkReverseBooksJournals(
   clientId: string,
   entryIds: string[],
   entryDate: string,
+  reason: string,
 ) {
   const results: Array<{ id: string; ok: boolean; reversalId?: string; error?: string }> = [];
   for (const entryId of entryIds) {
     try {
-      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate, reason);
       results.push({ id: entryId, ok: true, reversalId: rev.reversalId });
     } catch (error) {
       results.push({
@@ -1017,7 +1069,11 @@ export async function reverseBooksJournal(
   clientId: string,
   entryId: string,
   entryDate: string,
+  reason: string,
 ) {
+  const reasonTrim = String(reason || "").trim();
+  if (!reasonTrim) throw new BooksError("reversal_reason_required", "invalid");
+
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const original = await db.query(
@@ -1029,7 +1085,19 @@ export async function reverseBooksJournal(
     if (!original.rowCount) throw new BooksError("journal_not_found", "not_found");
     if (original.rows[0].status !== "posted") throw new BooksError("not_posted", "conflict");
     await requireDualControlActor(db, userId, String(original.rows[0].created_by), "reverse");
-    await requireWritablePeriod(db, clientId, String(original.rows[0].period_id));
+
+    const periodRow = await db.query(
+      `SELECT id FROM books_periods
+       WHERE client_id = $1
+         AND period_start <= $2::date
+         AND period_end >= $2::date
+       ORDER BY period_start DESC
+       LIMIT 1`,
+      [clientId, entryDate],
+    );
+    if (!periodRow.rowCount) throw new BooksError("period_not_found", "not_found");
+    const periodId = String(periodRow.rows[0].id);
+    await requireWritablePeriod(db, clientId, periodId);
 
     const lines = await db.query(
       `SELECT account_id, debit_minor, credit_minor, currency, line_memo, vat_treatment, vat_code, tags
@@ -1058,7 +1126,7 @@ export async function reverseBooksJournal(
       [
         reversalId,
         clientId,
-        original.rows[0].period_id,
+        periodId,
         memo,
         entryDate,
         entryId,
@@ -1088,6 +1156,8 @@ export async function reverseBooksJournal(
         reversesEntryId: entryId,
         status: "reversed",
         reversalNo,
+        reason: reasonTrim,
+        reversalDate: entryDate,
       },
     });
     return {
@@ -1116,6 +1186,7 @@ export async function replaceBooksJournalDraft(
     voucherType?: string;
     scheduledFor?: string | null;
     autoReverseNextPeriod?: boolean;
+    templateKey?: string | null;
     lines: BooksLineInput[];
   },
 ) {
@@ -1148,13 +1219,18 @@ export async function replaceBooksJournalDraft(
         ? before.rows[0].scheduled_for
         : body.scheduledFor;
     const nextStatus = scheduleDate ? "scheduled" : "draft";
+    const autoReverse =
+      body.autoReverseNextPeriod !== undefined
+        ? Boolean(body.autoReverseNextPeriod)
+        : Boolean(before.rows[0].auto_reverse_next_period);
+    const templateKey =
+      body.templateKey !== undefined ? body.templateKey : before.rows[0].template_key;
 
     await db.query(
       `UPDATE books_journal_entries SET
          period_id = $3, memo = $4, note = COALESCE($5, note), reference = COALESCE($6, reference),
          entry_date = $7, content_hash = $8, voucher_type = $9, tags = $10::text[],
-         scheduled_for = $11, status = $12,
-         auto_reverse_next_period = COALESCE($13, auto_reverse_next_period)
+         scheduled_for = $11, status = $12, auto_reverse_next_period = $13, template_key = $14
        WHERE id = $1 AND client_id = $2`,
       [
         entryId,
@@ -1169,7 +1245,8 @@ export async function replaceBooksJournalDraft(
         entryTags,
         scheduleDate,
         nextStatus,
-        body.autoReverseNextPeriod ?? null,
+        autoReverse,
+        templateKey,
       ],
     );
     await db.query(`DELETE FROM books_journal_lines WHERE entry_id = $1`, [entryId]);
@@ -1195,6 +1272,7 @@ export async function replaceBooksJournalDraft(
       status: nextStatus,
       voucherType,
       tags: entryTags,
+      autoReverseNextPeriod: autoReverse,
       lines,
     };
   });
@@ -1248,7 +1326,13 @@ export async function beginBooksJournalCorrection(
   if (String(original.periodStatus) === "LOCKED") {
     throw new BooksError("period_locked", "period_closed");
   }
-  const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+  const rev = await reverseBooksJournal(
+    userId,
+    clientId,
+    entryId,
+    entryDate,
+    "Correction: reverse original before new entry",
+  );
   const prefillLines = (original.lines as Array<Record<string, unknown>>).map((line) => ({
     accountId: String(line.accountId),
     debitMinor: Number(line.debitMinor),
