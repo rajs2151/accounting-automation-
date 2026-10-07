@@ -2,7 +2,7 @@
 
 ## Now
 - Phase: **4 (Ledger)** on feat/books-phase1 — Stream A
-- Current task: Phase 4 CLOSED — next Phase 5 close/TB (or backlog)
+- Current task: P5-1 (close checklist + lock gate) - overnight loop run by chat-Claude; tasks P5-1..P6-4 in .ai/NEXT_TASK_*.md, rules in .ai/HOW_TO_WORK.md
 - 2026-10-07: Phase 4 CLOSED (P4-1..P4-5)
 - 2026-10-07: P4-5 PASS — reverse reason+date; drawer Reverse; immutability e2e
 - 2026-10-07: P4-4 PASS — schedule/recurring/auto-reverse (1st next month); Entry n of N badge
