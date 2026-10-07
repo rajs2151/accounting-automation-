@@ -69,15 +69,55 @@ function hashEntry(memo: string, entryDate: string, lines: BooksLineInput[]) {
   return createHash("sha256").update(JSON.stringify({ memo, entryDate, lines })).digest("hex");
 }
 
-async function requireWritablePeriod(db: PoolClient, clientId: string, periodId: string) {
+function isoDate(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+function dayBeforeIso(d: string): string {
+  const t = new Date(`${d}T12:00:00Z`);
+  t.setUTCDate(t.getUTCDate() - 1);
+  return t.toISOString().slice(0, 10);
+}
+
+/**
+ * Period must be OPEN/REOPENED. With entryDate: the date must fall inside the period, and no
+ * LOCKED period may contain that date (reports aggregate by entry_date, not period_id).
+ * Only exception: an Opening voucher may be dated the day before its period starts (opening
+ * balances as at the books-start cut-over); the LOCKED-containing-period check still applies.
+ */
+async function requireWritablePeriod(
+  db: PoolClient,
+  clientId: string,
+  periodId: string,
+  entryDate?: string,
+  voucherType?: string | null,
+) {
   const period = await db.query(
-    `SELECT id, status, period_start, period_end, label
+    `SELECT id, status, period_start::text AS period_start, period_end::text AS period_end, label
      FROM books_periods WHERE id = $1 AND client_id = $2`,
     [periodId, clientId],
   );
   if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
   if (!["OPEN", "REOPENED"].includes(String(period.rows[0].status))) {
     throw new BooksError("period_locked", "period_closed");
+  }
+  if (entryDate !== undefined) {
+    const d = isoDate(entryDate);
+    const start = isoDate(period.rows[0].period_start);
+    const end = isoDate(period.rows[0].period_end);
+    const openingCutOver = voucherType === "Opening" && d === dayBeforeIso(start);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || ((d < start || d > end) && !openingCutOver)) {
+      throw new BooksError("entry_date_outside_period", "invalid");
+    }
+    const containing = await db.query(
+      `SELECT 1 FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date
+         AND status = 'LOCKED'
+       LIMIT 1`,
+      [clientId, d],
+    );
+    if (containing.rowCount) throw new BooksError("period_locked", "period_closed");
   }
   return period.rows[0];
 }
@@ -139,9 +179,9 @@ async function assignEntryNo(
      RETURNING period_id`,
     [entryId, clientId, entryNo, vt],
   );
-  if (posted.rowCount) {
-    await markPeriodChangedSinceClose(db, clientId, String(posted.rows[0].period_id));
-  }
+  // A concurrent post already won: do not hand back a voucher number that was never used.
+  if (!posted.rowCount) throw new BooksError("not_draft", "conflict");
+  await markPeriodChangedSinceClose(db, clientId, String(posted.rows[0].period_id));
   return entryNo;
 }
 
@@ -595,7 +635,7 @@ export async function createBooksJournal(
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    await requireWritablePeriod(db, clientId, body.periodId);
+    await requireWritablePeriod(db, clientId, body.periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
     lines = expandVatCompanionLines(lines, accountById, vatAccountByCode);
     assertBooksBalanced(lines);
@@ -762,47 +802,67 @@ export async function createBooksJournal(
 export async function postBooksJournal(userId: string, clientId: string, entryId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    const entry = await db.query(
-      `SELECT id, period_id, status, entry_date, auto_reverse_next_period, created_by, voucher_type
-       FROM books_journal_entries
-       WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
-      [entryId, clientId],
-    );
-    if (!entry.rowCount) throw new BooksError("journal_not_found", "not_found");
-    if (!["draft", "scheduled"].includes(String(entry.rows[0].status))) {
-      throw new BooksError("not_draft", "conflict");
-    }
-    await requireDualControlActor(db, userId, String(entry.rows[0].created_by), "post");
-    await requireWritablePeriod(db, clientId, String(entry.rows[0].period_id));
-    const entryNo = await assignEntryNo(
+    return postBooksJournalInTx(db, userId, clientId, entryId);
+  });
+}
+
+/**
+ * Post a draft/scheduled entry inside the caller's transaction (same checks as postBooksJournal:
+ * dual control vs created_by, writable period + entry date, changed-since-close marking).
+ * Caller must already have run assertSyntheticTenant on this connection.
+ */
+export async function postBooksJournalInTx(
+  db: PoolClient,
+  userId: string,
+  clientId: string,
+  entryId: string,
+) {
+  const entry = await db.query(
+    `SELECT id, period_id, status, entry_date, auto_reverse_next_period, created_by, voucher_type
+     FROM books_journal_entries
+     WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+    [entryId, clientId],
+  );
+  if (!entry.rowCount) throw new BooksError("journal_not_found", "not_found");
+  if (!["draft", "scheduled"].includes(String(entry.rows[0].status))) {
+    throw new BooksError("not_draft", "conflict");
+  }
+  await requireDualControlActor(db, userId, String(entry.rows[0].created_by), "post");
+  await requireWritablePeriod(
+    db,
+    clientId,
+    String(entry.rows[0].period_id),
+    String(entry.rows[0].entry_date),
+    String(entry.rows[0].voucher_type || ""),
+  );
+  const entryNo = await assignEntryNo(
+    db,
+    clientId,
+    entryId,
+    String(entry.rows[0].entry_date),
+    String(entry.rows[0].voucher_type || "Journal"),
+  );
+  await writeBooksAudit(db, {
+    clientId,
+    actor: userId,
+    action: "post",
+    entity: "books_journal_entry",
+    entityId: entryId,
+    before: { status: entry.rows[0].status },
+    after: { status: "posted", entryNo },
+  });
+  if (entry.rows[0].auto_reverse_next_period) {
+    const entryDate = String(entry.rows[0].entry_date).slice(0, 10);
+    const reverseOn = firstOfNextMonthIso(entryDate);
+    await enqueueBooksJob(
       db,
       clientId,
-      entryId,
-      String(entry.rows[0].entry_date),
-      String(entry.rows[0].voucher_type || "Journal"),
+      "auto_reverse",
+      { entryId, actorUserId: userId, reverseOn },
+      firstOfNextMonthUtc(entryDate),
     );
-    await writeBooksAudit(db, {
-      clientId,
-      actor: userId,
-      action: "post",
-      entity: "books_journal_entry",
-      entityId: entryId,
-      before: { status: entry.rows[0].status },
-      after: { status: "posted", entryNo },
-    });
-    if (entry.rows[0].auto_reverse_next_period) {
-      const entryDate = String(entry.rows[0].entry_date).slice(0, 10);
-      const reverseOn = firstOfNextMonthIso(entryDate);
-      await enqueueBooksJob(
-        db,
-        clientId,
-        "auto_reverse",
-        { entryId, actorUserId: userId, reverseOn },
-        firstOfNextMonthUtc(entryDate),
-      );
-    }
-    return { id: entryId, status: "posted", entryNo };
-  });
+  }
+  return { id: entryId, status: "posted", entryNo };
 }
 
 export async function bulkPostBooksJournals(userId: string, clientId: string, entryIds: string[]) {
@@ -1097,18 +1157,24 @@ export async function reverseBooksJournal(
     );
     if (!periodRow.rowCount) throw new BooksError("period_not_found", "not_found");
     const periodId = String(periodRow.rows[0].id);
-    await requireWritablePeriod(db, clientId, periodId);
+    // Period resolved from the reversal's own date (not the original's period_id); refuses a
+    // LOCKED period containing that date.
+    await requireWritablePeriod(db, clientId, periodId, entryDate);
 
     const lines = await db.query(
-      `SELECT account_id, debit_minor, credit_minor, currency, line_memo, vat_treatment, vat_code, tags
+      `SELECT account_id, debit_minor, credit_minor, currency, original_minor, fx_rate_scaled,
+              line_memo, vat_treatment, vat_code, tags
        FROM books_journal_lines WHERE entry_id = $1 ORDER BY id`,
       [entryId],
     );
+    // Same foreign-currency amount and rate on the opposite side, so FC balances net to zero.
     const opposite: BooksLineInput[] = lines.rows.map((line) => ({
       accountId: String(line.account_id),
       debitMinor: Number(line.credit_minor),
       creditMinor: Number(line.debit_minor),
       currency: String(line.currency),
+      originalMinor: line.original_minor == null ? null : Number(line.original_minor),
+      fxRateScaled: line.fx_rate_scaled == null ? null : Number(line.fx_rate_scaled),
       lineMemo: `Reversal: ${line.line_memo || ""}`.trim(),
       vatTreatment: line.vat_treatment,
       vatCode: line.vat_code,
@@ -1208,7 +1274,7 @@ export async function replaceBooksJournalDraft(
       throw new BooksError("not_editable", "conflict");
     }
     const periodId = body.periodId || String(before.rows[0].period_id);
-    await requireWritablePeriod(db, clientId, periodId);
+    await requireWritablePeriod(db, clientId, periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
     lines = expandVatCompanionLines(lines, accountById, vatAccountByCode);
     assertBooksBalanced(lines);

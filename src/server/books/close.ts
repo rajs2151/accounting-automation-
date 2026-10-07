@@ -93,12 +93,56 @@ async function loadWaivers(
   clientId: string,
   periodId: string,
 ): Promise<Map<string, string>> {
+  // A waiver only counts until the period is next reopened: any 'unlock' audit event on the
+  // period at/after the waiver's timestamp invalidates it (re-waiving refreshes `at`).
   const rows = await db.query(
-    `SELECT gate_key, reason FROM books_close_waivers
-     WHERE client_id = $1 AND period_id = $2`,
+    `SELECT w.gate_key, w.reason FROM books_close_waivers w
+     WHERE w.client_id = $1 AND w.period_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM books_audit_events a
+         WHERE a.client_id = w.client_id
+           AND a.entity = 'books_period'
+           AND a.entity_id = w.period_id
+           AND a.action = 'unlock'
+           AND a.at >= w.at
+       )`,
     [clientId, periodId],
   );
   return new Map(rows.rows.map((r) => [String(r.gate_key), String(r.reason)]));
+}
+
+/** 2210 (output, Cr−Dr) and 1430 (input, Dr−Cr) movement for posted/reversed entries by entry_date. */
+export async function vatControlMovement(
+  db: PoolClient,
+  clientId: string,
+  from: string,
+  to: string,
+): Promise<{ vatOutMinor: number; vatInMinor: number }> {
+  const rows = await db.query(
+    `SELECT a.code,
+            COALESCE(SUM(l.debit_minor), 0)::bigint AS debit,
+            COALESCE(SUM(l.credit_minor), 0)::bigint AS credit
+     FROM books_journal_lines l
+     JOIN books_journal_entries e ON e.id = l.entry_id
+     JOIN books_accounts a ON a.id = l.account_id
+     WHERE e.client_id = $1
+       AND e.status IN ('posted', 'reversed')
+       AND e.deleted_at IS NULL
+       AND e.entry_date BETWEEN $2::date AND $3::date
+       AND a.client_id = $1
+       AND a.code IN ('2210', '1430')
+     GROUP BY a.code`,
+    [clientId, from, to],
+  );
+  let vatOutMinor = 0;
+  let vatInMinor = 0;
+  for (const r of rows.rows) {
+    const debit = Number(r.debit);
+    const credit = Number(r.credit);
+    if (String(r.code) === "2210") vatOutMinor = credit - debit;
+    else vatInMinor = debit - credit;
+  }
+  return { vatOutMinor, vatInMinor };
 }
 
 function applyWaiver(gate: CloseGate, waivers: Map<string, string>): CloseGate {
@@ -314,11 +358,14 @@ export async function getBooksCloseChecklist(
             from: vatWindow.periodStart,
             to: vatWindow.periodEnd,
           });
-          // Period movement (not closing): output Cr−Dr on 2210, input Dr−Cr on 1430.
-          const vatOutPeriod =
-            (tb.accounts["2210"]?.periodCreditMinor || 0) - (tb.accounts["2210"]?.periodDebitMinor || 0);
-          const vatInPeriod =
-            (tb.accounts["1430"]?.periodDebitMinor || 0) - (tb.accounts["1430"]?.periodCreditMinor || 0);
+          // Movement over the same VAT window as the draft (a quarter for quarterly filers),
+          // not the month: output Cr−Dr on 2210, input Dr−Cr on 1430.
+          const { vatOutMinor: vatOutPeriod, vatInMinor: vatInPeriod } = await vatControlMovement(
+            db,
+            clientId,
+            vatWindow.periodStart,
+            vatWindow.periodEnd,
+          );
           const box8 = draft.box8.vatMinor;
           const box11 = draft.box11.vatMinor;
           if (box8 !== vatOutPeriod || box11 !== vatInPeriod) {
@@ -494,11 +541,11 @@ export async function lockBooksPeriodWithChecklist(
   periodId: string,
 ) {
   const checklist = await getBooksCloseChecklist(userId, clientId, periodId);
-  if (!checklist.ready) {
-    throw new CloseGatesFailingError(checklist.gates.filter((g) => g.blocking && g.status === "fail"));
-  }
   if (checklist.period.status === "LOCKED") {
     throw new BooksError("period_already_locked", "conflict");
+  }
+  if (!checklist.ready) {
+    throw new CloseGatesFailingError(checklist.gates.filter((g) => g.blocking && g.status === "fail"));
   }
 
   const locked = await lockBooksPeriod(userId, clientId, periodId);
@@ -539,11 +586,37 @@ export async function unlockBooksPeriodWithReason(
   await withUser(userId, async (db) => {
     await db.query(
       `INSERT INTO books_close_events (id, client_id, period_id, action, actor, reason, checklist_json)
-       VALUES ($1,$2,$3,'UNLOCK',$4,$5,'{}'::jsonb)`,
-      [randomUUID(), clientId, periodId, userId, reason.trim()],
+       VALUES ($1,$2,$3,'UNLOCK',$4,$5,$6::jsonb)`,
+      [
+        randomUUID(),
+        clientId,
+        periodId,
+        userId,
+        reason.trim(),
+        JSON.stringify({ invalidatedWaivers: unlocked.invalidatedWaivers }),
+      ],
     );
   });
   return unlocked;
+}
+
+/**
+ * Route entry point for the per-period lock / reopen actions (POST periods/:id/lock|reopen).
+ * Both go through the close checklist path so gates, close events, waiver invalidation and
+ * changed-since-close are applied — never the raw lockBooksPeriod / reopenBooksPeriod.
+ */
+export async function booksPeriodRouteAction(
+  userId: string,
+  clientId: string,
+  periodId: string,
+  action: "lock" | "reopen",
+  reason = "",
+) {
+  if (action === "lock") {
+    const locked = await lockBooksPeriodWithChecklist(userId, clientId, periodId);
+    return { id: locked.id, status: locked.status, checklist: locked.checklist };
+  }
+  return unlockBooksPeriodWithReason(userId, clientId, periodId, reason);
 }
 
 export async function listBooksCloseEvents(userId: string, clientId: string, periodId: string) {

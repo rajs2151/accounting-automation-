@@ -24,6 +24,7 @@ import {
 } from "@/server/books/attachments";
 import { listBooksAudit } from "@/server/books/audit";
 import {
+  booksPeriodRouteAction,
   CloseGatesFailingError,
   getBooksCloseChecklist,
   listBooksCloseEvents,
@@ -44,7 +45,12 @@ import {
   runBooksFxRevaluation,
   upsertBooksFxRate,
 } from "@/server/books/fx-revaluation";
-import { closeBooksYearToRE, reverseBooksYearEndClose } from "@/server/books/year-end";
+import {
+  closeBooksYearToRE,
+  getBooksYearEndStatus,
+  postBooksYearEndClose,
+  reverseBooksYearEndClose,
+} from "@/server/books/year-end";
 import {
   beginBooksJournalCorrection,
   bulkAddBooksJournalTags,
@@ -161,12 +167,7 @@ import {
   suggestPartyDuplicates,
   updateBooksParty,
 } from "@/server/books/parties";
-import {
-  createBooksPeriod,
-  listBooksPeriods,
-  lockBooksPeriod,
-  reopenBooksPeriod,
-} from "@/server/books/periods";
+import { createBooksPeriod, listBooksPeriods } from "@/server/books/periods";
 import {
   allocatePartyAdvance,
   createContra,
@@ -284,6 +285,15 @@ export async function GET(request: Request, ctx: Ctx) {
 
     if (path[0] === "periods" && path.length === 1) {
       return NextResponse.json(await listBooksPeriods(session.userId, session.clientId));
+    }
+    if (path[0] === "year-end" && path[1] === "status" && path.length === 2) {
+      return NextResponse.json(
+        await getBooksYearEndStatus(
+          session.userId,
+          session.clientId,
+          String(url.searchParams.get("periodId") || ""),
+        ),
+      );
     }
     if (path[0] === "accounts" && path.length === 1) {
       const postableOnly = url.searchParams.get("postableOnly") === "1";
@@ -749,12 +759,21 @@ export async function POST(request: Request, ctx: Ctx) {
         }),
       );
     }
+    // Same gated path as close/lock + close/unlock (checklist, close events, waiver reset).
     if (path[0] === "periods" && path[2] === "lock" && path.length === 3) {
-      return NextResponse.json(await lockBooksPeriod(session.userId, session.clientId, path[1]));
+      return NextResponse.json(
+        await booksPeriodRouteAction(session.userId, session.clientId, path[1], "lock"),
+      );
     }
     if (path[0] === "periods" && path[2] === "reopen" && path.length === 3) {
       return NextResponse.json(
-        await reopenBooksPeriod(session.userId, session.clientId, path[1], String(body.reason || "")),
+        await booksPeriodRouteAction(
+          session.userId,
+          session.clientId,
+          path[1],
+          "reopen",
+          String(body.reason || ""),
+        ),
       );
     }
     if (path[0] === "close" && path[1] === "lock" && path.length === 2) {
@@ -844,6 +863,11 @@ export async function POST(request: Request, ctx: Ctx) {
           String(body.periodId || ""),
           String(body.note || ""),
         ),
+      );
+    }
+    if (path[0] === "year-end" && path[1] === "post" && path.length === 2) {
+      return NextResponse.json(
+        await postBooksYearEndClose(session.userId, session.clientId, Number(body.fiscalYear)),
       );
     }
     if (path[0] === "year-end" && path[1] === "reverse" && path.length === 2) {

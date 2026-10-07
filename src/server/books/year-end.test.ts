@@ -5,12 +5,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 
-import { getBooksCloseChecklist, waiveBooksCloseGate } from "@/server/books/close";
+import {
+  getBooksCloseChecklist,
+  lockBooksPeriodWithChecklist,
+  waiveBooksCloseGate,
+} from "@/server/books/close";
 import { createBooksJournal, getBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createTestCompany } from "@/server/books/test-company";
 import {
   booksYearPnlNets,
   closeBooksYearToRE,
+  postBooksYearEndClose,
   reverseBooksYearEndClose,
 } from "@/server/books/year-end";
 import { withUser } from "@/lib/db";
@@ -113,8 +118,16 @@ test("P5-4: year-end closing lines; refuse before checklist; refuse twice; P&L e
       /not_fiscal_year_end_period/,
     );
 
+    // Year-end needs every earlier month of the fiscal year locked (through the close gates).
+    for (const label of ["Apr 2026", "May 2026"]) {
+      await waiveAllFailing(LAYLA, company.clientId, company.periods[label]);
+      await lockBooksPeriodWithChecklist(LAYLA, company.clientId, company.periods[label]);
+    }
+
     await waiveAllFailing(LAYLA, company.clientId, yearEndId);
-    const closed = await closeBooksYearToRE(LAYLA, company.clientId, yearEndId, "FY2025 close");
+    // Two steps: Layla prepares the draft, a different approver/admin (Raj) posts it.
+    await closeBooksYearToRE(LAYLA, company.clientId, yearEndId, "FY2025 close");
+    const closed = await postBooksYearEndClose(RAJ, company.clientId, 2025);
     assert.equal(closed.netIncomeMinor, 60_000);
     assert.equal(closed.fiscalYear, 2025);
 
@@ -166,7 +179,8 @@ test("P5-4: year-end closing lines; refuse before checklist; refuse twice; P&L e
 
     // Can close again after reverse
     await waiveAllFailing(LAYLA, company.clientId, yearEndId);
-    const again = await closeBooksYearToRE(LAYLA, company.clientId, yearEndId);
+    await closeBooksYearToRE(LAYLA, company.clientId, yearEndId);
+    const again = await postBooksYearEndClose(RAJ, company.clientId, 2025);
     assert.equal(again.netIncomeMinor, 60_000);
   } finally {
     await admin.end().catch(() => undefined);

@@ -73,6 +73,27 @@ export default function BooksExpensesPage() {
   const [q, setQ] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [expenseDate, setExpenseDate] = useState("2026-05-15");
+  // An expense must be dated inside its period: keep the date in the selected period (today if it
+  // falls there, otherwise the period's last day).
+  useEffect(() => {
+    if (!periodId) return;
+    let cancelled = false;
+    fetch("/api/books/periods")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: Array<{ id: string; periodStart?: string; periodEnd?: string }>) => {
+        const p = Array.isArray(list) ? list.find((x) => x.id === periodId) : undefined;
+        if (cancelled || !p?.periodStart || !p.periodEnd) return;
+        const start = String(p.periodStart).slice(0, 10);
+        const end = String(p.periodEnd).slice(0, 10);
+        const today = new Date().toISOString().slice(0, 10);
+        const inPeriod = (d: string) => d >= start && d <= end;
+        setExpenseDate((cur) => (inPeriod(cur) ? cur : inPeriod(today) ? today : end));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [periodId]);
   const [description, setDescription] = useState("");
   const [vendorName, setVendorName] = useState("");
   const [paidFromKind, setPaidFromKind] = useState<string>("");

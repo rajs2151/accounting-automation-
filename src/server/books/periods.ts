@@ -127,10 +127,27 @@ export async function reopenBooksPeriod(
       clientId,
     ]);
     if (!before.rowCount) throw new BooksError("period_not_found", "not_found");
-    await db.query(
-      `UPDATE books_periods SET status = 'REOPENED', reopen_reason = $3 WHERE id = $1 AND client_id = $2`,
+    if (String(before.rows[0].status) !== "LOCKED") {
+      throw new BooksError("period_not_locked", "conflict");
+    }
+    const updated = await db.query(
+      `UPDATE books_periods SET status = 'REOPENED', reopen_reason = $3
+       WHERE id = $1 AND client_id = $2 AND status = 'LOCKED'`,
       [periodId, clientId, reason.trim()],
     );
+    if (!updated.rowCount) throw new BooksError("period_not_locked", "conflict");
+    // Close-gate waivers do not survive a reopen: loadWaivers (close.ts) ignores any waiver
+    // dated at or before the latest 'unlock' audit event, so the next lock re-evaluates them.
+    const waivers = await db.query(
+      `SELECT gate_key, reason FROM books_close_waivers
+       WHERE client_id = $1 AND period_id = $2
+       ORDER BY gate_key`,
+      [clientId, periodId],
+    );
+    const invalidatedWaivers = waivers.rows.map((r) => ({
+      gate: String(r.gate_key),
+      reason: String(r.reason),
+    }));
     await writeBooksAudit(db, {
       clientId,
       actor: userId,
@@ -138,8 +155,8 @@ export async function reopenBooksPeriod(
       entity: "books_period",
       entityId: periodId,
       before: before.rows[0],
-      after: { status: "REOPENED", reason: reason.trim() },
+      after: { status: "REOPENED", reason: reason.trim(), invalidatedWaivers },
     });
-    return { id: periodId, status: "REOPENED", reason: reason.trim() };
+    return { id: periodId, status: "REOPENED", reason: reason.trim(), invalidatedWaivers };
   });
 }

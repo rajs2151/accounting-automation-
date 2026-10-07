@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
 import { displayToMinor, formatMinor } from "@/lib/money";
 import { statementLineLabel } from "@/lib/statement-line";
@@ -51,6 +52,14 @@ type CoaNode = {
   active: boolean;
   children: CoaNode[];
 };
+
+/** Lock refusal text, listing failing close gates (waive or fix them on the Close page). */
+function lockErrorMessage(data: { error?: string; failingGates?: Array<{ key: string }> }) {
+  const failList = Array.isArray(data.failingGates)
+    ? data.failingGates.map((g) => g.key).join(", ")
+    : "";
+  return (apiErrorMessage(data) || data.error || "lock_failed") + (failList ? ` (${failList})` : "");
+}
 
 function flattenCoa(nodes: CoaNode[], depth = 0, out: Array<CoaNode & { depth: number }> = []) {
   for (const n of nodes) {
@@ -504,10 +513,11 @@ function OpeningBalancesSection({ periods }: { periods: Period[] }) {
 
   async function relockStart() {
     if (!apr) return;
+    // Goes through the close checklist (gates must pass or be waived on the Close page).
     const res = await fetch(`/api/books/periods/${apr.id}/lock`, { method: "POST", body: "{}" });
     if (!res.ok) {
       const data = await res.json();
-      setMessage(data.error || "lock_failed");
+      setMessage(lockErrorMessage(data));
       return;
     }
     setMessage(`Relocked ${apr.label} (audited).`);
@@ -762,16 +772,29 @@ export default function BooksSettingsPage() {
   }
 
   async function lockPeriod(id: string) {
-    await fetch(`/api/books/periods/${id}/lock`, { method: "POST", body: "{}" });
+    // Same gated path as the Close page: failing gates are reported, not skipped.
+    const res = await fetch(`/api/books/periods/${id}/lock`, { method: "POST", body: "{}" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      await reload();
+      setError(lockErrorMessage(data));
+      return;
+    }
     await reload();
   }
 
   async function unlockPeriod(id: string) {
-    await fetch(`/api/books/periods/${id}/reopen`, {
+    const res = await fetch(`/api/books/periods/${id}/reopen`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: "Settings unlock" }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      await reload();
+      setError(apiErrorMessage(data) || data.error || "unlock_failed");
+      return;
+    }
     await reload();
   }
 

@@ -169,8 +169,11 @@ async function rateMapForDate(
   const missing: string[] = [];
   for (const ccy of [...new Set(currencies)]) {
     const row = await db.query(
+      // Closing rate = the latest rate on or before period end (a rate entered for the last business
+      // day must count; an exact-date match made the month fail when the 30th was a weekend).
       `SELECT rate_scaled FROM books_fx_rates
-       WHERE client_id = $1 AND currency = $2 AND rate_date = $3`,
+       WHERE client_id = $1 AND currency = $2 AND rate_date <= $3::date
+       ORDER BY rate_date DESC LIMIT 1`,
       [clientId, ccy, rateDate],
     );
     if (!row.rowCount) missing.push(ccy);
@@ -179,7 +182,56 @@ async function rateMapForDate(
   return { rates, missing };
 }
 
+/**
+ * Foreign-currency bank/card accounts that carry postings with no foreign amount (AED-only lines,
+ * e.g. made before the account was switched to its currency). Revaluing them would compare a partial
+ * foreign balance with the full AED balance and write most of it off as an FX loss, so they must be
+ * fixed (or the gate waived) instead. Revaluation JVs and their reversals are AED-only by design.
+ */
+export async function fxAccountsWithUntrackedPostings(
+  db: PoolClient,
+  clientId: string,
+  asOf: string,
+): Promise<string[]> {
+  const res = await db.query(
+    `SELECT DISTINCT a.code
+     FROM books_journal_lines l
+     JOIN books_journal_entries e ON e.id = l.entry_id
+     JOIN books_journal_entries be ON be.id = COALESCE(e.reverses_entry_id, e.id)
+     JOIN books_accounts a ON a.id = l.account_id
+     WHERE e.client_id = $1 AND a.client_id = $1 AND a.active = true AND a.is_postable = true
+       AND UPPER(a.currency) <> 'AED'
+       AND (a.is_bank = true OR a.is_card = true OR a.is_gateway = true
+            OR COALESCE(a.sub_type, '') IN ('bank','cash','card','gateway'))
+       AND e.status IN ('posted', 'reversed') AND e.deleted_at IS NULL
+       AND e.entry_date <= $2::date
+       AND COALESCE(be.entry_type, '') <> 'fx_revaluation'
+       AND (l.original_minor IS NULL OR UPPER(l.currency) <> UPPER(a.currency))
+       AND (l.debit_minor <> 0 OR l.credit_minor <> 0)
+     ORDER BY a.code`,
+    [clientId, asOf],
+  );
+  return res.rows.map((r) => String(r.code));
+}
+
 /** Foreign bank/card balances + open AR/AP in non-AED with open_original ≠ 0. */
+const FX_RUN_DONE = new Set(["posted", "reversed"]);
+
+async function assertNoUntrackedFxPostings(db: PoolClient, clientId: string, asOf: string) {
+  const codes = await fxAccountsWithUntrackedPostings(db, clientId, asOf);
+  if (codes.length) {
+    throw new BooksError(`fx_account_missing_foreign_amounts:${codes.join(",")}`, "invalid");
+  }
+}
+
+/** Revaluation differences with the closing rate (null when a rate is missing). */
+async function currentFxDiffs(db: PoolClient, clientId: string, periodEnd: string) {
+  const raw = await collectFxMonetaryItems(db, clientId, periodEnd);
+  const { rates, missing } = await rateMapForDate(db, clientId, periodEnd, raw.map((r) => r.currency));
+  if (missing.length) return null;
+  return enrichItems(raw, rates);
+}
+
 export async function collectFxMonetaryItems(
   db: PoolClient,
   clientId: string,
@@ -251,17 +303,38 @@ export async function collectFxMonetaryItems(
     });
   }
 
+  // Open AR/AP *as of* the revaluation date, rebuilt from settlements and credit/debit notes dated on
+  // or before it — not today's open-item state (an invoice paid on 3 June still belongs in May's run).
   const open = await db.query(
-    `SELECT oi.id, oi.side, oi.currency, oi.open_original_minor, oi.open_aed_minor,
-            p.name AS party_name
-     FROM books_open_items oi
-     JOIN books_parties p ON p.id = oi.party_id
-     LEFT JOIN books_documents d ON d.id = oi.document_id
-     WHERE oi.client_id = $1
-       AND oi.status IN ('open', 'partial')
-       AND UPPER(oi.currency) <> 'AED'
-       AND oi.open_original_minor <> 0
-       AND (d.issue_date IS NULL OR d.issue_date <= $2::date)`,
+    `SELECT * FROM (
+       SELECT oi.id, oi.side, oi.currency, p.name AS party_name,
+              oi.original_minor - COALESCE(alloc.orig, 0) - COALESCE(notes.orig, 0) AS open_original_minor,
+              oi.aed_original_minor - COALESCE(alloc.aed, 0) - COALESCE(notes.aed, 0) AS open_aed_minor
+       FROM books_open_items oi
+       JOIN books_parties p ON p.id = oi.party_id
+       JOIN books_journal_entries oe ON oe.id = oi.journal_entry_id
+       LEFT JOIN books_documents d ON d.id = oi.document_id
+       LEFT JOIN LATERAL (
+         SELECT SUM(a.allocated_original_minor) AS orig, SUM(a.allocated_aed_minor) AS aed
+         FROM books_allocations a
+         JOIN books_journal_entries se ON se.id = a.settlement_journal_id
+         WHERE a.open_item_id = oi.id AND se.status = 'posted' AND se.deleted_at IS NULL
+           AND se.entry_date <= $2::date
+       ) alloc ON true
+       LEFT JOIN LATERAL (
+         SELECT SUM(n.original_total_minor) AS orig, SUM(n.aed_total_minor) AS aed
+         FROM books_documents n
+         WHERE d.id IS NOT NULL AND n.original_document_id = d.id AND n.client_id = $1
+           AND n.status = 'posted' AND n.deleted_at IS NULL
+           AND n.doc_type IN ('credit_note', 'debit_note') AND n.issue_date <= $2::date
+       ) notes ON true
+       WHERE oi.client_id = $1
+         AND UPPER(oi.currency) <> 'AED'
+         -- A voided invoice / payment has its journal marked 'reversed': it no longer counts.
+         AND oe.status = 'posted' AND oe.deleted_at IS NULL AND oe.entry_date <= $2::date
+         AND (d.id IS NULL OR (d.status = 'posted' AND d.deleted_at IS NULL))
+     ) x
+     WHERE x.open_original_minor > 0`,
     [clientId, asOf],
   );
 
@@ -386,6 +459,7 @@ export async function previewBooksFxRevaluation(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const period = await loadPeriod(db, clientId, periodId);
+    await assertNoUntrackedFxPostings(db, clientId, period.end);
     const raw = await collectFxMonetaryItems(db, clientId, period.end);
     const { rates, missing } = await rateMapForDate(
       db,
@@ -445,11 +519,14 @@ export async function runBooksFxRevaluation(
     );
     if (existing.rowCount) {
       const ex = existing.rows[0];
-      if (ex.kind === "journal" && String(ex.entryStatus) === "posted") {
+      // Once posted, the JV auto-reverses next month and its status becomes 'reversed' — still done.
+      // Re-running then would revalue AR/AP a second time and overwrite the link to the posted JV.
+      if (ex.kind === "journal" && FX_RUN_DONE.has(String(ex.entryStatus))) {
         throw new BooksError("fx_revaluation_already_posted", "conflict");
       }
     }
 
+    await assertNoUntrackedFxPostings(db, clientId, period.end);
     const raw = await collectFxMonetaryItems(db, clientId, period.end);
     const { rates, missing } = await rateMapForDate(
       db,
@@ -591,6 +668,15 @@ export async function fxRevaluationGateState(
   detail: string;
   missingRates: string[];
 }> {
+  const untracked = await fxAccountsWithUntrackedPostings(db, clientId, periodEnd);
+  if (untracked.length) {
+    return {
+      status: "fail",
+      count: untracked.length,
+      detail: `Foreign-currency account(s) ${untracked.join(", ")} have postings without a foreign amount — fix them before revaluing`,
+      missingRates: [],
+    };
+  }
   const raw = await collectFxMonetaryItems(db, clientId, periodEnd);
   if (raw.length === 0) {
     return { status: "pass", count: 0, detail: "No foreign-currency monetary balances", missingRates: [] };
@@ -626,11 +712,33 @@ export async function fxRevaluationGateState(
     };
   }
   const kind = String(run.rows[0].kind);
-  if (kind === "noop") {
-    return { status: "pass", count: 0, detail: "FX revaluation noop (no differences)", missingRates: [] };
-  }
-  if (String(run.rows[0].status) === "posted") {
-    return { status: "pass", count: 0, detail: "FX revaluation posted for period", missingRates: [] };
+  const entryStatus = String(run.rows[0].status || "");
+  if (kind === "noop" || FX_RUN_DONE.has(entryStatus)) {
+    // A run only stays valid while the balances it measured are unchanged. After a posted run the
+    // bank carrying amounts include the revaluation, so they must now show no difference; open AR/AP
+    // are carried at booking rates, so only a noop run can be re-checked for them.
+    const items = await currentFxDiffs(db, clientId, periodEnd);
+    const stale = (items || []).filter(
+      (i) => i.diffAedMinor !== 0 && (kind === "noop" || i.kind === "bank"),
+    );
+    if (stale.length) {
+      const diff = stale.reduce((s, i) => s + i.diffAedMinor, 0);
+      return {
+        status: "fail",
+        count: stale.length,
+        detail:
+          kind === "noop"
+            ? `Foreign balances changed since the FX run (difference ${diff} fils) — run it again`
+            : `Foreign bank balances changed after the FX revaluation was posted (difference ${diff} fils) — post an adjustment or waive`,
+        missingRates: [],
+      };
+    }
+    return {
+      status: "pass",
+      count: 0,
+      detail: kind === "noop" ? "FX revaluation noop (no differences)" : "FX revaluation posted for period",
+      missingRates: [],
+    };
   }
   return {
     status: "fail",

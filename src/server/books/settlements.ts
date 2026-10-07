@@ -58,6 +58,22 @@ async function accountCode(db: import("pg").PoolClient, clientId: string, accoun
   return row.rows[0] as { code: string; is_bank: boolean };
 }
 
+/**
+ * The period a settlement belongs to is the one containing its own date (as for documents), not
+ * whatever period the screen had selected — a 20 May receipt must not land in June's books.
+ */
+async function periodForSettlementDate(userId: string, clientId: string, issueDate: string, fallback: string) {
+  return withUser(userId, async (db) => {
+    const p = await db.query(
+      `SELECT id FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date
+       ORDER BY period_start DESC LIMIT 1`,
+      [clientId, issueDate],
+    );
+    return p.rowCount ? String(p.rows[0].id) : fallback;
+  });
+}
+
 export async function createReceiptOrPayment(
   preparerId: string,
   approverId: string,
@@ -364,7 +380,7 @@ export async function createReceiptOrPayment(
 
   const voucherType = body.docType === "receipt" ? "Receipt" : "Payment";
   const created = await createBooksJournal(preparerId, clientId, {
-    periodId: body.periodId,
+    periodId: await periodForSettlementDate(preparerId, clientId, body.issueDate, body.periodId),
     entryDate: body.issueDate,
     memo: body.memo || voucherType,
     voucherType,
@@ -550,7 +566,7 @@ export async function allocatePartyAdvance(
   });
 
   const created = await createBooksJournal(preparerId, clientId, {
-    periodId: body.periodId,
+    periodId: await periodForSettlementDate(preparerId, clientId, body.issueDate, body.periodId),
     entryDate: body.issueDate,
     memo: "Allocate customer advance",
     voucherType: "Journal",
@@ -670,7 +686,7 @@ export async function createContra(
   });
 
   const created = await createBooksJournal(preparerId, clientId, {
-    periodId: body.periodId,
+    periodId: await periodForSettlementDate(preparerId, clientId, body.issueDate, body.periodId),
     entryDate: body.issueDate,
     memo: body.memo || "Contra transfer",
     voucherType: "Contra",

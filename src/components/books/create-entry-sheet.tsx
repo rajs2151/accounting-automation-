@@ -308,6 +308,28 @@ export function CreateEntrySheet({
       .catch(() => undefined);
   }, [open]);
 
+  // A journal must be dated inside its period: default to today when today is in the selected
+  // period, otherwise to the period's last day (e.g. booking June entries in October).
+  useEffect(() => {
+    if (!open || prefill?.entryDate || !periodId) return;
+    let cancelled = false;
+    fetch("/api/books/periods")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: Array<{ id: string; periodStart?: string; periodEnd?: string }>) => {
+        const p = Array.isArray(rows) ? rows.find((r) => r.id === periodId) : undefined;
+        if (cancelled || !p?.periodStart || !p.periodEnd) return;
+        const start = String(p.periodStart).slice(0, 10);
+        const end = String(p.periodEnd).slice(0, 10);
+        const today = new Date().toISOString().slice(0, 10);
+        const inPeriod = (d: string) => d >= start && d <= end;
+        setEntryDate((cur) => (inPeriod(cur) ? cur : inPeriod(today) ? today : end));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, periodId, prefill?.entryDate]);
+
   useEffect(() => {
     if (!open || !prefill) return;
     // Prefill (draft edit / correction) always starts from a clean template so

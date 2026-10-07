@@ -43,6 +43,17 @@ type Checklist = {
   failing: string[];
 };
 
+type YearEndStatus = {
+  isYearEndPeriod: boolean;
+  fiscalYear: number;
+  state: "none" | "draft" | "posted" | "reversed" | "discarded";
+  journalEntryId: string | null;
+  netIncomeMinor: number | null;
+  preparedByName: string | null;
+  entryNo: string | null;
+  canPost: boolean;
+};
+
 type CloseEvent = {
   id: string;
   action: string;
@@ -77,6 +88,7 @@ export default function BooksClosePage() {
   const [canApprove, setCanApprove] = useState(false);
   const [revaluing, setRevaluing] = useState(false);
   const [closingYear, setClosingYear] = useState(false);
+  const [yearEnd, setYearEnd] = useState<YearEndStatus | null>(null);
 
   useEffect(() => {
     fetch("/api/session")
@@ -93,15 +105,18 @@ export default function BooksClosePage() {
     setLoading(true);
     setError("");
     try {
-      const [cRes, eRes] = await Promise.all([
+      const [cRes, eRes, yRes] = await Promise.all([
         fetch(`/api/books/close?periodId=${periodId}`),
         fetch(`/api/books/close/events?periodId=${periodId}`),
+        fetch(`/api/books/year-end/status?periodId=${periodId}`),
       ]);
       const c = await cRes.json();
       const e = await eRes.json();
+      const y = await yRes.json().catch(() => null);
       if (!cRes.ok) throw new Error(apiErrorMessage(c) || c.error || "load_failed");
       setChecklist(c);
       setEvents(Array.isArray(e) ? e : []);
+      setYearEnd(yRes.ok && y ? (y as YearEndStatus) : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "load_failed");
     } finally {
@@ -230,6 +245,30 @@ export default function BooksClosePage() {
     }
   }
 
+  /** Step 2: a different approver/admin posts the prepared closing entry. */
+  async function postYearEnd() {
+    if (!yearEnd) return;
+    setClosingYear(true);
+    setError("");
+    try {
+      const res = await fetch("/api/books/year-end/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fiscalYear: yearEnd.fiscalYear }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiErrorMessage(data) || data.error || "year_end_post_failed");
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "year_end_post_failed");
+    } finally {
+      setClosingYear(false);
+    }
+  }
+
+  const yearEndPending = yearEnd?.state === "draft";
+  const yearEndClosed = yearEnd?.state === "posted";
+
   return (
     <div className="space-y-6 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -250,14 +289,34 @@ export default function BooksClosePage() {
           >
             {revaluing ? "Revaluing…" : "Revalue FX"}
           </Button>
-          <Button
-            variant="outline"
-            disabled={!periodId || !canApprove || locked || closingYear || busy || !checklist?.ready}
-            onClick={() => void closeYear()}
-            title="Only on the last month of the fiscal year, when the checklist is ready"
-          >
-            {closingYear ? "Closing…" : "Close year"}
-          </Button>
+          {yearEndPending ? (
+            <Button
+              variant="outline"
+              disabled={!yearEnd?.canPost || locked || closingYear || busy || !checklist?.ready}
+              onClick={() => void postYearEnd()}
+              title={`Prepared by ${yearEnd?.preparedByName || "another user"} — a different approver or admin must post it`}
+            >
+              {closingYear ? "Posting…" : "Post year-end entry"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={
+                !periodId ||
+                !canApprove ||
+                locked ||
+                closingYear ||
+                busy ||
+                !checklist?.ready ||
+                yearEndClosed ||
+                yearEnd?.isYearEndPeriod === false
+              }
+              onClick={() => void closeYear()}
+              title="Prepares the closing entry as a draft (last month of the fiscal year, earlier months locked, checklist ready); a different approver posts it"
+            >
+              {closingYear ? "Closing…" : yearEndClosed ? "Year closed" : "Close year"}
+            </Button>
+          )}
           {locked ? (
             <Button
               variant="outline"
@@ -278,6 +337,14 @@ export default function BooksClosePage() {
         <p className="text-sm text-muted-foreground">Select a period in the top bar.</p>
       ) : null}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {yearEndPending ? (
+        <p className="text-sm text-amber-700">
+          Year-end entry FY{yearEnd?.fiscalYear} prepared
+          {yearEnd?.preparedByName ? ` by ${yearEnd.preparedByName}` : ""}
+          {yearEnd?.netIncomeMinor != null ? ` (net income ${formatMinor(yearEnd.netIncomeMinor)} AED)` : ""}
+          {" "}— waiting for a different approver to post it.
+        </p>
+      ) : null}
       {loading && !checklist ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
 
       {checklist ? (

@@ -139,3 +139,4 @@
 2026-10-06 UI-NOTION-2: one table style + click-row-to-open (sales/purchases review drawer, inbox, statements, transactions); peek skips editable rows; drawer widths fixed
 2026-10-06 UI-NAV-1: grouped menu with accounting names (Journals, Bank accounts/transactions, Customers & suppliers); dashboard flow strip; dead options removed
 2026-10-07 FIX-P34: expense approve idempotent + dual control (creator/editor), expense validation, expense VAT in VAT201, accrual auto-reverse dated 1st of next month in that period; journal sheet/drawer state fixes
+2026-10-07 FIX-P5: close/year-end (two-step dual-control YE, no double close, contra lines, quarterly VAT gate, waiver expiry, earlier months locked, reopen check), no back-dating into locked months, FX reval (AED-only accounts refused, reversed=done, as-of AR/AP, rate on/before end, stale gate), depreciation (atomic, deleted drafts, disposal month, catch-up), settlements post in their date's period

@@ -185,6 +185,23 @@ def _recurring_materialize(conn, job: dict) -> None:
     lines = tmpl["line_payload"]
     if isinstance(lines, str):
         lines = json.loads(lines)
+    # The occurrence belongs to the period containing its own date, not the template's
+    # original period; refuse a missing or LOCKED period instead of back/forward-dating.
+    occ_date = _as_date(tmpl["next_date"])
+    period = conn.execute(
+        """
+        SELECT id, status FROM books_periods
+        WHERE client_id = %s
+          AND period_start <= %s AND period_end >= %s
+        ORDER BY (status = 'LOCKED') DESC, period_start DESC
+        LIMIT 1
+        """,
+        (tmpl["client_id"], occ_date, occ_date),
+    ).fetchone()
+    if not period:
+        raise ValueError(f"recurring_period_missing:{occ_date.isoformat()}")
+    if period["status"] not in ("OPEN", "REOPENED"):
+        raise ValueError(f"recurring_period_locked:{occ_date.isoformat()}")
     entry_id = str(uuid4())
     conn.execute(
         """
@@ -196,7 +213,7 @@ def _recurring_materialize(conn, job: dict) -> None:
         (
             entry_id,
             tmpl["client_id"],
-            tmpl["period_id"],
+            period["id"],
             tmpl["memo"],
             tmpl["next_date"],
             f"recurring-{entry_id}",
@@ -321,7 +338,7 @@ def _auto_reverse(conn, job: dict) -> None:
         SELECT id, status FROM books_periods
         WHERE client_id = %s
           AND period_start <= %s AND period_end >= %s
-        ORDER BY period_start DESC
+        ORDER BY (status = 'LOCKED') DESC, period_start DESC
         LIMIT 1
         """,
         (orig["client_id"], rev_date, rev_date),
@@ -355,12 +372,14 @@ def _auto_reverse(conn, job: dict) -> None:
         (entry_id,),
     ).fetchall()
     for line in lines:
+        # Same foreign-currency amount + rate on the opposite side so FC balances net to zero.
         conn.execute(
             """
             INSERT INTO books_journal_lines (
               entry_id, client_id, account_id, debit_minor, credit_minor,
-              currency, aed_minor, line_memo, vat_treatment, vat_code, tags
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              currency, original_minor, fx_rate_scaled, aed_minor, line_memo,
+              vat_treatment, vat_code, tags
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 rev_id,
@@ -369,6 +388,8 @@ def _auto_reverse(conn, job: dict) -> None:
                 line["credit_minor"],
                 line["debit_minor"],
                 line["currency"],
+                line.get("original_minor"),
+                line.get("fx_rate_scaled"),
                 line["aed_minor"],
                 f"Reversal: {line.get('line_memo') or ''}",
                 line.get("vat_treatment"),

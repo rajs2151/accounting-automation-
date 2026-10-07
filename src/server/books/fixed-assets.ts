@@ -12,7 +12,7 @@ import type { PoolClient } from "pg";
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
-import { createBooksJournal } from "@/server/books/journals";
+import { createBooksJournal, softDeleteBooksJournalDraft } from "@/server/books/journals";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 const DEFAULT_ASSET_CODE = "1600";
@@ -302,6 +302,36 @@ async function loadPeriod(
   };
 }
 
+/**
+ * What an asset should be charged in this period: the schedule's cumulative amount through this month
+ * minus what earlier periods actually charged (so a skipped month is caught up and the total never
+ * passes cost − residual). Disposed assets depreciate through their disposal month only.
+ */
+async function depreciationDueThisPeriod(
+  db: PoolClient,
+  asset: FixedAssetRow,
+  periodStart: string,
+): Promise<{ amountMinor: number; monthIndex: number } | null> {
+  const monthIndex = depreciationMonthIndex(asset.inServiceDate, periodStart);
+  if (monthIndex < 0 || asset.lifeMonths <= 0) return null;
+  if (asset.disposedAt && asset.disposedAt.slice(0, 7) < periodStart.slice(0, 7)) return null;
+  const schedule = monthlyStraightLineAmounts(asset.costMinor, asset.residualMinor, asset.lifeMonths);
+  const lastIndex = Math.min(monthIndex, asset.lifeMonths - 1);
+  let expected = 0;
+  for (let i = 0; i <= lastIndex; i++) expected += schedule[i] ?? 0;
+  const charged = await db.query(
+    `SELECT COALESCE(SUM(r.amount_minor), 0)::bigint AS charged
+     FROM books_depreciation_runs r
+     JOIN books_journal_entries e ON e.id = r.journal_entry_id
+     JOIN books_periods p ON p.id = r.period_id
+     WHERE r.asset_id = $1 AND e.deleted_at IS NULL AND e.status <> 'reversed'
+       AND p.period_start < $2::date`,
+    [asset.id, periodStart],
+  );
+  const amountMinor = expected - Number(charged.rows[0].charged);
+  return amountMinor > 0 ? { amountMinor, monthIndex } : null;
+}
+
 /** Active assets due a depreciation charge in this period (not disposed, within life). */
 export async function assetsDueForDepreciation(
   userId: string,
@@ -314,22 +344,16 @@ export async function assetsDueForDepreciation(
     const rows = await db.query(
       `${ASSET_SELECT}
        WHERE a.client_id = $1
-         AND a.disposed_at IS NULL
+         AND (a.disposed_at IS NULL OR a.disposed_at >= $3::date)
          AND a.in_service_date <= $2::date`,
-      [clientId, period.end],
+      [clientId, period.end, period.start],
     );
     const due: DueAsset[] = [];
     for (const raw of rows.rows) {
       const asset = mapAsset(raw as Record<string, unknown>);
-      const monthIndex = depreciationMonthIndex(asset.inServiceDate, period.start);
-      const amount = amountForDepreciationMonth(
-        asset.costMinor,
-        asset.residualMinor,
-        asset.lifeMonths,
-        monthIndex,
-      );
-      if (amount == null || amount <= 0) continue;
-      due.push({ ...asset, amountMinor: amount, monthIndex });
+      const d = await depreciationDueThisPeriod(db, asset, period.start);
+      if (!d) continue;
+      due.push({ ...asset, amountMinor: d.amountMinor, monthIndex: d.monthIndex });
     }
     return due;
   });
@@ -360,11 +384,20 @@ export async function runBooksDepreciation(
       throw new BooksError("period_locked", "period_closed");
     }
 
+    // A run whose journal was deleted (draft) or reversed no longer charges anything: clear it so the
+    // asset can be run again (otherwise the unique (asset, period) key blocks it forever).
+    await db.query(
+      `DELETE FROM books_depreciation_runs r
+       USING books_journal_entries e
+       WHERE e.id = r.journal_entry_id AND r.client_id = $1 AND r.period_id = $2
+         AND (e.deleted_at IS NOT NULL OR e.status = 'reversed')`,
+      [clientId, periodId],
+    );
     const existing = await db.query(
       `SELECT r.asset_id AS "assetId", r.journal_entry_id AS "journalEntryId", e.status
        FROM books_depreciation_runs r
        JOIN books_journal_entries e ON e.id = r.journal_entry_id
-       WHERE r.client_id = $1 AND r.period_id = $2`,
+       WHERE r.client_id = $1 AND r.period_id = $2 AND e.deleted_at IS NULL`,
       [clientId, periodId],
     );
     const have = new Set(existing.rows.map((r) => String(r.assetId)));
@@ -431,15 +464,24 @@ export async function runBooksDepreciation(
     post: false,
   });
 
-  await withUser(userId, async (db) => {
-    for (const asset of prep.pending) {
-      await db.query(
-        `INSERT INTO books_depreciation_runs (
-           id, client_id, asset_id, period_id, amount_minor, journal_entry_id
-         ) VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (asset_id, period_id) DO NOTHING`,
-        [randomUUID(), clientId, asset.id, periodId, asset.amountMinor, journal.id],
-      );
+  // All run rows link in one transaction with no ON CONFLICT escape: if a concurrent run already
+  // claimed any of these assets for the period, the whole link fails and our draft is removed — never
+  // two depreciation journals for the same asset and month.
+  const linked = await withUser(userId, async (db) => {
+    try {
+      await db.query("SAVEPOINT depr_link");
+      for (const asset of prep.pending) {
+        await db.query(
+          `INSERT INTO books_depreciation_runs (
+             id, client_id, asset_id, period_id, amount_minor, journal_entry_id
+           ) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [randomUUID(), clientId, asset.id, periodId, asset.amountMinor, journal.id],
+        );
+      }
+    } catch (err) {
+      if ((err as { code?: string }).code !== "23505") throw err;
+      await db.query("ROLLBACK TO SAVEPOINT depr_link");
+      return false;
     }
     await writeBooksAudit(db, {
       clientId,
@@ -453,7 +495,13 @@ export async function runBooksDepreciation(
         totalMinor: prep.pending.reduce((s, a) => s + a.amountMinor, 0),
       },
     });
+    return true;
   });
+
+  if (!linked) {
+    await softDeleteBooksJournalDraft(userId, clientId, journal.id).catch(() => undefined);
+    throw new BooksError("depreciation_run_in_progress", "conflict");
+  }
 
   return {
     journalEntryId: journal.id,
@@ -478,21 +526,16 @@ export async function missingPostedDepreciation(
   const rows = await db.query(
     `${ASSET_SELECT}
      WHERE a.client_id = $1
-       AND a.disposed_at IS NULL
+       AND (a.disposed_at IS NULL OR a.disposed_at >= $3::date)
        AND a.in_service_date <= $2::date`,
-    [clientId, periodEnd],
+    [clientId, periodEnd, periodStart],
   );
   const missing: DepreciationGateAsset[] = [];
   for (const raw of rows.rows) {
     const asset = mapAsset(raw as Record<string, unknown>);
-    const monthIndex = depreciationMonthIndex(asset.inServiceDate, periodStart);
-    const amount = amountForDepreciationMonth(
-      asset.costMinor,
-      asset.residualMinor,
-      asset.lifeMonths,
-      monthIndex,
-    );
-    if (amount == null || amount <= 0) continue;
+    const d = await depreciationDueThisPeriod(db, asset, periodStart);
+    if (!d) continue;
+    const amount = d.amountMinor;
     const run = await db.query(
       `SELECT r.id, e.status
        FROM books_depreciation_runs r
