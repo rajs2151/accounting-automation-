@@ -289,8 +289,30 @@ def _auto_reverse(conn, job: dict) -> None:
     ).fetchone()
     if not orig:
         return
+    # Accrual reversals land on the 1st of the month after the original entry, in the period that
+    # contains that date (never back in the accrual's own period, which would cancel it out).
+    reverse_on = p.get("reverseOn")
+    if reverse_on:
+        reverse_on = date.fromisoformat(str(reverse_on)[:10])
+    else:
+        d = orig["entry_date"]
+        if isinstance(d, str):
+            d = date.fromisoformat(d[:10])
+        reverse_on = date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+    period = conn.execute(
+        """
+        SELECT id, status FROM books_periods
+        WHERE client_id = %s AND %s BETWEEN period_start AND period_end
+        ORDER BY period_start DESC LIMIT 1
+        """,
+        (orig["client_id"], reverse_on),
+    ).fetchone()
+    if not period:
+        raise ValueError(f"auto_reverse_no_period:{reverse_on.isoformat()}")
+    if period["status"] == "LOCKED":
+        raise ValueError(f"auto_reverse_period_locked:{reverse_on.isoformat()}")
     rev_id = str(uuid4())
-    today = date.today()
+    today = reverse_on
     conn.execute(
         """
         INSERT INTO books_journal_entries (
@@ -301,7 +323,7 @@ def _auto_reverse(conn, job: dict) -> None:
         (
             rev_id,
             orig["client_id"],
-            orig["period_id"],
+            period["id"],
             f"Auto-reversal of {orig.get('entry_no') or entry_id}",
             today,
             entry_id,

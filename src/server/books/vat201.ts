@@ -124,9 +124,11 @@ export async function generateVat201Draft(
     const lines = await db.query(
       `SELECT a.code AS account, l.vat_treatment AS treatment, l.debit_minor, l.credit_minor,
               d.doc_type, d.place_of_supply, COALESCE(e.reverses_entry_id, e.id) AS base_entry,
-              d.id IS NOT NULL AS linked
+              -- Posted expense vouchers (P3) are purchases too: their input VAT belongs on the return.
+              (d.id IS NOT NULL OR be.voucher_type = 'Expense') AS linked
        FROM books_journal_lines l
        JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_journal_entries be ON be.id = COALESCE(e.reverses_entry_id, e.id)
        JOIN books_accounts a ON a.id = l.account_id
        LEFT JOIN books_documents d
          ON d.journal_entry_id = COALESCE(e.reverses_entry_id, e.id) AND d.client_id = e.client_id

@@ -1397,6 +1397,8 @@ export async function PATCH(request: Request, ctx: Ctx) {
               : body.scheduledFor == null
                 ? null
                 : String(body.scheduledFor),
+          autoReverseNextPeriod:
+            typeof body.autoReverseNextPeriod === "boolean" ? body.autoReverseNextPeriod : undefined,
           lines: Array.isArray(body.lines) ? body.lines : [],
         }),
       );

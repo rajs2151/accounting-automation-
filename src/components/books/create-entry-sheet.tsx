@@ -57,6 +57,8 @@ export type CreateEntryPrefill = {
   voucherType?: string;
   tags?: string[];
   correctsEntryId?: string;
+  /** Draft editing: keep the stored accrual auto-reverse flag. */
+  autoReverseNextPeriod?: boolean;
   lines?: Array<{
     accountId: string;
     debitMinor?: number;
@@ -308,6 +310,12 @@ export function CreateEntrySheet({
 
   useEffect(() => {
     if (!open || !prefill) return;
+    // A prefill (draft edit, correction) starts from a clean template state.
+    setTemplate("blank");
+    setTemplateHint("");
+    setTemplateWarning("");
+    setDismissedVatKeys(new Set());
+    setAutoReverse(Boolean(prefill.autoReverseNextPeriod));
     if (prefill.entryDate) setEntryDate(prefill.entryDate);
     if (prefill.memo) setDescription(prefill.memo);
     if (prefill.reference != null) setReference(prefill.reference);
@@ -611,6 +619,12 @@ export function CreateEntrySheet({
       setSchedule(false);
       setRecurring(false);
       setVatPaymentHint("");
+      // Template choices must not leak into the next entry (e.g. auto-reversing an ordinary journal).
+      setTemplate("blank");
+      setAutoReverse(false);
+      setTemplateHint("");
+      setTemplateWarning("");
+      setDismissedVatKeys(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "create_failed");
     } finally {

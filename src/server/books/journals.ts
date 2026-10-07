@@ -63,6 +63,28 @@ export function assertBooksBalanced(lines: BooksLineInput[]) {
   return result;
 }
 
+/** 1st day of the month after `entryDate` (YYYY-MM-DD) — when an accrual's auto-reversal lands. */
+export function autoReverseDate(entryDate: string): string {
+  const [y, m] = entryDate.slice(0, 10).split("-").map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+}
+
+/**
+ * Queue the auto-reversal for the start of the next month (UAE time). The worker resolves the period
+ * containing that date and fails the job (visible in jobs) if it is missing or locked — never posts
+ * the reversal back into the accrual's own period.
+ */
+async function enqueueAutoReverse(db: PoolClient, clientId: string, entryId: string, entryDate: string, actorUserId?: string) {
+  const reverseOn = autoReverseDate(entryDate);
+  await enqueueBooksJob(
+    db,
+    clientId,
+    "auto_reverse",
+    { entryId, reverseOn, ...(actorUserId ? { actorUserId } : {}) },
+    new Date(`${reverseOn}T00:00:00+04:00`),
+  );
+}
+
 function hashEntry(memo: string, entryDate: string, lines: BooksLineInput[]) {
   return createHash("sha256").update(JSON.stringify({ memo, entryDate, lines })).digest("hex");
 }
@@ -659,13 +681,7 @@ export async function createBooksJournal(
         after: { status: "posted", entryNo, voucherType },
       });
       if (body.autoReverseNextPeriod) {
-        await enqueueBooksJob(
-          db,
-          clientId,
-          "auto_reverse",
-          { entryId: id, actorUserId: userId },
-          new Date(),
-        );
+        await enqueueAutoReverse(db, clientId, id, body.entryDate, userId);
       }
     }
 
@@ -732,7 +748,7 @@ export async function postBooksJournal(userId: string, clientId: string, entryId
       after: { status: "posted", entryNo },
     });
     if (entry.rows[0].auto_reverse_next_period) {
-      await enqueueBooksJob(db, clientId, "auto_reverse", { entryId }, new Date());
+      await enqueueAutoReverse(db, clientId, entryId, String(entry.rows[0].entry_date));
     }
     return { id: entryId, status: "posted", entryNo };
   });
@@ -1099,6 +1115,7 @@ export async function replaceBooksJournalDraft(
     tags?: string[];
     voucherType?: string;
     scheduledFor?: string | null;
+    autoReverseNextPeriod?: boolean;
     lines: BooksLineInput[];
   },
 ) {
@@ -1136,7 +1153,8 @@ export async function replaceBooksJournalDraft(
       `UPDATE books_journal_entries SET
          period_id = $3, memo = $4, note = COALESCE($5, note), reference = COALESCE($6, reference),
          entry_date = $7, content_hash = $8, voucher_type = $9, tags = $10::text[],
-         scheduled_for = $11, status = $12
+         scheduled_for = $11, status = $12,
+         auto_reverse_next_period = COALESCE($13, auto_reverse_next_period)
        WHERE id = $1 AND client_id = $2`,
       [
         entryId,
@@ -1151,6 +1169,7 @@ export async function replaceBooksJournalDraft(
         entryTags,
         scheduleDate,
         nextStatus,
+        body.autoReverseNextPeriod ?? null,
       ],
     );
     await db.query(`DELETE FROM books_journal_lines WHERE entry_id = $1`, [entryId]);
