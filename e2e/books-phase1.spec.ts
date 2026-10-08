@@ -1187,6 +1187,16 @@ test("ING-5a scenario 1: sales tax invoice upload → confirm → approve → jo
   expect(approve.ok(), `approve: ${JSON.stringify(posted)}`).toBeTruthy();
   expect(String(posted.entryNo || "")).toMatch(/^SV-/);
 
+  // ING-5b: Trace tab shows Uploaded → Journal and AR 10,500.00
+  await setSession(context, OMAR);
+  await page.goto(`/books/inbox/${inboxId}`);
+  await expect(page.getByTestId("review-tab-trace")).toBeVisible({ timeout: 15000 });
+  await page.getByTestId("review-tab-trace").click();
+  await expect(page.getByTestId("trace-panel")).toBeVisible();
+  await expect(page.getByTestId("trace-step-uploaded")).toHaveAttribute("data-status", "done");
+  await expect(page.getByTestId("trace-step-journal")).toHaveAttribute("data-status", "done");
+  await expect(page.getByTestId("trace-open-aed")).toContainText("10,500.00");
+
   const admin2 = new pg.Client({
     connectionString:
       process.env.DATABASE_URL_SUPER ||

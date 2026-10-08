@@ -2,7 +2,14 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-5** flow proof + Trace (after ING-4) — **5a in progress** (5b Trace, 5c how-to next)
+- Current task: **ING-5** closed (5a–5c shipped)
+- 2026-10-08: **ING-5c** owner how-to (no migration)
+  - DONE: `docs/how-to/test-your-own-documents.md` (upload → Trace → reports checklist; real files stay in `/real-docs/`)
+- 2026-10-08: **ING-5b** Trace tab + API + CLI (no new db migration; no RLS)
+  - DONE: `src/server/books/trace.ts` + `GET /api/books/trace/:kind/:id` (document|inbox|bank-transaction)
+  - DONE: `TracePanel` on inbox review, document review, bank txn drawer; `npm run trace`
+  - DONE: unit `trace.test.ts`; Playwright Trace assert on scenario 1
+  - Gates: typecheck 0; unit 352p/0f/1s; e2e 11/11
 - 2026-10-08: **ING-5a** flow proof (no new db migration; no RLS)
   - DONE: fixtures `fixtures/extraction/ing5/` (generate.py + pdfs + ground_truth)
   - DONE: worker `test_ing5_fixture_extract.py`; unit `flow-e2e.test.ts` scenarios 1–10 + TB/FS/ageing/VAT/issues tie-outs
@@ -137,8 +144,8 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. **ING-5a–5c** flow e2e + Trace + owner how-to
-2. Owner: real-docs eval rates into STATUS (ING-4 measuring stick)
+1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick); how-to at `docs/how-to/test-your-own-documents.md`
+2. ING-1 follow-up: surface AR/AP control drift on Health
 3. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
@@ -156,6 +163,8 @@
   (not the worker) — tracked as E1d.
 
 ## Log
+- 2026-10-08 | ING-5c | PASS | owner how-to test-your-own-documents.md; ING-5 closed
+- 2026-10-08 | ING-5b | PASS | Trace API/UI/CLI + unit + Playwright; unit 352p e2e 11/11
 - 2026-10-08 | ING-5a | PASS | flow e2e 1–10 + worker extract + Playwright scenario 1; unit 351p pytest 146p e2e 11/11
 - 2026-10-07 | ING-1b | PASS | atomic journal+OI + MONEY-7; pushed feat/books-phase1
 - 2026-10-07 | ING-2 | PASS | extraction wiring + pytest 114; pushed feat/books-phase1; stop before ING-3

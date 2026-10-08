@@ -10,6 +10,7 @@ import { DocumentReviewPanels } from "@/components/books/document-review-panels"
 import { PdfPagePreview } from "@/components/books/pdf-page-preview";
 import { ReviewReadField } from "@/components/books/review-read-field";
 import { StatusBadge } from "@/components/books/status-badge";
+import { TracePanel } from "@/components/books/trace-panel";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { Button } from "@/components/ui/button";
 import {
@@ -231,6 +232,7 @@ export default function InboxReviewPage() {
   );
   const [previewPct, setPreviewPct] = useState(DEFAULT_PREVIEW_PCT);
   const [wideLayout, setWideLayout] = useState(false);
+  const [sideTab, setSideTab] = useState<"fields" | "trace">("fields");
   const splitRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
@@ -896,6 +898,28 @@ export default function InboxReviewPage() {
           data-testid="review-fields-panel"
         >
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+            <Tabs
+              value={sideTab}
+              onValueChange={(v) => setSideTab(v === "trace" ? "trace" : "fields")}
+              data-testid="review-side-tabs"
+            >
+              <TabsList>
+                <TabsTrigger value="fields" data-testid="review-tab-fields">
+                  Fields
+                </TabsTrigger>
+                <TabsTrigger value="trace" data-testid="review-tab-trace">
+                  Trace
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {sideTab === "trace" ? (
+              <TracePanel
+                kind={documentId ? "document" : "inbox"}
+                id={documentId || String(params.id)}
+              />
+            ) : null}
+            {sideTab === "fields" ? (
+              <>
             <ReviewCard title="Party" testId="review-card-party">
               <FieldGroup
                 eyebrow=""
@@ -1155,6 +1179,8 @@ export default function InboxReviewPage() {
                   />
                 </div>
               </details>
+            ) : null}
+              </>
             ) : null}
           </div>
         </div>

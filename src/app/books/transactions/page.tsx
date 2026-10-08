@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { CellAmount } from "@/components/books/cells";
 import { rowOpenProps } from "@/components/books/table-peek";
 import { BooksSideDrawer } from "@/components/books/side-drawer";
+import { TracePanel } from "@/components/books/trace-panel";
 import { StatusBadge } from "@/components/books/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1005,6 +1006,12 @@ function TransactionsInner() {
                 <CellAmount minor={Math.abs(peekRow.amountSignedMinor)} />
               </span>
             </p>
+            <details className="rounded-md border border-border p-3" data-testid="txn-trace-details">
+              <summary className="cursor-pointer text-sm font-semibold">Trace</summary>
+              <div className="mt-3">
+                <TracePanel kind="bank-transaction" id={peekRow.id} />
+              </div>
+            </details>
             {(peekRow.txnType === "customer_receipt" || peekRow.txnType === "supplier_payment") &&
             peekRow.reviewStatus !== "posted" ? (
               <>

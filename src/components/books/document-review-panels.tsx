@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { TracePanel } from "@/components/books/trace-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 
 type Doc = {
@@ -227,6 +229,19 @@ export function DocumentReviewPanels({
 
   return (
     <div className="space-y-4" data-testid="document-review-panels">
+      <Tabs defaultValue="review" data-testid="document-review-tabs">
+        <TabsList>
+          <TabsTrigger value="review" data-testid="document-tab-review">
+            Review
+          </TabsTrigger>
+          <TabsTrigger value="trace" data-testid="document-tab-trace">
+            Trace
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="trace" className="mt-3">
+          <TracePanel kind="document" id={documentId} />
+        </TabsContent>
+        <TabsContent value="review" className="mt-3 space-y-4">
       <section
         className="space-y-2 rounded-lg border border-border p-3"
         data-testid="document-totals-panel"
@@ -453,6 +468,8 @@ export function DocumentReviewPanels({
       ) : doc.status !== "draft" ? (
         <p className="text-sm text-muted-foreground">Status: {doc.status}</p>
       ) : null}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

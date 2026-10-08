@@ -24,6 +24,7 @@ import {
   uploadBooksJournalAttachment,
 } from "@/server/books/attachments";
 import { listBooksAudit } from "@/server/books/audit";
+import { traceBooksBankTransaction, traceBooksDocument } from "@/server/books/trace";
 import {
   booksPeriodRouteAction,
   CloseGatesFailingError,
@@ -676,6 +677,19 @@ export async function GET(request: Request, ctx: Ctx) {
       return NextResponse.json(
         await getBooksInboxReview(session.userId, session.clientId, path[1]),
       );
+    }
+    if (path[0] === "trace" && path.length === 3) {
+      const kind = path[1];
+      const id = path[2];
+      if (kind === "bank-transaction") {
+        return NextResponse.json(
+          await traceBooksBankTransaction(session.userId, session.clientId, id),
+        );
+      }
+      if (kind === "document" || kind === "inbox") {
+        return NextResponse.json(await traceBooksDocument(session.userId, session.clientId, id));
+      }
+      throw new BooksError("invalid_trace_kind", "invalid");
     }
     if (path[0] === "bank-accounts" && path.length === 1) {
       return NextResponse.json(await listBooksBankAccounts(session.userId, session.clientId));
