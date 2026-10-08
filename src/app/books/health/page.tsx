@@ -90,6 +90,12 @@ type HealthPanel = {
     tbDifferenceMinor: number;
     arOverdueMinor: number;
     apOverdueMinor: number;
+    arControlMinor: number;
+    arOpenMinor: number;
+    arControlDriftMinor: number;
+    apControlMinor: number;
+    apOpenMinor: number;
+    apControlDriftMinor: number;
     documentsToReview: number;
     bankNeedsReview: number;
     cashOnHandMinor: number;
@@ -509,6 +515,40 @@ export default function CompanyHealthPage() {
             formula="Sum of closing debits vs credits on the trial balance"
           />
           <MetricCard
+            testId="health-sc-ar-control"
+            title="AR control vs open items"
+            value={
+              sc
+                ? sc.arControlDriftMinor === 0
+                  ? "Balanced"
+                  : `Out by ${formatMinor(Math.abs(sc.arControlDriftMinor))}`
+                : "…"
+            }
+            change={
+              sc
+                ? `Control ${formatMinor(sc.arControlMinor)} · open ${formatMinor(sc.arOpenMinor)}`
+                : "—"
+            }
+            formula="TB 1210 closing (Dr−Cr) minus AR ageing open total"
+          />
+          <MetricCard
+            testId="health-sc-ap-control"
+            title="AP control vs open items"
+            value={
+              sc
+                ? sc.apControlDriftMinor === 0
+                  ? "Balanced"
+                  : `Out by ${formatMinor(Math.abs(sc.apControlDriftMinor))}`
+                : "…"
+            }
+            change={
+              sc
+                ? `Control ${formatMinor(sc.apControlMinor)} · open ${formatMinor(sc.apOpenMinor)}`
+                : "—"
+            }
+            formula="TB 2110 closing (Cr−Dr) minus AP ageing open total"
+          />
+          <MetricCard
             testId="health-sc-ar"
             title="AR overdue"
             value={sc ? formatMinor(sc.arOverdueMinor) : "…"}
@@ -643,6 +683,35 @@ export default function CompanyHealthPage() {
 
       {tab === "debtors" ? (
         <div className="space-y-6" data-testid="health-debtors-panel">
+          {sc && (sc.arControlDriftMinor !== 0 || sc.apControlDriftMinor !== 0) ? (
+            <div
+              className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm"
+              data-testid="health-control-drift-banner"
+            >
+              <div className="font-medium">Control vs open items drift</div>
+              <p className="mt-1 text-muted-foreground">
+                {sc.arControlDriftMinor !== 0
+                  ? `AR out by ${formatMinor(Math.abs(sc.arControlDriftMinor))}. `
+                  : null}
+                {sc.apControlDriftMinor !== 0
+                  ? `AP out by ${formatMinor(Math.abs(sc.apControlDriftMinor))}. `
+                  : null}
+                Check the{" "}
+                <button
+                  type="button"
+                  className="underline-offset-2 hover:underline"
+                  onClick={() => setTab("scorecard")}
+                >
+                  scorecard
+                </button>{" "}
+                or{" "}
+                <Link href="/books/reports/ageing?side=ar" className="underline-offset-2 hover:underline">
+                  ageing
+                </Link>
+                .
+              </p>
+            </div>
+          ) : null}
           <TrackerTable
             testId="health-ar-tracker"
             title="Receivables"

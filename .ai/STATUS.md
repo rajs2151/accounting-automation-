@@ -2,7 +2,14 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-5** closed (5a–5c shipped)
+- Current task: **ING-1c** closed (AR/AP control drift on Company Health)
+- 2026-10-08: **ING-1c** AR/AP control vs open-items on Health (no migration; no RLS)
+  - DONE: `controlVsOpenItemsDrift` helper; `listBooksIssues` refactored to share it
+  - DONE: Health scorecard fields + critical insights (`ar_control_vs_open_items` / `ap_control_vs_open_items`)
+  - DONE: scorecard cards + Debtors `health-control-drift-banner`
+  - DONE: unit `control-drift.test.ts` + insights coverage
+  - Gates: typecheck 0; unit 354p/0f/1s; e2e 11/11
+- 2026-10-08: **ING-5** closed (5a–5c shipped)
 - 2026-10-08: **ING-5c** owner how-to (no migration)
   - DONE: `docs/how-to/test-your-own-documents.md` (upload → Trace → reports checklist; real files stay in `/real-docs/`)
 - 2026-10-08: **ING-5b** Trace tab + API + CLI (no new db migration; no RLS)
@@ -69,14 +76,14 @@
   - DONE: page cap `BOOKS_EXTRACT_MAX_PAGES`; OCR model preload on worker start
   - DONE: pytest `test_ingestion_ing2.py` covers PNG mock OCR, scanned PDF fields, XLSX no OCR, card PDF, failed→inbox failed, stuck requeue; TS `books-upload.test.ts` covers >25 MB
   - NOT DONE: ING-3 upload + review UI (owner gate — do not start until review)
-  - NOT DONE: surface AR/AP control drift on Health (ING-1 follow-up still queued)
+  - DONE: surface AR/AP control drift on Health (ING-1c)
   - NOT DONE: Textract / external OCR-LLM (blocked until security PASS)
 - 2026-10-07: **ING-1 money correctness** on feat/books-phase1 (no new db migration)
   - Gates: eslint src+e2e 0 errors / 7 warnings (pre-existing); next build exit 0; local e2e 10/10; unit 341p/0f/1s; typecheck 0
   - DONE: exchange rate required on bank, receipt/payment and inbox postings; no 1.0 fallback for foreign currency (AED uses identity scale); bank recon still compares account-currency/original amounts (correct once journals store original + AED)
   - DONE: reverse-charge open item equals the amount credited to 2110 (net, not gross)
   - DONE: control accounts blocked on bank post without open-item settlement (staging to 1210/2110 allowed for match; categorise-only / bare category JV throws `control_account_requires_open_item`; manual journals throw `control_account_forbidden`)
-  - DONE: control vs open-items check on the issues badge (and month checklist); NOT on the Health page itself
+  - DONE: control vs open-items check on the issues badge (and month checklist); also on Health (ING-1c)
   - DONE: VAT 201 unlinked VAT counted gross (settlement Dr 2210 ignored); fails VAT control close gate when boxes ≠ control movement
   - DONE: inbox confirm carries FX rate + due date; missing issue date errors (no silent "today")
   - DONE (completed in ING-1b): journal and open item written in one transaction
@@ -145,9 +152,8 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick); how-to at `docs/how-to/test-your-own-documents.md`
-2. ING-1 follow-up: surface AR/AP control drift on Health
-3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
-4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
+2. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
+3. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -162,6 +168,7 @@
   (not the worker) — tracked as E1d.
 
 ## Log
+- 2026-10-08 | ING-1c | PASS | AR/AP control drift on Health scorecard + insights; unit 354p e2e 11/11
 - 2026-10-08 | ING-5c | PASS | owner how-to test-your-own-documents.md; ING-5 closed
 - 2026-10-08 | ING-5b | PASS | Trace API/UI/CLI + unit + Playwright; unit 352p e2e 11/11
 - 2026-10-08 | ING-5a | PASS | flow e2e 1–10 + worker extract + Playwright scenario 1; unit 351p pytest 146p e2e 11/11

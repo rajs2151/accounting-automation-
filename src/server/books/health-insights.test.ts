@@ -58,3 +58,22 @@ test("P7-3: no insights when metrics are healthy", () => {
   });
   assert.equal(insights.length, 0);
 });
+
+test("ING-1c: control drift emits critical AR/AP insights", () => {
+  const insights = buildHealthInsights({
+    runwayMonthsMilli: null,
+    dsoDays: 30,
+    arOverdueMinor: 0,
+    overdueByParty: [],
+    costMovers: [],
+    arControlDriftMinor: 210_00,
+    apControlDriftMinor: -50_00,
+  });
+  const ids = insights.map((i) => i.id);
+  assert.ok(ids.includes("ar_control_vs_open_items"));
+  assert.ok(ids.includes("ap_control_vs_open_items"));
+  assert.equal(insights.find((i) => i.id === "ar_control_vs_open_items")!.severity, "critical");
+  assert.equal(insights.find((i) => i.id === "ap_control_vs_open_items")!.severity, "critical");
+  assert.match(insights.find((i) => i.id === "ar_control_vs_open_items")!.body, /21000/);
+  assert.match(insights.find((i) => i.id === "ap_control_vs_open_items")!.body, /-5000/);
+});

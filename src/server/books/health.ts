@@ -15,6 +15,7 @@ import {
   booksProfitAndLoss,
   type BsColumn,
 } from "@/server/books/financial-statements";
+import { controlVsOpenItemsDrift } from "@/server/books/control-drift";
 import {
   buildHealthInsights,
   momPctChange,
@@ -545,6 +546,12 @@ export type HealthScorecard = {
   tbDifferenceMinor: number;
   arOverdueMinor: number;
   apOverdueMinor: number;
+  arControlMinor: number;
+  arOpenMinor: number;
+  arControlDriftMinor: number;
+  apControlMinor: number;
+  apOpenMinor: number;
+  apControlDriftMinor: number;
   documentsToReview: number;
   bankNeedsReview: number;
   cashOnHandMinor: number;
@@ -621,12 +628,13 @@ export async function booksHealthPanel(
   const period = periods[idx];
   const window = periods.slice(Math.max(0, idx - 5), idx + 1); // up to 6 months for charts
 
-  const [summary, debtors, close, month, tb] = await Promise.all([
+  const [summary, debtors, close, month, tb, controlDrift] = await Promise.all([
     booksHealthSummary(userId, clientId, periodId),
     booksHealthDebtorsCreditors(userId, clientId, periodId),
     getBooksCloseChecklist(userId, clientId, periodId),
     getBooksMonthChecklist(userId, clientId, { periodId }),
     booksTrialBalance(userId, clientId, periodId, { includeZeroBalances: true }),
+    controlVsOpenItemsDrift(userId, clientId, periodId),
   ]);
 
   const scorecard: HealthScorecard = {
@@ -642,6 +650,12 @@ export async function booksHealthPanel(
     tbDifferenceMinor: Math.trunc(tb.totalClosingDebit) - Math.trunc(tb.totalClosingCredit),
     arOverdueMinor: debtors.arOverdueMinor,
     apOverdueMinor: debtors.apOverdueMinor,
+    arControlMinor: controlDrift.ar.controlMinor,
+    arOpenMinor: controlDrift.ar.openMinor,
+    arControlDriftMinor: controlDrift.ar.driftMinor,
+    apControlMinor: controlDrift.ap.controlMinor,
+    apOpenMinor: controlDrift.ap.openMinor,
+    apControlDriftMinor: controlDrift.ap.driftMinor,
     documentsToReview: month.documentsToReview.count,
     bankNeedsReview: month.bankLines.needsReview,
     cashOnHandMinor: summary.cashOnHandMinor,
@@ -740,6 +754,8 @@ export async function booksHealthPanel(
     arOverdueMinor: debtors.arOverdueMinor,
     overdueByParty: [...overdueByParty.values()],
     costMovers: topCostMovers,
+    arControlDriftMinor: controlDrift.ar.driftMinor,
+    apControlDriftMinor: controlDrift.ap.driftMinor,
   });
 
   return {

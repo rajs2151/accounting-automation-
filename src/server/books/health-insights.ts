@@ -34,6 +34,10 @@ export type InsightInput = {
   arOverdueMinor: number;
   overdueByParty: OverduePartyShare[];
   costMovers: CostMover[];
+  /** TB 1210 closing − AR open items (fils). Non-zero → critical. */
+  arControlDriftMinor?: number;
+  /** TB 2110 closing − AP open items (fils). Non-zero → critical. */
+  apControlDriftMinor?: number;
 };
 
 const RUNWAY_WARN_MONTHS_MILLI = 6_000; // 6.000 months
@@ -72,6 +76,34 @@ export function overdueConcentration(
 
 export function buildHealthInsights(input: InsightInput): HealthInsight[] {
   const out: HealthInsight[] = [];
+
+  const arDrift = Math.trunc(input.arControlDriftMinor ?? 0);
+  if (arDrift !== 0) {
+    out.push({
+      id: "ar_control_vs_open_items",
+      severity: "critical",
+      title: "AR control vs open items",
+      body: `Trade receivables control (1210) differs from open AR items by ${arDrift} fils (control − open).`,
+      actions: [
+        { label: "AR ageing", href: "/books/reports/ageing?side=ar" },
+        { label: "Journals", href: "/books/journals" },
+      ],
+    });
+  }
+
+  const apDrift = Math.trunc(input.apControlDriftMinor ?? 0);
+  if (apDrift !== 0) {
+    out.push({
+      id: "ap_control_vs_open_items",
+      severity: "critical",
+      title: "AP control vs open items",
+      body: `Trade payables control (2110) differs from open AP items by ${apDrift} fils (control − open).`,
+      actions: [
+        { label: "AP ageing", href: "/books/reports/ageing?side=ap" },
+        { label: "Journals", href: "/books/journals" },
+      ],
+    });
+  }
 
   if (input.runwayMonthsMilli != null && input.runwayMonthsMilli < RUNWAY_WARN_MONTHS_MILLI) {
     const months = (input.runwayMonthsMilli / 1000).toFixed(1);
