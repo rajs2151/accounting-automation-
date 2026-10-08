@@ -440,6 +440,34 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                 flags.append("duplicate_identity")
             flags.append(f"identity:{key}")
 
+    # Cross-checks (Addendum A §4): invoice math / TRN; failed → cap confidence + Needs review.
+    if doc_type in {
+        "sales_invoice",
+        "purchase_bill",
+        "credit_note",
+        "debit_note",
+        "receipt",
+        "tax_invoice",
+    } or any(k in fields for k in ("net", "gross", "grand_total", "line_items")):
+        try:
+            from daftar.extraction.checks import apply_invoice_checks
+
+            apply_invoice_checks(fields, flags)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("invoice_checks_failed: %s", exc)
+
+    check_failed = any(
+        str(f).startswith(
+            (
+                "lines_ne_subtotal:expected=",
+                "totals_mismatch:expected=",
+                "vat_not_5pct:expected=",
+                "trn_invalid:expected=",
+            )
+        )
+        for f in flags
+    )
+
     status = "needs_review"
     if classification.needs_user_pick or class_conf < 0.55 or doc_type is None:
         status = "needs_review"
@@ -449,6 +477,8 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
     elif "duplicate_identity" in flags:
         status = "needs_review"
         flags.append("duplicate")
+    elif check_failed:
+        status = "needs_review"
     else:
         status = "ready" if class_conf >= 0.8 and not ocr_used else "needs_review"
 
@@ -600,6 +630,12 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     closing_val = int(closing)
                     diff = _balance_diff(opening_val, closing_val, acct_lines)
                     continuity = _running_balance_continuity(opening_val, acct_lines)
+                    try:
+                        from daftar.extraction.checks import check_statement_account
+
+                        check_statement_account(acct, flags=stmt_flags)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("statement_checks_failed: %s", exc)
                     if continuity is not None:
                         stmt_flags.append("running_balance_break")
                         # sort_index (0-based) identifies the exact row; keep description too.
@@ -613,12 +649,20 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                         if txn_date:
                             stmt_flags.append(f"running_balance_break_date:{txn_date}")
                         stmt_flags.append(f"running_balance_diff:{continuity['diff']}")
+                        # expected vs read for review UI
+                        stmt_flags.append(
+                            f"running_balance_break:expected={continuity['expected']}|got={continuity['got']}"
+                        )
                         stmt_status = "needs_review"
                     elif attribution_ambiguous:
                         # Owner decision: never ready / balance_ok while ambiguous.
                         if diff != 0:
                             stmt_flags.append("closing_mismatch")
                             stmt_flags.append(f"balance_diff:{diff}")
+                            # diff = computed_closing - printed_closing
+                            stmt_flags.append(
+                                f"closing_mismatch:expected={closing_val}|got={closing_val + diff}"
+                            )
                         stmt_status = "needs_review"
                     elif diff == 0:
                         stmt_flags.append("balance_ok")
@@ -626,6 +670,9 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     else:
                         stmt_flags.append("closing_mismatch")
                         stmt_flags.append(f"balance_diff:{diff}")
+                        stmt_flags.append(
+                            f"closing_mismatch:expected={closing_val}|got={closing_val + diff}"
+                        )
                         stmt_status = "needs_review"
 
                 # Parse warnings (unparsed / ambiguous columns) force review, never ready.

@@ -2,8 +2,13 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-4** extraction accuracy (real-docs eval) — in progress
+- Current task: **ING-4** extraction accuracy (real-docs eval) — **4a–4d shipped**; owner real-docs eval pending
 - 2026-10-08: **ING-4 Gate 0** worker pytest with S3 stand-in: **120 passed**, 0 failed (6 warnings)
+- 2026-10-08: **ING-4d** checks + confidence + review expected-vs-read (no new db migration; no RLS)
+  - DONE: `extraction/checks.py` invoice math / VAT 5% / TRN / statement balance + IBAN; fail caps conf ≤0.79
+  - DONE: flags `code:expected=…|got=…`; review badges via `validation-flag-labels` (“expected X, read Y”)
+  - DONE: pytest `test_ing4d_checks.py` + TS label tests
+  - Owner: run `npm run extraction:eval -- --real-docs --compare`; paste layout_tag rates + weak tags into STATUS (no real values)
 - 2026-10-08: **ING-4c** bank/card/XLSX pipeline (no new db migration; no RLS)
   - DONE: IBAN mod-97 (`iban_check`); skip BCF/page totals/repeated headers; signed amounts; multiline desc
   - DONE: XLSX deeper header scan + Arabic-Indic cells; `card_statement_pdf` partial parse + `card_pdf_partial` flag
@@ -125,7 +130,7 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. **ING-4d** checks + confidence + review expected-vs-read (after 4c)
+1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick)
 2. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
