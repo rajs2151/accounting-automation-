@@ -1,0 +1,36 @@
+{
+  "doc_type": "bank_statement",
+  "route": "text",
+  "iban": "AE070331234567890123456",
+  "currency": "AED",
+  "period_from": "2026-05-01",
+  "period_to": "2026-05-31",
+  "opening_minor": 5000000,
+  "closing_minor": 5844750,
+  "lines": [
+    {
+      "txn_date": "2026-05-20",
+      "description": "CLIENT RECEIPT INV-ING5-001",
+      "debit_minor": 0,
+      "credit_minor": 1050000
+    },
+    {
+      "txn_date": "2026-05-21",
+      "description": "SUPPLIER PAYMENT BILL-ING5-002",
+      "debit_minor": 210000,
+      "credit_minor": 0
+    },
+    {
+      "txn_date": "2026-05-22",
+      "description": "BANK CHARGE",
+      "debit_minor": 5250,
+      "credit_minor": 0
+    },
+    {
+      "txn_date": "2026-05-23",
+      "description": "UNMATCHED CREDIT",
+      "debit_minor": 0,
+      "credit_minor": 10000
+    }
+  ]
+}

@@ -1078,3 +1078,139 @@ test("P4-5: reverse posted journal requires reason; original immutable status=re
   await expect(page.getByTestId("ledger-page-chrome")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("create-journal-open")).toBeVisible();
 });
+
+test("ING-5a scenario 1: sales tax invoice upload → confirm → approve → journal fils", async ({
+  page,
+  context,
+}) => {
+  const ing5Pdf = path.join(
+    process.cwd(),
+    "fixtures",
+    "extraction",
+    "ing5",
+    "pdfs",
+    "sales_tax_invoice.pdf",
+  );
+  test.skip(!fs.existsSync(ing5Pdf), "ING-5 fixtures missing");
+
+  const periods = await page.request.get("/api/books/periods");
+  const periodRows = (await periods.json()) as Array<{ id: string; label: string }>;
+  const may = periodRows.find((p) => /May 2026/i.test(p.label));
+  expect(may?.id, "May 2026 period required").toBeTruthy();
+
+  const base = fs.readFileSync(ing5Pdf);
+  const bytes = Buffer.concat([base, Buffer.from(`\n%ing5-e2e-${Date.now()}-${randomUUID()}\n`)]);
+  const upload = await page.request.post("/api/books/inbox/upload", {
+    multipart: {
+      files: {
+        name: "sales_tax_invoice.pdf",
+        mimeType: "application/pdf",
+        buffer: bytes,
+      },
+      intendedType: "sales_invoice",
+    },
+  });
+  const uploaded = await upload.json();
+  expect(upload.ok(), `upload: ${JSON.stringify(uploaded)}`).toBeTruthy();
+  const inboxId = uploaded.results?.[0]?.inboxItemId as string;
+  const fileId = uploaded.results?.[0]?.fileId as string;
+  expect(inboxId).toBeTruthy();
+
+  const admin = new pg.Client({
+    connectionString:
+      process.env.DATABASE_URL_SUPER ||
+      "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+  });
+  await admin.connect();
+  try {
+    const extractionId = randomUUID();
+    const fields = {
+      invoice_no: { value: "INV-ING5-001", confidence: 0.95, status: "ok", source: null },
+      document_number: { value: "INV-ING5-001", confidence: 0.95, status: "ok", source: null },
+      invoice_date: { value: "2026-05-15", confidence: 0.95, status: "ok", source: null },
+      document_date: { value: "2026-05-15", confidence: 0.95, status: "ok", source: null },
+      currency: { value: "AED", confidence: 0.99, status: "ok", source: null },
+      supplier_trn: { value: "100000000000001", confidence: 0.95, status: "ok", source: null },
+      net: { value: 1_000_000, confidence: 0.95, status: "ok", source: null },
+      vat: { value: 50_000, confidence: 0.95, status: "ok", source: null },
+      gross: { value: 1_050_000, confidence: 0.95, status: "ok", source: null },
+      grand_total: { value: 1_050_000, confidence: 0.95, status: "ok", source: null },
+      _line_items: [
+        {
+          description: "Consulting",
+          vatCode: "SR",
+          vat_code: "SR",
+          netMinor: 1_000_000,
+          vatMinor: 50_000,
+          amount_minor: 1_050_000,
+        },
+      ],
+    };
+    await admin.query(
+      `INSERT INTO books_extractions (
+         id, client_id, file_id, inbox_item_id, doc_type, status,
+         fields_json, raw_text, word_boxes, validation_flags, extractor_version
+       ) VALUES ($1,$2,$3,$4,'sales_invoice','needs_review',$5::jsonb,'','[]'::jsonb,'[]'::jsonb,'ing5-e2e')`,
+      [extractionId, DESERT, fileId, inboxId, JSON.stringify(fields)],
+    );
+    await admin.query(
+      `UPDATE books_inbox_items
+       SET status = 'needs_review', detected_type = 'sales_invoice', updated_at = now()
+       WHERE id = $1`,
+      [inboxId],
+    );
+  } finally {
+    await admin.end();
+  }
+
+  await page.goto(`/books/inbox/${inboxId}`);
+  await expect(page.getByTestId("review-split-view")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("review-field-invoice_no")).toContainText("INV-ING5-001");
+  await expect(page.getByTestId("review-field-grand_total")).toContainText("10,500.00");
+
+  const confirm = await page.request.post(`/api/books/inbox/${inboxId}/confirm`, {
+    data: {
+      partyId: CUSTOMER,
+      periodId: may!.id,
+      docType: "sales_invoice",
+      issueDate: "2026-05-15",
+    },
+  });
+  const confirmed = await confirm.json();
+  expect(confirm.ok(), `confirm: ${JSON.stringify(confirmed)}`).toBeTruthy();
+  const docId = String(confirmed.documentId || confirmed.id);
+  expect(docId).toBeTruthy();
+
+  await setSession(context, LAYLA);
+  const approve = await page.request.post(`/api/books/documents/${docId}/approve`, { data: {} });
+  const posted = await approve.json();
+  expect(approve.ok(), `approve: ${JSON.stringify(posted)}`).toBeTruthy();
+  expect(String(posted.entryNo || "")).toMatch(/^SV-/);
+
+  const admin2 = new pg.Client({
+    connectionString:
+      process.env.DATABASE_URL_SUPER ||
+      "postgresql://daftar:daftar-local-only@127.0.0.1:5432/daftar_e2e",
+  });
+  await admin2.connect();
+  try {
+    const jl = await admin2.query(
+      `SELECT a.code, l.debit_minor, l.credit_minor
+       FROM books_journal_lines l
+       JOIN books_accounts a ON a.id = l.account_id
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_documents d ON d.journal_entry_id = e.id
+       WHERE d.id = $1 AND e.status = 'posted'
+       ORDER BY a.code`,
+      [docId],
+    );
+    const byCode = Object.fromEntries(
+      jl.rows.map((r) => [r.code, { dr: Number(r.debit_minor), cr: Number(r.credit_minor) }]),
+    );
+    expect(byCode["1210"]?.dr).toBe(1_050_000);
+    expect(byCode["4100"]?.cr).toBe(1_000_000);
+    expect(byCode["2210"]?.cr).toBe(50_000);
+  } finally {
+    await admin2.end();
+  }
+});

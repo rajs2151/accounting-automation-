@@ -2,7 +2,14 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-4** extraction accuracy (real-docs eval) — **4a–4d shipped**; owner real-docs eval pending
+- Current task: **ING-5** flow proof + Trace (after ING-4) — **5a in progress** (5b Trace, 5c how-to next)
+- 2026-10-08: **ING-5a** flow proof (no new db migration; no RLS)
+  - DONE: fixtures `fixtures/extraction/ing5/` (generate.py + pdfs + ground_truth)
+  - DONE: worker `test_ing5_fixture_extract.py`; unit `flow-e2e.test.ts` scenarios 1–10 + TB/FS/ageing/VAT/issues tie-outs
+  - DONE: Playwright scenario 1 in `e2e/books-phase1.spec.ts` (upload → seed → confirm → Layla approve → exact fils)
+  - Gates: typecheck 0; unit 351p/0f/1s; pytest 146p; e2e 11/11
+- 2026-10-08: **ING-5 Gate 0** local DB migrations applied on compose `daftar` (db/35–61 incl. `books_bank_transactions` + `books_fx_rates`); Transactions page unblocked
+- 2026-10-08: **ING-4** extraction accuracy — **4a–4d shipped**; owner real-docs eval pending
 - 2026-10-08: **ING-4 Gate 0** worker pytest with S3 stand-in: **120 passed**, 0 failed (6 warnings)
 - 2026-10-08: **ING-4d** checks + confidence + review expected-vs-read (no new db migration; no RLS)
   - DONE: `extraction/checks.py` invoice math / VAT 5% / TRN / statement balance + IBAN; fail caps conf ≤0.79
@@ -130,8 +137,9 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick)
-2. ING-1 follow-up: surface AR/AP control drift on Health
+1. **ING-5a–5c** flow e2e + Trace + owner how-to
+2. Owner: real-docs eval rates into STATUS (ING-4 measuring stick)
+3. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
@@ -148,6 +156,7 @@
   (not the worker) — tracked as E1d.
 
 ## Log
+- 2026-10-08 | ING-5a | PASS | flow e2e 1–10 + worker extract + Playwright scenario 1; unit 351p pytest 146p e2e 11/11
 - 2026-10-07 | ING-1b | PASS | atomic journal+OI + MONEY-7; pushed feat/books-phase1
 - 2026-10-07 | ING-2 | PASS | extraction wiring + pytest 114; pushed feat/books-phase1; stop before ING-3
 - 2026-10-07 | ING-2 review (stream B) | PASS | ING-1b atomic post OK (same pattern as settlements). Reran: unit 340p/0f/7s, pytest 113p + 4 OCR tests that need docTR/EasyOCR weight downloads (blocked in cloud; same 4 fail before ING-2). Fixed: invoice with the company on neither side was classified sales_invoice (owner screenshot) → now purchase_bill at 0.5 + `company_not_on_invoice` flag ("Your company isn't on this invoice — confirm sale or purchase"); `.gitignore` /real-docs/ /lab-out/. Still open from the ING-2 brief: one text-layer rule (extract.py vs pdf_words.py); review-page fallbacks (no file name as line description, empty fields not 0.00) → do in ING-3; `scripts/lab/extract-one` diagnostic for owner's real files.

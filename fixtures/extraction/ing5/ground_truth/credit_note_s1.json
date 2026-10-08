@@ -1,0 +1,10 @@
+{
+  "route": "text",
+  "doc_type": "credit_note",
+  "invoice_no": "CN-ING5-001",
+  "invoice_date": "2026-05-20",
+  "currency": "AED",
+  "net": 100000,
+  "vat": 5000,
+  "gross": 105000
+}
