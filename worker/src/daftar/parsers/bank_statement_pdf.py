@@ -28,6 +28,12 @@ LINE_DC_RE = re.compile(
     r"(?:\s+([\d,]+\.\d{2}))?\s*$",
     re.I,
 )
+# date + desc + signed single amount [+ optional balance]
+LINE_SIGNED_RE = re.compile(
+    r"^(\d{1,2}/\d{1,2}/\d{4})\s+(.+?)\s+(\(?-?[\d,]+\.\d{2}\)?)"
+    r"(?:\s+([\d,]+\.\d{2}))?\s*$",
+    re.I,
+)
 OPENING_RE = re.compile(r"opening\s+balance\s*[:：]?\s*([\d,]+\.\d{2})", re.I)
 CLOSING_RE = re.compile(r"closing\s+balance\s*[:：]?\s*([\d,]+\.\d{2})", re.I)
 BANK_RE = re.compile(r"Bank\s*:\s*([^\n]+)", re.I)
@@ -38,6 +44,17 @@ PERIOD_RE = re.compile(
 CURRENCY_RE = re.compile(r"\b(AED|USD|EUR|GBP|SAR)\b", re.I)
 # Dated line start — used to flag rows that look like transactions but match no pattern.
 DATE_LINE_RE = re.compile(r"^(\d{1,2}/\d{1,2}/\d{4})\b")
+# Noise rows: brought/carried forward, page totals, repeated column headers.
+SKIP_LINE_RE = re.compile(
+    r"(?i)^\s*("
+    r"B/?C/?F|B/?F|C/?F|"
+    r"balance\s+brought\s+forward|balance\s+carried\s+forward|"
+    r"brought\s+forward|carried\s+forward|"
+    r"page\s+total|total\s+for\s+page|sub\s*total|"
+    r"date\s+description\s+(debit|credit|amount)|"
+    r"txn\s*date|transaction\s+date"
+    r")\b"
+)
 
 
 def _pdf_pages(content: bytes) -> tuple[str, list[dict[str, Any]], list[tuple[int, str]]]:
@@ -66,8 +83,10 @@ def _minor(raw: str | None) -> int | None:
 
 def _match_txn_line(raw: str) -> dict[str, Any] | None:
     """Parse one transaction line; support CR/DR and debit/credit columns + optional balance."""
-    s = (raw or "").strip()
-    if not s:
+    from daftar.textnorm import arabic_indic_to_ascii
+
+    s = arabic_indic_to_ascii(raw or "").strip()
+    if not s or SKIP_LINE_RE.match(s):
         return None
     m = LINE_CRDR_RE.match(s)
     if m:
@@ -114,6 +133,28 @@ def _match_txn_line(raw: str) -> dict[str, Any] | None:
             "credit_minor": credit,
             "running_balance_minor": printed_bal,
         }
+    m = LINE_SIGNED_RE.match(s)
+    if m:
+        # Avoid treating CR/DR lines twice — already handled above.
+        desc = m.group(2).strip()
+        if re.search(r"\b(CR|DR)\b", desc, re.I):
+            return None
+        amount = _minor(m.group(3))
+        if amount is None or amount == 0:
+            return None
+        printed_bal = _minor(m.group(4)) if m.group(4) else None
+        is_debit = amount < 0 or str(m.group(3)).strip().startswith("(")
+        abs_amt = abs(amount)
+        return {
+            "date_raw": m.group(1),
+            "description": desc,
+            "amount_raw": m.group(3),
+            "amount_minor": abs_amt,
+            "debit": is_debit,
+            "debit_minor": abs_amt if is_debit else 0,
+            "credit_minor": 0 if is_debit else abs_amt,
+            "running_balance_minor": printed_bal,
+        }
     return None
 
 
@@ -144,17 +185,38 @@ def _parse_lines(
     word_boxes: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Extract transaction lines + parse warnings. Printed balance is read, never computed."""
+    from daftar.textnorm import arabic_indic_to_ascii
+
     lines: list[dict[str, Any]] = []
     parse_flags: list[str] = []
+    pending_desc: str | None = None
     for line_no, raw in enumerate((text or "").splitlines(), start=1):
-        s = (raw or "").strip()
+        s = arabic_indic_to_ascii(raw or "").strip()
         if not s:
+            continue
+        if SKIP_LINE_RE.match(s):
             continue
         matched = _match_txn_line(s)
         if matched and matched.get("ambiguous_columns"):
             parse_flags.append(f"ambiguous_line_columns:{line_no}")
             continue
         if not matched:
+            # Continuation description (no date) attaches to the previous txn —
+            # but never swallow opening/closing/balance summary or headers.
+            is_meta = bool(
+                OPENING_RE.search(s)
+                or CLOSING_RE.search(s)
+                or SKIP_LINE_RE.match(s)
+                or re.match(r"(?i)^(bank|iban|period|currency|account)\b", s)
+            )
+            if (
+                pending_desc is not None
+                and lines
+                and not DATE_LINE_RE.match(s)
+                and not is_meta
+            ):
+                lines[-1]["description"] = (lines[-1]["description"] + " " + s).strip()
+                continue
             # Dated but unmatched → never silently drop.
             if DATE_LINE_RE.match(s):
                 parse_flags.append(f"unparsed_line:{line_no}")
@@ -181,6 +243,7 @@ def _parse_lines(
                 "source_bbox": source.get("bbox") if source else None,
             }
         )
+        pending_desc = description
     return lines, parse_flags
 
 
@@ -238,7 +301,10 @@ def parse_bank_statement_text(
     word_boxes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Split a statement PDF/text into one account dict per IBAN (or one if none)."""
-    text = text or ""
+    from daftar.iban_check import is_valid_iban
+    from daftar.textnorm import arabic_indic_to_ascii
+
+    text = arabic_indic_to_ascii(text or "")
     header = _header_bits(text)
     bank_name = header["bank_name"]
     period_from = header["period_from"]
@@ -249,8 +315,13 @@ def parse_bank_statement_text(
     unique: list[str] = []
     first_index: dict[str, int] = {}
     first_end: dict[str, int] = {}
+    iban_flags: list[str] = []
     for m in iban_matches:
         iban = m.group(1).upper()
+        if not is_valid_iban(iban):
+            if "iban_checksum_invalid" not in iban_flags:
+                iban_flags.append("iban_checksum_invalid")
+            continue
         if iban not in first_index:
             first_index[iban] = m.start()
             first_end[iban] = m.end()
@@ -261,6 +332,7 @@ def parse_bank_statement_text(
     opening = _minor(opening_m.group(1)) if opening_m else None
     closing = _minor(closing_m.group(1)) if closing_m else None
     shared_lines, shared_flags = _parse_lines(text, word_boxes)
+    shared_flags = list(dict.fromkeys([*iban_flags, *shared_flags]))
     shared_balances_found = opening is not None and closing is not None
 
     if not unique:
@@ -324,7 +396,7 @@ def parse_bank_statement_text(
                     closing_minor=c,
                     lines=sec_lines,
                     balances_found=balances_found,
-                    parse_flags=sec_flags,
+                    parse_flags=list(dict.fromkeys([*iban_flags, *sec_flags])),
                 )
             )
         elif iban == shared_owner:

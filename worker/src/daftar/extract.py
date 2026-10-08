@@ -133,10 +133,20 @@ def _extract_xls(content: bytes) -> Extraction:
     return _from_grid(grid, "xlsx")
 
 
+_XLSX_SKIP_ROW = re.compile(
+    r"(?i)^\s*(B/?C/?F|balance\s+brought\s+forward|balance\s+carried\s+forward|"
+    r"page\s+total|total\s+for\s+page)\b"
+)
+
+
 def _from_grid(grid: list[list[str]], kind: str) -> Extraction:
-    lines = [",".join(cell for cell in row) for row in grid]
+    from daftar.textnorm import arabic_indic_to_ascii
+
+    # Normalize Arabic-Indic digits in every cell up front (Excel UAE exports).
+    grid = [[arabic_indic_to_ascii(cell) for cell in row] for row in grid]
     header_at = None
-    for index, row in enumerate(grid[:40]):
+    # Scan deeper title rows (layout_tag xlsx_header_row_5 etc.).
+    for index, row in enumerate(grid[:60]):
         if _row_is_header(row):
             header_at = index
             break
@@ -153,10 +163,18 @@ def _from_grid(grid: list[list[str]], kind: str) -> Extraction:
         if len(row) >= 2 and row[0] and row[1]:
             _assign_meta(meta, row[0], row[1])
     headers = [cell.strip() for cell in grid[header_at]]
+    header_fingerprint = [h.casefold() for h in headers if h]
     rows = []
     number = 0
     for raw in grid[header_at + 1 :]:
         if not any(cell.strip() for cell in raw):
+            continue
+        joined = " ".join(cell.strip() for cell in raw if cell and cell.strip())
+        if _XLSX_SKIP_ROW.match(joined):
+            continue
+        # Repeated header row mid-sheet.
+        raw_fp = [c.strip().casefold() for c in raw if c and c.strip()]
+        if raw_fp and raw_fp == header_fingerprint:
             continue
         number += 1
         cells = {}

@@ -53,6 +53,7 @@ def register_builtin_parsers() -> list[DocumentParser]:
     from daftar.parsers.bank_uae_b import BankUaeBParser
     from daftar.parsers.bank_statement_pdf import BankStatementPdfParser
     from daftar.parsers.card_generic import CardGenericParser
+    from daftar.parsers.card_statement_pdf import CardStatementPdfParser
     from daftar.parsers.stripe_balance_history import StripeBalanceHistoryParser
     from daftar.parsers.gateway_pdf_generic import GatewayPdfGenericParser
 
@@ -61,6 +62,7 @@ def register_builtin_parsers() -> list[DocumentParser]:
         BankStatementPdfParser(),
         BankUaeAParser(),
         BankUaeBParser(),
+        CardStatementPdfParser(),
         CardGenericParser(),
         GatewayPdfGenericParser(),
         InvoiceGenericParser(),
