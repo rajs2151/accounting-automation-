@@ -1,21 +1,42 @@
-# Extraction fixtures (synthetic only)
+# Extraction fixtures and real-docs eval
 
-Addendum A §7:
+## Real documents (owner — ING-4 acceptance)
 
-- ≥10 text PDFs (varied invoice/bill layouts) → `pdfs/invoice_01.pdf` … `invoice_10.pdf`
-- ≥5 scanned/photographed images → `scans/scan_01.png` … `scan_05.png` (+ `arabic_invoice.png`, skewed phone `phone_skew_01.jpg`)
-- 3 bank statement layouts (multi-IBAN, bilingual) → `pdfs/bank_*.pdf`
-- XLSX bank statement → `xlsx/bank_statement_a.xlsx`
-- 1 card statement → `pdfs/card_statement.pdf`
-- Stripe `balance_history` CSV → `csv/stripe_balance_history.csv`
-- Mixed text+scan PDF → `pdfs/mixed_invoice.pdf`
-- Ground-truth JSON per file under `ground_truth/`
+Never commit real client files. Place them only under gitignored folders:
 
-Generate / refresh:
+```
+real-docs/
+  your-bill.pdf
+  your-statement.xlsx
+  labels/
+    your-bill.json          # you write ground truth
+    your-statement.json
+lab-out/
+  eval-*.json               # eval output (gitignored)
+```
+
+Label schema (fake examples only in git):
+
+- Invoice/bill: [`label-template.example.json`](label-template.example.json)
+- Bank/card statement: [`label-template-statement.example.json`](label-template-statement.example.json)
+
+Amounts are **integer fils** (scale 2). Use `layout_tag` to group failures (e.g. `phone_skew`, `two_column_ar`, `xlsx_header_row_5`) — never paste real TRNs/IBANs into STATUS.
+
+```bash
+npm run extraction:eval
+# or
+python scripts/extraction-eval.py --real-docs
+python scripts/extraction-eval.py --real-docs --baseline lab-out/eval-baseline.json
+python scripts/extraction-eval.py --real-docs --compare lab-out/eval-baseline.json
+```
+
+Pass `--company-trn` / `--company-name` when classifying against your synthetic company profile.
+
+## Synthetic fixtures (CI only)
+
+Addendum A checklist under `pdfs/`, `scans/`, `xlsx/`, `csv/`, `ground_truth/`. Used by worker pytest — **not** the ING-4 real-docs acceptance bar.
 
 ```bash
 python fixtures/extraction/generate_synthetic.py
-python scripts/extraction-eval.py
+python scripts/extraction-eval.py --fixtures
 ```
-
-Committed outputs only; no real client docs.

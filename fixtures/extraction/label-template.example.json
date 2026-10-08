@@ -1,0 +1,26 @@
+{
+  "doc_type": "sales_invoice",
+  "layout_tag": "two_column_en",
+  "skip_fields": [],
+  "invoice_no": "INV-FAKE-001",
+  "invoice_date": "2026-05-15",
+  "due_date": "2026-06-14",
+  "issuer_name": "Example Supplier LLC",
+  "issuer_trn": "100000000000001",
+  "customer_name": "Example Customer FZE",
+  "customer_trn": "100000000000002",
+  "currency": "AED",
+  "net": 10000,
+  "vat": 500,
+  "gross": 10500,
+  "grand_total": 10500,
+  "lines": [
+    {
+      "description": "Consulting services",
+      "qty": 1,
+      "net_minor": 10000,
+      "vat_minor": 500,
+      "vat_code": "SR"
+    }
+  ]
+}

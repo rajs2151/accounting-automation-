@@ -2,7 +2,13 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-3 done** — stop; push on ship
+- Current task: **ING-4** extraction accuracy (real-docs eval) — in progress
+- 2026-10-08: **ING-4 Gate 0** worker pytest with S3 stand-in: **120 passed**, 0 failed (6 warnings)
+- 2026-10-08: **ING-4a** real-docs eval harness (no new db migration; no RLS)
+  - DONE: `daftar.extraction.eval_metrics` + pytest; `scripts/extraction-eval.py --real-docs` → `/lab-out/`
+  - DONE: label templates (fake values) under `fixtures/extraction/label-template*.example.json`
+  - DONE: acceptance = owner labeled `/real-docs/`; no new synthetic golden requirement
+  - Owner: copy templates → `real-docs/labels/<stem>.json`, run `npm run extraction:eval`, paste rates by layout_tag into STATUS
 - 2026-10-07: **ING-3** intake & review UI (no new db migration; no RLS)
   - Gates: typecheck 0; eslint src+e2e 0 errors (7 pre-existing warnings in next build); unit 349p/0f/1s; pytest 120p; next build exit 0; local e2e 10/10
   - DONE: shared `UploadDialog` (DnD, progress, type, tray) on Inbox / Sales / Purchases / Statements / Banking / shell Upload
@@ -109,7 +115,7 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. **ING-3** upload + review UI — layout only from AI Accountant pattern; our wording/colours. (blocked on owner review of ING-2)
+1. **ING-4b–4d** invoice/statement pipeline + checks (after 4a)
 2. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
