@@ -64,6 +64,9 @@ export type DocumentInput = {
   printedBalanceDueMinor?: number | null;
   extractionId?: string | null;
   fileId?: string | null;
+  /** Page range within shared PDF when confirmed from an inbox snippet. */
+  pageStart?: number | null;
+  pageEnd?: number | null;
   /** P2B-2: document-level override of the party's emirate (reason required, audited). */
   placeOfSupply?: string | null;
   placeOfSupplyReason?: string | null;
@@ -397,10 +400,10 @@ export async function createBooksDocument(userId: string, clientId: string, body
          net_minor, vat_minor, gross_minor, memo, original_document_id, created_by,
          printed_net_minor, printed_vat_minor, printed_gross_minor,
          printed_paid_minor, printed_balance_due_minor, extraction_id, file_id,
-         check_vat_reason
+         check_vat_reason, page_start, page_end
        ) VALUES (
          $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-         $22,$23,$24,$25,$26,$27,$28,$29
+         $22,$23,$24,$25,$26,$27,$28,$29,$30,$31
        )`,
       [
         id,
@@ -432,6 +435,8 @@ export async function createBooksDocument(userId: string, clientId: string, body
         body.extractionId || null,
         body.fileId || null,
         checkVatReason,
+        body.pageStart ?? null,
+        body.pageEnd ?? null,
       ],
     ).catch((error: unknown) => {
       const pgErr = error as { code?: string; constraint?: string };

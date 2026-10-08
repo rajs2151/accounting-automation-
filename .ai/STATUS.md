@@ -2,7 +2,12 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-4e weak layout_tags** shipped; next = deferred polish (snippet / knowledge / email-in)
+- Current task: **Snippet split MVP** shipped; next = knowledge cards / email-in (Phase 2+), owner inputs
+- 2026-10-08: **Snippet split** (db/63 inbox parent + page ranges; no RLS)
+  - DONE: `splitInboxPdfSnippets` + `POST /api/books/inbox/:id/split-pages`; parent → `routed`; children share `file_id`
+  - DONE: worker clips PDF pages for extract; remaps word-box pages to original; confirm copies page range to documents
+  - DONE: review UI **Split by pages** (one range per page when pageCount ≥ 2); unit `inbox-split-pages.test.ts`
+  - NOT DONE: auto-detect receipt boundaries; knowledge cards; email-in; Textract
 - 2026-10-08: **ING-4e** weak real-docs fields (no migration; no RLS)
   - DONE: stacked VAT / Subtotal / Total; Bill From issuer; payment-favour fallback; vat=gross−net only when >0
   - DONE: bank FROM–TO / Statement Period / letterhead bank_name; stacked opening/closing (incl. integer amounts)
@@ -180,10 +185,11 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. Multi-receipt snippet split (thin slice); then knowledge cards; then email-in
-2. Further Nomod/RAK/opening_minor extraction if still weak after 4e
-3. Company A month-1 hand golden (owner); brand hex + font
-4. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
+1. Knowledge cards (suggest-only rules from corrections) — Phase 2+ brief needed
+2. Email-in intake — after security PASS for real mail
+3. Further Nomod/RAK/opening_minor extraction if still weak after 4e
+4. Company A month-1 hand golden (owner); brand hex + font; B/C openings; expense receipt threshold
+5. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -196,6 +202,7 @@
 - E1d closed (confirm never invents SR).
 
 ## Log
+- 2026-10-08 | Snippet-split | PASS | db/63 + split API/UI + worker clip; unit 2p
 - 2026-10-08 | ING-4e | PASS | weak-field extract + bank headers; eval acc ~0.65; unit green
 - 2026-10-08 | Real-docs+A+B+C | PASS | eval rates in STATUS; local PASS override; B5/B6; polish db/62
 - 2026-10-08 | ING-1c | PASS | AR/AP control drift on Health scorecard + insights; unit 354p e2e 11/11

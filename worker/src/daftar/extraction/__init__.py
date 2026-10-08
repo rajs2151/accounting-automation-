@@ -159,6 +159,36 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
         raise ValueError("file_not_found")
 
     content = store.get(frow["storage_key"])
+    # Snippet children: clip PDF to page_start..page_end (1-based inclusive).
+    page_start = payload.get("pageStart") or payload.get("page_start")
+    page_end = payload.get("pageEnd") or payload.get("page_end")
+    if page_start is None or page_end is None:
+        irow_pages = conn.execute(
+            "SELECT page_start, page_end FROM books_inbox_items WHERE id = %s",
+            (inbox_id,),
+        ).fetchone()
+        if irow_pages:
+            page_start = irow_pages.get("page_start")
+            page_end = irow_pages.get("page_end")
+    page_offset = 0
+    if page_start is not None and page_end is not None:
+        try:
+            ps, pe = int(page_start), int(page_end)
+            if ps >= 1 and pe >= ps:
+                import fitz  # PyMuPDF
+
+                src = fitz.open(stream=content, filetype="pdf")
+                try:
+                    clipped = fitz.open()
+                    clipped.insert_pdf(src, from_page=ps - 1, to_page=pe - 1)
+                    content = clipped.tobytes()
+                    clipped.close()
+                    page_offset = ps - 1
+                finally:
+                    src.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("snippet_pdf_clip_failed: %s", exc)
+
     kind, mime = sniff(content)
     parser, pconf = pick_parser(frow["filename"], frow["content_type"] or mime or "", content)
 
@@ -481,6 +511,24 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
         status = "needs_review"
     else:
         status = "ready" if class_conf >= 0.8 and not ocr_used else "needs_review"
+
+    # Remap clipped word-box / field pages back to the original PDF page numbers.
+    if page_offset:
+        for w in word_boxes:
+            if isinstance(w, dict) and "page" in w:
+                try:
+                    w["page"] = int(w["page"]) + page_offset
+                except (TypeError, ValueError):
+                    pass
+        for meta in (fields.get("fields") or {}).values() if isinstance(fields.get("fields"), dict) else []:
+            if not isinstance(meta, dict):
+                continue
+            src = meta.get("source")
+            if isinstance(src, dict) and src.get("page") is not None:
+                try:
+                    src["page"] = int(src["page"]) + page_offset
+                except (TypeError, ValueError):
+                    pass
 
     ext_id = str(uuid4())
     conn.execute("DELETE FROM books_extractions WHERE inbox_item_id = %s", (inbox_id,))

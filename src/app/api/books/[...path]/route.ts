@@ -147,6 +147,7 @@ import {
 } from "@/server/books/documents";
 import {
   confirmInboxAsDocument,
+  splitInboxPdfSnippets,
   getBooksInboxReview,
   listBooksInbox,
   retryBooksInboxExtract,
@@ -1610,6 +1611,20 @@ export async function POST(request: Request, ctx: Ctx) {
           path[1],
           body.later !== false && body.later !== "false",
         ),
+      );
+    }
+    if (path[0] === "inbox" && path[2] === "split-pages" && path.length === 3) {
+      const ranges = Array.isArray(body.ranges)
+        ? body.ranges.map((r: { pageStart?: unknown; pageEnd?: unknown }) => ({
+            pageStart: Number(r.pageStart),
+            pageEnd: Number(r.pageEnd),
+          }))
+        : [];
+      return NextResponse.json(
+        await splitInboxPdfSnippets(session.userId, session.clientId, path[1], {
+          ranges,
+          pageCount: body.pageCount != null ? Number(body.pageCount) : undefined,
+        }),
       );
     }
     if (path[0] === "bank-transactions" && path[1] === "materialize" && path.length === 2) {

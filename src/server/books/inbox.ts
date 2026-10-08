@@ -112,6 +112,9 @@ export async function getBooksInboxReview(
               i.detected_type AS "detectedType",
               i.classification_confidence AS "classificationConfidence",
               i.status, i.error, i.created_at AS "createdAt",
+              i.parent_inbox_item_id AS "parentInboxItemId",
+              i.page_start AS "pageStart",
+              i.page_end AS "pageEnd",
               f.filename, f.sha256, f.content_type AS "contentType",
               f.storage_key AS "storageKey",
               e.id AS "extractionId", e.fields_json AS "fieldsJson",
@@ -163,6 +166,9 @@ export async function getBooksInboxReview(
       error: r.error,
       detectedType: r.detectedType,
       classificationConfidence: r.classificationConfidence,
+      parentInboxItemId: r.parentInboxItemId ? String(r.parentInboxItemId) : null,
+      pageStart: r.pageStart == null ? null : Number(r.pageStart),
+      pageEnd: r.pageEnd == null ? null : Number(r.pageEnd),
       fileUrl,
       extractionId: r.extractionId,
       extractorVersion: r.extractorVersion,
@@ -472,6 +478,135 @@ export async function setInboxReviewLater(
 }
 
 /**
+ * Split a multi-page PDF inbox upload into page-range children (same file_id).
+ * Parent becomes routed; each child is queued for extract_document with pageStart/pageEnd.
+ */
+export async function splitInboxPdfSnippets(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  body: {
+    ranges: Array<{ pageStart: number; pageEnd: number }>;
+    pageCount?: number;
+  },
+) {
+  const ranges = Array.isArray(body.ranges) ? body.ranges : [];
+  if (ranges.length < 2) {
+    throw new BooksError("ranges_require_at_least_two", "invalid");
+  }
+  const maxPage = Math.min(Math.max(1, Number(body.pageCount) || 500), 500);
+  const normalized = ranges.map((r) => ({
+    pageStart: Number(r.pageStart),
+    pageEnd: Number(r.pageEnd),
+  }));
+  for (const r of normalized) {
+    if (
+      !Number.isInteger(r.pageStart) ||
+      !Number.isInteger(r.pageEnd) ||
+      r.pageStart < 1 ||
+      r.pageEnd < r.pageStart ||
+      r.pageEnd > maxPage
+    ) {
+      throw new BooksError("invalid_page_range", "invalid");
+    }
+  }
+  const sorted = [...normalized].sort((a, b) => a.pageStart - b.pageStart);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].pageStart <= sorted[i - 1].pageEnd) {
+      throw new BooksError("overlapping_ranges", "invalid");
+    }
+  }
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const parent = await db.query(
+      `SELECT id, file_id, status, intended_type, intended_account_id, parent_inbox_item_id
+       FROM books_inbox_items
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    if (!parent.rowCount) throw new BooksError("inbox_item_not_found", "not_found");
+    const p = parent.rows[0];
+    if (p.parent_inbox_item_id) {
+      throw new BooksError("cannot_split_snippet_child", "invalid");
+    }
+    const status = String(p.status);
+    if (!["needs_review", "ready", "review_later"].includes(status)) {
+      throw new BooksError("cannot_split_status", "conflict");
+    }
+    const existingKids = await db.query(
+      `SELECT id FROM books_inbox_items WHERE parent_inbox_item_id = $1 LIMIT 1`,
+      [inboxItemId],
+    );
+    if (existingKids.rowCount) throw new BooksError("already_split", "conflict");
+
+    const fileId = String(p.file_id);
+    const intendedType = p.intended_type ? String(p.intended_type) : null;
+    const intendedAccountId = p.intended_account_id ? String(p.intended_account_id) : null;
+    const children: Array<{ id: string; pageStart: number; pageEnd: number; status: string }> =
+      [];
+
+    for (const r of sorted) {
+      const childId = randomUUID();
+      await db.query(
+        `INSERT INTO books_inbox_items (
+           id, client_id, file_id, status, intended_type, intended_account_id,
+           parent_inbox_item_id, page_start, page_end
+         ) VALUES ($1,$2,$3,'queued',$4,$5,$6,$7,$8)`,
+        [
+          childId,
+          clientId,
+          fileId,
+          intendedType,
+          intendedAccountId,
+          inboxItemId,
+          r.pageStart,
+          r.pageEnd,
+        ],
+      );
+      const payload: Record<string, unknown> = {
+        inboxItemId: childId,
+        fileId,
+        pageStart: r.pageStart,
+        pageEnd: r.pageEnd,
+      };
+      if (intendedType) {
+        payload.intendedType = intendedType;
+        payload.userDocType = intendedType;
+      }
+      if (intendedAccountId) payload.accountId = intendedAccountId;
+      await enqueueBooksJob(db, clientId, "extract_document", payload);
+      children.push({
+        id: childId,
+        pageStart: r.pageStart,
+        pageEnd: r.pageEnd,
+        status: "queued",
+      });
+    }
+
+    await db.query(
+      `UPDATE books_inbox_items
+       SET status = 'routed', updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "split_inbox_pdf_snippets",
+      entity: "books_inbox_item",
+      entityId: inboxItemId,
+      after: {
+        childIds: children.map((c) => c.id),
+        ranges: sorted,
+      },
+    });
+
+    return { parentId: inboxItemId, status: "routed", children };
+  });
+}
+
+/**
  * Confirm extraction → draft document. Fills printed_* from extracted totals when present.
  * Payments made / balance due are stored as info only (no settlement).
  */
@@ -498,6 +633,9 @@ export async function confirmInboxAsDocument(
 ) {
   const review = await getBooksInboxReview(userId, clientId, inboxItemId);
   if (!review.extractionId) throw new BooksError("extraction_required", "invalid");
+  if (String(review.status) === "routed") {
+    throw new BooksError("cannot_confirm_routed_parent", "conflict");
+  }
   const fields = (review.fieldsJson || {}) as Record<string, unknown>;
   const detected = String(review.detectedType || review.extractionDocType || "");
   const classified = classifyInboxDocType(detected);
@@ -518,6 +656,11 @@ export async function confirmInboxAsDocument(
         if (!intended) intended = t;
       }
     }
+    const kids = await db.query(
+      `SELECT id FROM books_inbox_items WHERE parent_inbox_item_id = $1 LIMIT 1`,
+      [inboxItemId],
+    );
+    if (kids.rowCount) throw new BooksError("cannot_confirm_split_parent", "conflict");
   });
 
   let docType: "sales_invoice" | "purchase_bill" = intended || classified;
@@ -651,6 +794,8 @@ export async function confirmInboxAsDocument(
     printedBalanceDueMinor: printedBalanceDue,
     extractionId: String(review.extractionId),
     fileId: String(review.fileId),
+    pageStart: review.pageStart,
+    pageEnd: review.pageEnd,
   });
 
   const notice = reroutedFrom

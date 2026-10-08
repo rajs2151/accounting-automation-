@@ -67,6 +67,9 @@ type ReviewPayload = {
   extractionId: string | null;
   documentId: string | null;
   detectedType?: string | null;
+  parentInboxItemId?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
   fieldsJson: Record<string, unknown>;
   lineItems: Array<{
     description?: string;
@@ -227,6 +230,7 @@ export default function InboxReviewPage() {
   const [lineMode, setLineMode] = useState<"item" | "accounting">("item");
   const [newSupplier, setNewSupplier] = useState(false);
   const [mismatchKeep, setMismatchKeep] = useState(false);
+  const [splitting, setSplitting] = useState(false);
   const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>(
     {},
   );
@@ -581,9 +585,46 @@ export default function InboxReviewPage() {
   const flags = balance.flags;
   const boxes = boxesFromFieldSources(fields, pageSizes);
   const focusPage =
-    activeField && fields[activeField]?.source?.page
+    (activeField && fields[activeField]?.source?.page
       ? Number(fields[activeField].source!.page)
-      : null;
+      : null) ??
+    (review?.pageStart != null ? Number(review.pageStart) : null);
+  const pageCount = Object.keys(pageSizes).length;
+  const canSplitByPages =
+    Boolean(review) &&
+    !review?.parentInboxItemId &&
+    pageCount >= 2 &&
+    ["needs_review", "ready", "review_later"].includes(String(review?.status || ""));
+  async function splitByPages() {
+    if (!review || pageCount < 2) return;
+    setSplitting(true);
+    try {
+      const ranges = Array.from({ length: pageCount }, (_, i) => ({
+        pageStart: i + 1,
+        pageEnd: i + 1,
+      }));
+      const res = await fetch(`/api/books/inbox/${params.id}/split-pages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ranges, pageCount }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        children?: Array<{ id: string }>;
+        error?: string;
+        message?: string;
+      };
+      if (!res.ok) {
+        toast.error(apiErrorMessage(data) || "Split failed");
+        return;
+      }
+      const first = data.children?.[0]?.id;
+      toast.success(`Split into ${data.children?.length ?? 0} snippets`);
+      if (first) router.push(`/books/inbox/${first}`);
+      else window.location.href = "/books/inbox?tab=needs_review";
+    } finally {
+      setSplitting(false);
+    }
+  }
   const fieldStatus = Object.fromEntries(
     Object.entries(fields).map(([k, f]) => [k, { status: f.status, confidence: f.confidence }]),
   );
@@ -845,6 +886,16 @@ export default function InboxReviewPage() {
         >
           Review later
         </Button>
+        {canSplitByPages ? (
+          <Button
+            variant="outline"
+            data-testid="split-by-pages"
+            disabled={splitting}
+            onClick={() => void splitByPages()}
+          >
+            {splitting ? "Splitting…" : "Split by pages"}
+          </Button>
+        ) : null}
         <Button onClick={() => void approveAndNext()} data-testid="review-approve-next">
           Approve &amp; next
         </Button>
@@ -890,6 +941,9 @@ export default function InboxReviewPage() {
           </div>
           <p className="shrink-0 truncate px-3 pb-1 text-xs text-muted-foreground" data-testid="review-file-meta">
             File: {review.filename} · sha256 {String(review.sha256).slice(0, 12)}… · Inbox {params.id}
+            {review.pageStart != null && review.pageEnd != null
+              ? ` · Pages ${review.pageStart}–${review.pageEnd}`
+              : ""}
           </p>
         </div>
 
