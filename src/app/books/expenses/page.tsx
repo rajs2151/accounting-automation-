@@ -451,9 +451,21 @@ export default function BooksExpensesPage() {
             Staff claims — link bank/card outflows so approve does not double-post the payment
           </p>
         </div>
-        <Button data-testid="expenses-new" onClick={() => setFormOpen((v) => !v)}>
-          {formOpen ? "Cancel" : "New expense"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            data-testid="expenses-from-receipt"
+            onClick={() => {
+              toast.message("Use New expense with the receipt amount — Add via receipt API matches an unmatched bank line when amount and date agree (B6).");
+              setFormOpen(true);
+            }}
+          >
+            From receipt
+          </Button>
+          <Button data-testid="expenses-new" onClick={() => setFormOpen((v) => !v)}>
+            {formOpen ? "Cancel" : "New expense"}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">

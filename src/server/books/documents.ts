@@ -621,6 +621,17 @@ async function buildPostingLines(
     doc.party_id,
   ]);
   const supplierTrn = party.rows[0]?.trn as string | null;
+  const partyCountry = String(party.rows[0]?.country || "AE").toUpperCase();
+  const posRow = await db.query(
+    `SELECT place_of_supply FROM books_documents WHERE id = $1 AND client_id = $2`,
+    [doc.id, clientId],
+  );
+  const placeOfSupply = posRow.rows[0]?.place_of_supply
+    ? String(posRow.rows[0].place_of_supply)
+    : null;
+  /** Non-UAE supply never recovers input VAT — VAT stays in cost (not 1430). */
+  const nonUaeSupply =
+    placeOfSupply === "OUTSIDE_UAE" || (partyCountry !== "" && partyCountry !== "AE");
 
   const out: BuiltLine[] = [];
   let arApTotal = 0;
@@ -704,7 +715,11 @@ async function buildPostingLines(
         const vatCode = line.vat_code;
         const vatMeta = vatCode ? await vatRateBp(db, vatCode) : { rateBp: 0, recoverable: false };
         const canRecover =
-          Boolean(supplierTrn) && vatCode !== "NR" && vatMeta.recoverable && vatAed > 0;
+          !nonUaeSupply &&
+          Boolean(supplierTrn) &&
+          vatCode !== "NR" &&
+          vatMeta.recoverable &&
+          vatAed > 0;
         const memoDefault = isAsset
           ? "Deposit / asset"
           : isInventory

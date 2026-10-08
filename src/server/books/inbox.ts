@@ -448,6 +448,29 @@ export async function setInboxDocType(
   });
 }
 
+/** Park a needs_review inbox row for later without failing extraction. */
+export async function setInboxReviewLater(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  later: boolean,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const next = later ? "review_later" : "needs_review";
+    const updated = await db.query(
+      `UPDATE books_inbox_items
+       SET status = $3, updated_at = now()
+       WHERE id = $1 AND client_id = $2
+         AND status IN ('needs_review', 'review_later')
+       RETURNING id, status`,
+      [inboxItemId, clientId, next],
+    );
+    if (!updated.rowCount) throw new BooksError("inbox_item_not_found", "not_found");
+    return { id: inboxItemId, status: String(updated.rows[0].status) };
+  });
+}
+
 /**
  * Confirm extraction → draft document. Fills printed_* from extracted totals when present.
  * Payments made / balance due are stored as info only (no settlement).

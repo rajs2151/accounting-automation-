@@ -1,0 +1,39 @@
+{
+  "company": "Desert Falcon Services FZE (synthetic clone via createTestCompany)",
+  "currency": "AED",
+  "cases": {
+    "partial_payment": {
+      "invoiceNetMinor": 10000,
+      "receiptMinor": 4000,
+      "openRemainingMinor": 6000
+    },
+    "one_payment_two_invoices": {
+      "invoiceAMinor": 5000,
+      "invoiceBMinor": 7000,
+      "receiptMinor": 12000,
+      "openRemainingA": 0,
+      "openRemainingB": 0
+    },
+    "bank_fee": {
+      "invoiceMinor": 10500,
+      "receiptBankMinor": 10000,
+      "feeMinor": 500,
+      "openRemaining": 0
+    },
+    "card_repayment": {
+      "repayMinor": 4500,
+      "drCard2150": 4500,
+      "crBank1120": 4500
+    },
+    "stripe_payout_balanced": {
+      "payoutCreditMinor": 9700,
+      "clearingDebitMinor": 9700,
+      "netGroup": 0
+    },
+    "stripe_payout_unbalanced": {
+      "payoutCreditMinor": 10000,
+      "feeDebitMinor": 300,
+      "error": "gateway_payout_not_balanced"
+    }
+  }
+}

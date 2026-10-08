@@ -2,7 +2,28 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **ING-1c** closed (AR/AP control drift on Company Health)
+- Current task: **Real-docs eval + A→B→C** closed
+- 2026-10-08: **Slice C polish** (db/62 review_later; no RLS change)
+  - DONE: non-UAE purchase VAT → cost (never 1430); unit `non-uae-vat.test.ts`
+  - DONE: inbox `review_later` status + `POST …/inbox/:id/review-later`
+  - DONE: firm board `documentsToReview` column; settings CoA/parties CSV templates
+  - DONE: purchases Outstanding covers unpaid; B6 From receipt CTA on Expenses
+- 2026-10-08: **Slice B6** receipt → bank match or expense draft (no migration)
+  - DONE: `addTransactionFromReceipt` + `POST /api/books/receipt-to-txn`; unit green
+- 2026-10-08: **Slice B5** Golden v2 bank cases (no migration)
+  - DONE: `fixtures/books-goldens/v2/` + `golden-v2.test.ts` (partial, 1:N, fee, card, Stripe netting, transfer)
+- 2026-10-08: **Slice A** local real clients (no migration; no RLS change)
+  - DONE: gitignored `docker-compose.override.yml` sets `PORTAL_SECURITY_STATUS=PASS` for web; committed compose + CI stay FAIL
+  - DONE: `.env.example` documents PASS via override; security chip shows PASS (emerald) as well as FAIL
+  - DONE: firm health + inbox routing include non-synthetic when PASS; unit asserts PASS allows real tenant
+  - NOTE: owner-authorised local PASS only — not a signed portal security review for production
+- 2026-10-08: **Real-docs eval** (owner files via Downloads → gitignored `/real-docs/`; rates only)
+  - Labeled **25** files (24 scored; 1 stem fixed); layout_tags: arnifi_tax_invoice, arnifi_zoho_bill, bedouin_tax_invoice, wio_multi_account, rak_bank_statement, card_statement_pdf, stripe_balance_history_csv, stage_works_tax_invoice, nomod_scan_empty_text, financial_statement_skip
+  - Overall: accuracy **0.61**, found_rate **0.76**, false_confidence_rate **0.086** (n=19) on 221 labeled fields
+  - Stronger: bedouin_tax_invoice ~0.84; arnifi_tax_invoice ~0.72; issuer_trn/supplier_trn/customer_trn 1.0; gross/grand_total ~0.94
+  - Weaker: bank_name/period_*/opening_minor/closing_minor ~0; vat ~0.24; issuer_name ~0.12; wio_multi_account ~0.33; nomod empty text
+  - Baseline: `lab-out/eval-baseline.json` (gitignored)
+- 2026-10-08: **ING-1c** closed (AR/AP control drift on Company Health)
 - 2026-10-08: **ING-1c** AR/AP control vs open-items on Health (no migration; no RLS)
   - DONE: `controlVsOpenItemsDrift` helper; `listBooksIssues` refactored to share it
   - DONE: Health scorecard fields + critical insights (`ar_control_vs_open_items` / `ap_control_vs_open_items`)
@@ -151,9 +172,9 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick); how-to at `docs/how-to/test-your-own-documents.md`
-2. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
-3. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
+1. Improve weak layout_tags from real-docs eval (vat, bank periods, issuer_name, Nomod OCR / scanned)
+2. Knowledge cards / email-in / snippet split (deferred polish)
+3. Company A month-1 hand golden (owner); brand hex + font
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -168,6 +189,7 @@
   (not the worker) — tracked as E1d.
 
 ## Log
+- 2026-10-08 | Real-docs+A+B+C | PASS | eval rates in STATUS; local PASS override; B5/B6; polish db/62
 - 2026-10-08 | ING-1c | PASS | AR/AP control drift on Health scorecard + insights; unit 354p e2e 11/11
 - 2026-10-08 | ING-5c | PASS | owner how-to test-your-own-documents.md; ING-5 closed
 - 2026-10-08 | ING-5b | PASS | Trace API/UI/CLI + unit + Playwright; unit 352p e2e 11/11

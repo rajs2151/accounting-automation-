@@ -830,6 +830,21 @@ export default function InboxReviewPage() {
         >
           Save draft
         </Button>
+        <Button
+          variant="ghost"
+          data-testid="review-later"
+          onClick={() => {
+            void fetch(`/api/books/inbox/${params.id}/review-later`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ later: true }),
+            }).then((r) => {
+              if (r.ok) window.location.href = "/books/inbox?tab=needs_review";
+            });
+          }}
+        >
+          Review later
+        </Button>
         <Button onClick={() => void approveAndNext()} data-testid="review-approve-next">
           Approve &amp; next
         </Button>

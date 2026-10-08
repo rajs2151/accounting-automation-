@@ -112,6 +112,7 @@ import {
   type ExpenseLineInput,
   type PaidFromKind,
 } from "@/server/books/expenses";
+import { addTransactionFromReceipt } from "@/server/books/receipt-to-txn";
 import {
   excludeBooksBankTransaction,
   linkBooksBankTransferPair,
@@ -151,6 +152,7 @@ import {
   retryBooksInboxExtract,
   routeInboxItem,
   setInboxDocType,
+  setInboxReviewLater,
   uploadBooksInboxFiles,
 } from "@/server/books/inbox";
 import {
@@ -1370,6 +1372,36 @@ export async function POST(request: Request, ctx: Ctx) {
         ),
       );
     }
+    if (path[0] === "receipt-to-txn" && path.length === 1) {
+      return NextResponse.json(
+        await addTransactionFromReceipt(session.userId, session.clientId, {
+          expenseDate: String(body.expenseDate || ""),
+          periodId: String(body.periodId || ""),
+          description: String(body.description || "Receipt"),
+          vendorName: body.vendorName != null ? String(body.vendorName) : undefined,
+          vendorPartyId:
+            body.vendorPartyId === undefined || body.vendorPartyId === null || body.vendorPartyId === ""
+              ? null
+              : String(body.vendorPartyId),
+          amountMinor: Number(body.amountMinor || 0),
+          expenseAccountId: String(body.expenseAccountId || ""),
+          vatCode: body.vatCode != null ? String(body.vatCode) : null,
+          vatMinor: body.vatMinor != null ? Number(body.vatMinor) : 0,
+          paidFromAccountId:
+            body.paidFromAccountId === undefined ||
+            body.paidFromAccountId === null ||
+            body.paidFromAccountId === ""
+              ? null
+              : String(body.paidFromAccountId),
+          bankTxnId:
+            body.bankTxnId === undefined || body.bankTxnId === null || body.bankTxnId === ""
+              ? null
+              : String(body.bankTxnId),
+          forceExpenseDraft: Boolean(body.forceExpenseDraft),
+          dateWindowDays: body.dateWindowDays != null ? Number(body.dateWindowDays) : undefined,
+        }),
+      );
+    }
     if (path[0] === "documents" && path[2] === "approve" && path.length === 3) {
       const applyAdvanceOriginalMinor =
         body.applyAdvanceOriginalMinor != null
@@ -1568,6 +1600,16 @@ export async function POST(request: Request, ctx: Ctx) {
     if (path[0] === "inbox" && path[2] === "type" && path.length === 3) {
       return NextResponse.json(
         await setInboxDocType(session.userId, session.clientId, path[1], String(body.docType || "")),
+      );
+    }
+    if (path[0] === "inbox" && path[2] === "review-later" && path.length === 3) {
+      return NextResponse.json(
+        await setInboxReviewLater(
+          session.userId,
+          session.clientId,
+          path[1],
+          body.later !== false && body.later !== "false",
+        ),
       );
     }
     if (path[0] === "bank-transactions" && path[1] === "materialize" && path.length === 2) {

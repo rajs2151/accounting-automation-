@@ -185,6 +185,7 @@ export default function InboxPage() {
           <option value="queued">Queued</option>
           <option value="extracting">Extracting</option>
           <option value="needs_review">Needs review</option>
+          <option value="review_later">Review later</option>
           <option value="ready">Ready</option>
           <option value="failed">Failed</option>
         </select>

@@ -15,6 +15,7 @@ import {
   booksProfitAndLoss,
   type BsColumn,
 } from "@/server/books/financial-statements";
+import { allowRealClientData } from "@/config/security";
 import { controlVsOpenItemsDrift } from "@/server/books/control-drift";
 import {
   buildHealthInsights,
@@ -603,6 +604,8 @@ export type FirmHealthRow = {
   tbBalanced: boolean | null;
   unmatchedBankLines: number;
   pendingExpenses: number;
+  /** Inbox + draft documents still needing review. */
+  documentsToReview: number;
   suspenseMinor: number;
   vatDueDate: string | null;
   vatDaysUntilDue: number | null;
@@ -770,7 +773,8 @@ export async function booksFirmHealthBoard(userId: string): Promise<{ rows: Firm
     const r = await db.query(
       `SELECT c.id, c.name
        FROM clients c
-       WHERE c.id IN (SELECT visible_client_ids()) AND c.is_synthetic = true
+       WHERE c.id IN (SELECT visible_client_ids())
+         AND (${allowRealClientData() ? "true" : "c.is_synthetic = true"})
        ORDER BY c.name`,
     );
     return r.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
@@ -797,6 +801,7 @@ export async function booksFirmHealthBoard(userId: string): Promise<{ rows: Firm
           tbBalanced: null,
           unmatchedBankLines: 0,
           pendingExpenses: 0,
+          documentsToReview: 0,
           suspenseMinor: 0,
           vatDueDate: null,
           vatDaysUntilDue: null,
@@ -831,6 +836,7 @@ export async function booksFirmHealthBoard(userId: string): Promise<{ rows: Firm
         tbBalanced: Boolean(tb.balanced),
         unmatchedBankLines: month.bankLines.needsReview + month.bankLines.readyNotPosted,
         pendingExpenses: counts.pendingExpenses,
+        documentsToReview: counts.documentsToReview,
         suspenseMinor: counts.suspenseMinor,
         vatDueDate: vat.dueDate,
         vatDaysUntilDue: vat.daysUntilDue,
@@ -856,6 +862,7 @@ async function firmCounts(
   periodId: string,
 ): Promise<{
   pendingExpenses: number;
+  documentsToReview: number;
   suspenseMinor: number;
   assigneeUserId: string | null;
   assigneeName: string | null;
@@ -865,6 +872,15 @@ async function firmCounts(
     const exp = await db.query(
       `SELECT COUNT(*)::int AS n FROM books_expenses
        WHERE client_id = $1 AND status IN ('draft', 'pending') AND deleted_at IS NULL`,
+      [clientId],
+    );
+    const docs = await db.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM books_inbox_items
+           WHERE client_id = $1 AND status IN ('needs_review', 'review_later'))
+         + (SELECT COUNT(*)::int FROM books_documents
+           WHERE client_id = $1 AND status = 'draft' AND deleted_at IS NULL)
+         AS n`,
       [clientId],
     );
     const sus = await db.query(
@@ -900,6 +916,7 @@ async function firmCounts(
 
     return {
       pendingExpenses: Number(exp.rows[0]?.n ?? 0),
+      documentsToReview: Number(docs.rows[0]?.n ?? 0),
       suspenseMinor: Number(sus.rows[0]?.n ?? 0),
       assigneeUserId,
       assigneeName,

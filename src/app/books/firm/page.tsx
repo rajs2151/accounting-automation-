@@ -16,6 +16,7 @@ type FirmRow = {
   tbBalanced: boolean | null;
   unmatchedBankLines: number;
   pendingExpenses: number;
+  documentsToReview: number;
   suspenseMinor: number;
   vatDueDate: string | null;
   vatDaysUntilDue: number | null;
@@ -71,7 +72,7 @@ export default function FirmHealthBoardPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Firm health board</h1>
           <p className="text-sm text-muted-foreground">
-            All synthetic companies you can see · close, TB, bank, expenses, suspense, VAT
+            Companies you can see · close, TB, bank, docs to review, expenses, suspense, VAT
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -114,6 +115,7 @@ export default function FirmHealthBoardPage() {
               <th className="px-3 py-2">Close</th>
               <th className="px-3 py-2">TB</th>
               <th className="px-3 py-2 text-right">Unmatched bank</th>
+              <th className="px-3 py-2 text-right">Docs to review</th>
               <th className="px-3 py-2 text-right">Pending exp.</th>
               <th className="px-3 py-2 text-right">Suspense</th>
               <th className="px-3 py-2">VAT due</th>
@@ -123,7 +125,7 @@ export default function FirmHealthBoardPage() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-3 py-4 text-muted-foreground">
+                <td colSpan={10} className="px-3 py-4 text-muted-foreground">
                   No companies match this filter.
                 </td>
               </tr>
@@ -152,6 +154,9 @@ export default function FirmHealthBoardPage() {
                     {r.tbBalanced == null ? "—" : r.tbBalanced ? "OK" : "Out"}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{r.unmatchedBankLines}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" data-testid="firm-docs-to-review">
+                    {r.documentsToReview ?? 0}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{r.pendingExpenses}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatMinor(r.suspenseMinor)}</td>
                   <td className="px-3 py-2 tabular-nums">

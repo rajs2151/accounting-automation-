@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { PoolClient } from "pg";
 
+import { allowRealClientData } from "@/config/security";
 import { withUser } from "@/lib/db";
 import { LedgerError } from "@/server/errors";
 import { assertSyntheticTenant } from "@/server/security-gate";
@@ -131,7 +132,7 @@ export async function registerFirmInboxUpload(
       `SELECT c.id, p.legal_name, p.trn, p.ibans_json
        FROM clients c
        LEFT JOIN client_profile p ON p.client_id = c.id
-       WHERE c.firm_id = $1 AND c.is_synthetic = true`,
+       WHERE c.firm_id = $1 AND (${allowRealClientData() ? "true" : "c.is_synthetic = true"})`,
       [firmId],
     );
     let detectedClientId: string | null = null;

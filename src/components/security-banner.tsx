@@ -51,16 +51,22 @@ export function SecurityBannerChip() {
   }, []);
 
   if (!security || dismissed) return null;
-  if (security.portalSecurityStatus === "PASS") return null;
 
+  const isPass = security.portalSecurityStatus === "PASS";
   return (
     <div
-      className="inline-flex max-w-md items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
+      className={
+        isPass
+          ? "inline-flex max-w-md items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-900"
+          : "inline-flex max-w-md items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
+      }
       data-testid="security-banner-chip"
     >
       <ShieldAlert className="size-3.5 shrink-0" aria-hidden />
       <span className="truncate">
-        Synthetic data only · {security.portalSecurityStatus}
+        {isPass
+          ? `Real clients allowed · ${security.portalSecurityStatus}`
+          : `Synthetic data only · ${security.portalSecurityStatus}`}
       </span>
       <button
         type="button"

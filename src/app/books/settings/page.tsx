@@ -881,6 +881,35 @@ export default function BooksSettingsPage() {
 
       <CoaSection periodId={periodId} />
 
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="settings-csv-templates">
+        <h2 className="text-lg font-medium">CSV templates</h2>
+        <p className="text-sm text-muted-foreground">
+          Blank import templates (fake headers only). Fill locally — never commit real TRNs or IBANs.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <a
+            className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+            href={`data:text/csv;charset=utf-8,${encodeURIComponent(
+              "code,name,type,sub_type,postable\n1000,Sample asset,asset,bank,true\n",
+            )}`}
+            download="coa-template.csv"
+            data-testid="settings-coa-csv-template"
+          >
+            Chart of accounts CSV
+          </a>
+          <a
+            className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+            href={`data:text/csv;charset=utf-8,${encodeURIComponent(
+              "party_type,name,trn,country,emirate,email\ncustomer,Example Customer FZE,100000000000003,AE,Dubai,\nsupplier,Example Supplier LLC,100000000000004,AE,Dubai,\n",
+            )}`}
+            download="parties-template.csv"
+            data-testid="settings-parties-csv-template"
+          >
+            Parties CSV
+          </a>
+        </div>
+      </section>
+
       <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="periods-table">
         <h2 className="text-lg font-medium">Periods</h2>
         <table className="w-full text-sm">

@@ -46,3 +46,36 @@ test("non-synthetic client blocked on books APIs while FAIL", async (t) => {
     await admin.end().catch(() => undefined);
   }
 });
+
+test("non-synthetic client allowed on books APIs while PASS", async (t) => {
+  process.env.PORTAL_SECURITY_STATUS = "PASS";
+  const appUrl =
+    process.env.DATABASE_URL || "postgresql://daftar_app:daftar-local-only@127.0.0.1:5432/daftar_test";
+  process.env.DATABASE_URL = appUrl;
+  const adminUrl = process.env.DATABASE_URL_SUPER || appUrl.replace("://daftar_app:", "://daftar:");
+  const admin = new pg.Client({ connectionString: adminUrl });
+  try {
+    await admin.connect();
+  } catch {
+    t.skip("Postgres is not reachable");
+    return;
+  }
+  try {
+    const col = await admin.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'clients' AND column_name = 'is_synthetic'`,
+    );
+    if (!col.rowCount) {
+      t.skip("is_synthetic missing");
+      return;
+    }
+    await admin.query(`UPDATE clients SET is_synthetic = false WHERE id = $1`, [AL_NOOR]);
+    const journals = await listBooksJournals(OMAR, AL_NOOR);
+    assert.ok(journals != null);
+    assert.doesNotThrow(() => journals);
+  } finally {
+    process.env.PORTAL_SECURITY_STATUS = "FAIL";
+    await admin.query(`UPDATE clients SET is_synthetic = true WHERE id = $1`, [AL_NOOR]).catch(() => undefined);
+    await admin.end().catch(() => undefined);
+  }
+});
