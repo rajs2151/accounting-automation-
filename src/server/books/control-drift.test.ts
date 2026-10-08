@@ -91,7 +91,7 @@ test("ING-1c: sales invoice → drift 0; bare AR journal → drift + health insi
     const insight = panel.insights.find((i) => i.id === "ar_control_vs_open_items");
     assert.ok(insight);
     assert.equal(insight!.severity, "critical");
-    assert.match(insight!.body, /21000/);
+    assert.match(insight!.body, /210\.00 AED/);
   } finally {
     await admin.end();
   }

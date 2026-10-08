@@ -73,10 +73,9 @@ export async function booksTrialBalance(
        GROUP BY a.id, a.code, a.name, a.account_type, a.normal_balance, a.statement_line, a.default_vat_code
        HAVING
          $4::boolean
-         OR COALESCE(SUM(CASE WHEN e.entry_date < $2::date THEN l.debit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date < $2::date THEN l.credit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date >= $2::date AND e.entry_date <= $3::date THEN l.debit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date >= $2::date AND e.entry_date <= $3::date THEN l.credit_minor ELSE 0 END), 0) <> 0
+         OR (
+           COALESCE(SUM(l.debit_minor), 0) - COALESCE(SUM(l.credit_minor), 0)
+         ) <> 0
        ORDER BY a.code`,
       [clientId, periodStart, periodEnd, includeZero],
     );

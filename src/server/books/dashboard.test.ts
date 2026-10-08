@@ -10,10 +10,12 @@ import { materializeBooksBankTransactions } from "@/server/books/bank-transactio
 import { setCompanyVatSettings } from "@/server/books/company-vat-settings";
 import { getBooksMonthChecklist, listBooksIssues, vatPeriodForMonth } from "@/server/books/dashboard";
 import { createBooksDocument } from "@/server/books/documents";
+import { createBooksJournal, postBooksJournal } from "@/server/books/journals";
 import { createBooksParty } from "@/server/books/parties";
 import { createTestCompany, type TestCompany } from "@/server/books/test-company";
 
 const OMAR = "55555555-5555-4555-8555-555555555555";
+const LAYLA = "44444444-4444-4444-8444-444444444444";
 const RAJ = "77777777-7777-4777-8777-777777777777";
 
 async function withAdmin(t: test.TestContext) {
@@ -126,6 +128,11 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
       `UPDATE books_accounts SET bank_name = 'P2B4', iban = 'AE070331234567890123456' WHERE id = $1`,
       [aed],
     );
+    // 1121 must be set up + have activity/balance to require coverage (idle accounts are n/a).
+    await admin.query(
+      `UPDATE books_accounts SET bank_name = 'P2B4 USD', iban = 'AE070331234567890123499' WHERE id = $1`,
+      [usd],
+    );
 
     // 1120: whole May covered (two adjacent statements); 1121: only to 15 May.
     await statement(admin, company, aed, "2026-05-01", "2026-05-15", '["balance_ok"]', [
@@ -137,6 +144,20 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
     await statement(admin, company, usd, "2026-05-01", "2026-05-15", '["closing_mismatch"]', [
       { date: "2026-05-04", credit: 700 },
     ]);
+    // Non-zero ledger on 1121 so coverage is required (mismatch statements may not materialise lines).
+    const equity = company.accountIdByCode["3100"] || company.accountIdByCode["3000"];
+    assert.ok(equity);
+    const usdDraft = await createBooksJournal(OMAR, clientId, {
+      periodId: may,
+      entryDate: "2026-05-02",
+      memo: "USD bank balance for coverage test",
+      lines: [
+        { accountId: usd, debitMinor: 1000 },
+        { accountId: equity, creditMinor: 1000 },
+      ],
+      post: false,
+    });
+    await postBooksJournal(LAYLA, clientId, usdDraft.id);
     await materializeBooksBankTransactions(OMAR, clientId);
     const [firstTxn] = (
       await admin.query(
@@ -196,7 +217,7 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
     const byCode = Object.fromEntries(c.statements.accounts.map((a) => [a.code, a.state]));
     assert.equal(byCode["1120"], "covered", "adjacent statements cover the month");
     assert.equal(byCode["1121"], "gap");
-    assert.equal(byCode["1110"], "missing");
+    assert.equal(byCode["1110"], "n/a", "petty cash does not require statements");
     assert.equal(byCode["6900"], undefined, "expense accounts with sub_type 'bank' are not money accounts");
     assert.equal(byCode["6910"], undefined);
     assert.equal(c.statements.ok, false);
@@ -205,7 +226,13 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
     assert.equal(c.documentsToReview.salesInvoices, 1);
     assert.equal(c.documentsToReview.notes, 0);
     assert.equal(c.documentsToReview.count, 3);
-    assert.equal(c.documentsToReview.href, "/books/purchases", "bills waiting → Purchases queue");
+    assert.equal(
+      c.documentsToReview.href,
+      "/books/purchases?tab=needs_review",
+      "bills waiting → Purchases needs-review queue",
+    );
+    assert.equal(c.documentsToReview.hrefs.purchaseBills, "/books/purchases?tab=needs_review");
+    assert.equal(c.documentsToReview.hrefs.statements, "/books/statements?status=needs_review");
     assert.equal(c.unassignedInbox.href, "/books/inbox?unassigned=1");
 
     // Only the 1120 second line: since P2A-5, statements whose balance check failed (the USD one,
@@ -236,7 +263,11 @@ test("P2B-4: checklist cards and issues for a month", async (t) => {
       setCompanyVatSettings(RAJ, clientId, { vatReturnFrequency: "quarterly", vatPeriodEndMonth: 13 }),
       /vat_stagger_invalid/,
     );
-    await setCompanyVatSettings(RAJ, clientId, { vatReturnFrequency: "quarterly", vatPeriodEndMonth: 3 });
+    await setCompanyVatSettings(RAJ, clientId, {
+      vatReturnFrequency: "quarterly",
+      vatPeriodEndMonth: 3,
+      establishmentEmirate: "Dubai",
+    });
     const withVat = await getBooksMonthChecklist(OMAR, clientId, { periodId: may, today: "2026-07-01" });
     assert.deepEqual(withVat.periodStatus.vat, {
       set: true,

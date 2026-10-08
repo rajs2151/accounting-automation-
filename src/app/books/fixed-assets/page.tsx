@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { BooksDateInput } from "@/components/books/date-input";
 import { StatusBadge } from "@/components/books/status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiErrorMessage } from "@/lib/api-error";
+import { formatDateUae } from "@/lib/date";
 import { displayToMinor, formatMinor, MoneyTypeError } from "@/lib/money";
 
 type Asset = {
@@ -74,10 +76,10 @@ export default function BooksFixedAssetsPage() {
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [name, setName] = useState("");
-  const [cost, setCost] = useState("36000.00");
+  const [cost, setCost] = useState("");
   const [residual, setResidual] = useState("0.00");
-  const [inService, setInService] = useState("2026-05-01");
-  const [lifeMonths, setLifeMonths] = useState("36");
+  const [inService, setInService] = useState("");
+  const [lifeMonths, setLifeMonths] = useState("");
   const [saving, setSaving] = useState(false);
   const [options, setOptions] = useState<AccountOptions | null>(null);
   const [bills, setBills] = useState<Bill[]>([]);
@@ -112,6 +114,10 @@ export default function BooksFixedAssetsPage() {
 
   useEffect(() => {
     if (!addOpen) return;
+    setCost("");
+    setLifeMonths("");
+    setInService(new Date().toISOString().slice(0, 10));
+    setCostSource("bill");
     void fetch("/api/books/fixed-assets/account-options")
       .then((r) => r.json())
       .then((d: AccountOptions) => {
@@ -124,11 +130,11 @@ export default function BooksFixedAssetsPage() {
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d)) return;
-        setBills(
-          d.filter((b: { status?: string }) =>
-            ["posted", "partially_paid", "paid"].includes(String(b.status)),
-          ),
+        const posted = d.filter((b: { status?: string }) =>
+          ["posted", "partially_paid", "paid"].includes(String(b.status)),
         );
+        setBills(posted);
+        if (!posted.length) setCostSource("draft");
       })
       .catch(() => undefined);
   }, [addOpen]);
@@ -236,20 +242,29 @@ export default function BooksFixedAssetsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
+    <div className="mx-auto max-w-[1400px] space-y-4 py-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="font-heading text-2xl">Fixed assets</h1>
+          <h1 className="text-2xl font-semibold">Fixed assets</h1>
           <p className="text-sm text-muted-foreground">
-            Straight-line depreciation (full month from in-service month). Last month absorbs
-            remainder fils. Run creates a draft JV for dual-control posting.
+            Straight-line depreciation (full month from in-service month). Catch-up is included when
+            the in-service date is before the open period. Run creates a draft JV for dual-control
+            posting.
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" disabled={!periodId || running} onClick={() => void runDepreciation()}>
+          <Button
+            variant="outline"
+            disabled={!periodId || running || rows.length === 0}
+            title={rows.length === 0 ? "Add an asset before running depreciation" : undefined}
+            onClick={() => void runDepreciation()}
+            data-testid="fa-run-depreciation"
+          >
             {running ? "Running…" : `Run depreciation${periodLabel ? ` — ${periodLabel}` : ""}`}
           </Button>
-          <Button onClick={() => setAddOpen(true)}>Add asset</Button>
+          <Button onClick={() => setAddOpen(true)} data-testid="fa-add">
+            Add asset
+          </Button>
         </div>
       </div>
 
@@ -281,7 +296,9 @@ export default function BooksFixedAssetsPage() {
                       <span className="ml-2 text-xs text-muted-foreground">(disposed)</span>
                     ) : null}
                   </td>
-                  <td className="px-3 py-2 tabular-nums">{a.inServiceDate}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {a.inServiceDate ? formatDateUae(a.inServiceDate.slice(0, 10)) : "—"}
+                  </td>
                   <td className="px-3 py-2 tabular-nums">{formatMinor(a.costMinor)}</td>
                   <td className="px-3 py-2 tabular-nums">{formatMinor(a.residualMinor)}</td>
                   <td className="px-3 py-2 tabular-nums">{a.lifeMonths} mo</td>
@@ -321,7 +338,12 @@ export default function BooksFixedAssetsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label htmlFor="fa-cost">Cost (AED)</Label>
-                <Input id="fa-cost" value={cost} onChange={(e) => setCost(e.target.value)} />
+                <Input
+                  id="fa-cost"
+                  value={cost}
+                  placeholder="0.00"
+                  onChange={(e) => setCost(e.target.value)}
+                />
               </div>
               <div className="grid gap-1">
                 <Label htmlFor="fa-res">Residual (AED)</Label>
@@ -335,11 +357,11 @@ export default function BooksFixedAssetsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label htmlFor="fa-svc">In service</Label>
-                <Input
+                <BooksDateInput
                   id="fa-svc"
-                  type="date"
                   value={inService}
-                  onChange={(e) => setInService(e.target.value)}
+                  onChange={(iso) => setInService(iso)}
+                  data-testid="fa-in-service"
                 />
               </div>
               <div className="grid gap-1">
@@ -347,6 +369,7 @@ export default function BooksFixedAssetsPage() {
                 <Input
                   id="fa-life"
                   value={lifeMonths}
+                  placeholder="e.g. 36"
                   onChange={(e) => setLifeMonths(e.target.value)}
                 />
               </div>
@@ -475,8 +498,11 @@ export default function BooksFixedAssetsPage() {
                 </Select>
               ) : null}
               <p className="text-xs text-muted-foreground">
-                Depreciation only runs once the cost is posted. Bought with VAT? Record the purchase bill
-                (VAT recovered there) and link it instead.
+                Depreciation only runs once the cost is posted. VAT-registered companies should{" "}
+                <a href="/books/purchases" className="underline underline-offset-2">
+                  record a purchase bill
+                </a>{" "}
+                (input VAT recovered there) and link it here.
               </p>
             </div>
           </div>

@@ -6,7 +6,14 @@
  * statement balance-check failures, bank reconciliation differences) that drives the top-bar badge.
  */
 import { withUser } from "@/lib/db";
-import { computeStatementCoverage, normalizeIban } from "@/lib/statement-coverage";
+import { documentsToReviewHref, inboxQueueBucket } from "@/lib/inbox-classify";
+import { controlDriftIssueLabel } from "@/lib/money-display";
+import {
+  computeStatementCoverage,
+  normalizeIban,
+  statementCoverageApplicable,
+  type BankInstrumentType,
+} from "@/lib/statement-coverage";
 import { listBooksBankAccounts } from "@/server/books/bank-accounts";
 import { listBankReconciliations } from "@/server/books/bank-recon";
 import { controlVsOpenItemsDrift } from "@/server/books/control-drift";
@@ -87,8 +94,11 @@ export type StatementCoverageItem = {
   code: string;
   name: string;
   setupOk: boolean;
-  state: "covered" | "gap" | "missing";
+  /** covered/gap/missing for statement-required accounts; n/a for cash. */
+  state: "covered" | "gap" | "missing" | "n/a";
   coverageTo: string | null;
+  instrumentType?: string;
+  requiresStatement?: boolean;
 };
 
 export type BooksIssue = {
@@ -97,10 +107,14 @@ export type BooksIssue = {
     | "statement_balance_check"
     | "bank_recon_difference"
     | "ar_control_vs_open_items"
-    | "ap_control_vs_open_items";
+    | "ap_control_vs_open_items"
+    | "close_gate_fail"
+    | "vat_not_configured";
   label: string;
   href: string;
   refId: string;
+  /** Structured amounts for client formatting (never put "fils" in label). */
+  amounts?: Array<{ amountMinor: number; currency: string; role: string }>;
 };
 
 export type BooksMonthChecklist = {
@@ -113,6 +127,12 @@ export type BooksMonthChecklist = {
     notes: number;
     statements: number;
     href: string;
+    hrefs: {
+      purchaseBills: string;
+      salesInvoices: string;
+      notes: string;
+      statements: string;
+    };
   };
   bankLines: { needsReview: number; readyNotPosted: number; href: string };
   unassignedInbox: { count: number; href: string };
@@ -242,17 +262,33 @@ export async function listBooksIssues(
     if (drift.ar.driftMinor !== 0) {
       issues.push({
         kind: "ar_control_vs_open_items",
-        label: `AR control (1210) ${drift.ar.controlMinor} fils ≠ open items ${drift.ar.openMinor} fils`,
+        label: controlDriftIssueLabel(
+          "AR",
+          { amountMinor: drift.ar.controlMinor },
+          { amountMinor: drift.ar.openMinor },
+        ),
         href: "/books/reports/ageing?side=ar",
         refId: "1210",
+        amounts: [
+          { amountMinor: drift.ar.controlMinor, currency: "AED", role: "control" },
+          { amountMinor: drift.ar.openMinor, currency: "AED", role: "open" },
+        ],
       });
     }
     if (drift.ap.driftMinor !== 0) {
       issues.push({
         kind: "ap_control_vs_open_items",
-        label: `AP control (2110) ${drift.ap.controlMinor} fils ≠ open items ${drift.ap.openMinor} fils`,
+        label: controlDriftIssueLabel(
+          "AP",
+          { amountMinor: drift.ap.controlMinor },
+          { amountMinor: drift.ap.openMinor },
+        ),
         href: "/books/reports/ageing?side=ap",
         refId: "2110",
+        amounts: [
+          { amountMinor: drift.ap.controlMinor, currency: "AED", role: "control" },
+          { amountMinor: drift.ap.openMinor, currency: "AED", role: "open" },
+        ],
       });
     }
   } catch {
@@ -261,13 +297,96 @@ export async function listBooksIssues(
   return issues;
 }
 
+/** Map failing / not-configured close gates into top-bar issues (same checklist source). */
+export function closeGatesToIssues(
+  gates: Array<{
+    key: string;
+    label: string;
+    status: string;
+    blocking: boolean;
+    detail?: string;
+    href?: string;
+  }>,
+): BooksIssue[] {
+  const out: BooksIssue[] = [];
+  for (const g of gates) {
+    if (!g.blocking) continue;
+    if (g.status !== "fail" && g.status !== "not_set_up") continue;
+    out.push({
+      kind: g.key === "vat_control" && g.status === "not_set_up" ? "vat_not_configured" : "close_gate_fail",
+      label: `${g.label}${g.detail ? `: ${g.detail}` : ""}`,
+      href: g.href || "/books/close",
+      refId: g.key,
+    });
+  }
+  return out;
+}
+
+/** Merge base issues with failing close gates (dedupe; skip ar_ap_tieout when drift already listed). */
+export function mergeIssuesWithCloseGates(
+  base: BooksIssue[],
+  gates: Array<{
+    key: string;
+    label: string;
+    status: string;
+    blocking: boolean;
+    detail?: string;
+    href?: string;
+  }>,
+): BooksIssue[] {
+  const fromGates = closeGatesToIssues(gates);
+  const seen = new Set(base.map((i) => `${i.kind}:${i.refId}`));
+  const hasDrift = base.some(
+    (i) => i.kind === "ar_control_vs_open_items" || i.kind === "ap_control_vs_open_items",
+  );
+  return [
+    ...base,
+    ...fromGates.filter((i) => {
+      if (i.refId === "ar_ap_tieout" && hasDrift) return false;
+      return !seen.has(`${i.kind}:${i.refId}`);
+    }),
+  ];
+}
+
+/**
+ * Issues for the badge + dashboard checklist count (same SoT).
+ * Dynamic-imports close to avoid a dashboard ↔ close cycle.
+ */
+export async function listBooksIssuesMerged(
+  userId: string,
+  clientId: string,
+  opts?: { periodId?: string | null },
+): Promise<BooksIssue[]> {
+  const base = await listBooksIssues(userId, clientId, opts);
+  const periodId = opts?.periodId;
+  if (!periodId) return base;
+  try {
+    const { getBooksCloseChecklist } = await import("@/server/books/close");
+    const checklist = await getBooksCloseChecklist(userId, clientId, periodId);
+    return mergeIssuesWithCloseGates(base, checklist.gates);
+  } catch {
+    return base;
+  }
+}
+
 export async function getBooksMonthChecklist(
   userId: string,
   clientId: string,
   opts?: { periodId?: string | null; today?: string },
 ): Promise<BooksMonthChecklist> {
   const period = await resolvePeriod(userId, clientId, opts?.periodId);
-  const accounts = await listBooksBankAccounts(userId, clientId);
+  // Soft-fail missing db/33 columns so Close still loads; Banking page surfaces the migration.
+  let accounts: Awaited<ReturnType<typeof listBooksBankAccounts>> = [];
+  try {
+    accounts = await listBooksBankAccounts(userId, clientId);
+  } catch (err) {
+    const { BooksError } = await import("@/server/books/errors");
+    if (err instanceof BooksError && err.message === "c2_bank_accounts_migration_required") {
+      accounts = [];
+    } else {
+      throw err;
+    }
+  }
 
   // Coverage needs the raw statement ranges per account (the Banking list only keeps merged ones).
   const counts = await withUser(userId, async (db) => {
@@ -305,28 +424,46 @@ export async function getBooksMonthChecklist(
        WHERE client_id = $1 AND status <> 'failed' AND period_from IS NOT NULL AND period_to IS NOT NULL`,
       [clientId],
     );
+    const activity = await db.query(
+      `SELECT account_id::text AS id, COUNT(*)::int AS n
+       FROM books_bank_transactions
+       WHERE client_id = $1 AND txn_date BETWEEN $2::date AND $3::date
+       GROUP BY account_id`,
+      [clientId, period.start, period.end],
+    );
     const client = await db.query(
-      `SELECT vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
+      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month
+       FROM clients WHERE id = $1`,
       [clientId],
     );
-    return { docs, inbox, stmtReview, bank, unassigned, ranges, client };
+    return { docs, inbox, stmtReview, bank, unassigned, ranges, activity, client };
   });
 
   const docBy = new Map(counts.docs.rows.map((r) => [String(r.doc_type), Number(r.n)]));
   let inboxPurchase = 0;
   let inboxSales = 0;
   for (const r of counts.inbox.rows) {
-    const t = String(r.t);
-    if (t.includes("bank") || t.includes("statement")) continue; // counted via statement extractions
-    if (t.includes("purchase") || t.includes("bill") || t.includes("receipt") || !t) inboxPurchase += Number(r.n);
-    else if (t.includes("sales") || t.includes("invoice")) inboxSales += Number(r.n);
+    const bucket = inboxQueueBucket(String(r.t));
+    if (bucket === "statement") continue; // counted via statement extractions
+    if (bucket === "purchase") inboxPurchase += Number(r.n);
+    else if (bucket === "sales") inboxSales += Number(r.n);
   }
   const purchaseBills = (docBy.get("purchase_bill") || 0) + inboxPurchase;
   const salesInvoices = (docBy.get("sales_invoice") || 0) + inboxSales;
   const notes = (docBy.get("credit_note") || 0) + (docBy.get("debit_note") || 0);
   const statementsToReview = Number(counts.stmtReview.rows[0].n);
 
+  const activityByAccount = new Map(
+    counts.activity.rows.map((r) => [String(r.id), Number(r.n) > 0]),
+  );
   const coverage: StatementCoverageItem[] = accounts.map((a) => {
+    const instrumentType = (a.instrumentType || "bank") as BankInstrumentType;
+    const applicable = statementCoverageApplicable({
+      instrumentType,
+      setupOk: a.setupOk,
+      ledgerBalanceMinor: a.ledgerBalanceMinor,
+      hasPeriodActivity: Boolean(activityByAccount.get(a.id)),
+    });
     const nib = normalizeIban(a.iban);
     const periods = counts.ranges.rows
       .filter(
@@ -340,15 +477,20 @@ export async function getBooksMonthChecklist(
       code: a.code,
       name: a.name,
       setupOk: a.setupOk,
-      state: coverageState(periods, period.start, period.end),
+      state: applicable ? coverageState(periods, period.start, period.end) : "n/a",
       coverageTo: a.coverageTo,
+      instrumentType,
+      requiresStatement: applicable,
     };
   });
+  const requiredCoverage = coverage.filter((x) => x.requiresStatement);
 
   const c = counts.client.rows[0] || {};
   const freq = (c.vat_return_frequency as VatFrequency | null) || null;
+  const emirate = (c.establishment_emirate as string | null) || null;
+  // Due dates only when establishment emirate and return period are both set (item 8).
   let vat: BooksMonthChecklist["periodStatus"]["vat"] = { set: false };
-  if (freq) {
+  if (freq && emirate) {
     const v = vatPeriodForMonth(period.end, freq, c.vat_period_end_month as number | null);
     const today = opts?.today || new Date().toISOString().slice(0, 10);
     const daysUntilDue = Math.round(
@@ -357,12 +499,14 @@ export async function getBooksMonthChecklist(
     vat = { set: true, frequency: freq, ...v, daysUntilDue };
   }
 
-  const issues = await listBooksIssues(userId, clientId, { periodId: period.id });
+  const issues = await listBooksIssuesMerged(userId, clientId, { periodId: period.id });
 
   return {
     period,
     statements: {
-      ok: coverage.length > 0 && coverage.every((x) => x.state === "covered"),
+      ok:
+        requiredCoverage.length === 0 ||
+        requiredCoverage.every((x) => x.state === "covered"),
       accounts: coverage,
       href: "/books/banking",
     },
@@ -372,15 +516,21 @@ export async function getBooksMonthChecklist(
       salesInvoices,
       notes,
       statements: statementsToReview,
+      hrefs: {
+        purchaseBills: documentsToReviewHref("purchase"),
+        salesInvoices: documentsToReviewHref("sales"),
+        notes: documentsToReviewHref("notes"),
+        statements: documentsToReviewHref("statement"),
+      },
       // Open the queue that actually has work (bills first, then invoices, then statements).
       href:
         purchaseBills > 0
-          ? "/books/purchases"
+          ? documentsToReviewHref("purchase")
           : salesInvoices + notes > 0
-            ? "/books/sales"
+            ? documentsToReviewHref("sales")
             : statementsToReview > 0
-              ? "/books/statements"
-              : "/books/purchases",
+              ? documentsToReviewHref("statement")
+              : documentsToReviewHref("purchase"),
     },
     bankLines: {
       needsReview: Number(counts.bank.rows[0].needs_review),

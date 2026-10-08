@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { FileText, Filter } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { defaultIssueDateIso } from "@/lib/default-issue-date";
 import { displayToMinor, MoneyTypeError } from "@/lib/money";
 import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/status-labels";
 
@@ -72,9 +74,19 @@ function isPurchaseUpload(u: InboxRow): boolean {
 
 type Tab = "all" | "needs_review" | "uploads";
 
+function tabFromSearch(raw: string | null): Tab {
+  if (raw === "needs_review" || raw === "uploads" || raw === "all") return raw;
+  return "all";
+}
+
 export default function PurchasesPage() {
-  const { periodId } = useBooksShell();
-  const [tab, setTab] = useState<Tab>("all");
+  const searchParams = useSearchParams();
+  const { periodId, periods } = useBooksShell();
+  const [tab, setTab] = useState<Tab>(() => tabFromSearch(searchParams.get("tab")));
+
+  useEffect(() => {
+    setTab(tabFromSearch(searchParams.get("tab")));
+  }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState<string | "all">("all");
   const [rows, setRows] = useState<Doc[]>([]);
   const [uploads, setUploads] = useState<InboxRow[]>([]);
@@ -93,11 +105,33 @@ export default function PurchasesPage() {
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
-    issueDate: "2026-05-16",
+    issueDate: "",
     netAed: "200.00",
     lineKind: "expense" as "expense" | "disbursement",
     vatCode: "SR",
   });
+
+  useEffect(() => {
+    if (!periods.length) return;
+    setForm((f) => {
+      if (f.issueDate) return f;
+      return {
+        ...f,
+        issueDate: defaultIssueDateIso({
+          todayIso: new Date().toISOString().slice(0, 10),
+          selectedPeriodId: periodId,
+          periods: periods
+            .filter((p) => p.periodStart && p.periodEnd)
+            .map((p) => ({
+              id: p.id,
+              periodStart: p.periodStart!,
+              periodEnd: p.periodEnd!,
+              status: p.status,
+            })),
+        }),
+      };
+    });
+  }, [periods, periodId]);
 
   const reload = useCallback(async () => {
     const [docs, pts, inbox, notes, sess] = await Promise.all([
@@ -302,7 +336,12 @@ export default function PurchasesPage() {
   return (
     <div className="space-y-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Purchase bills</h1>
+        <div>
+          <h1 className="text-2xl font-semibold">Purchase bills</h1>
+          <p className="text-sm text-muted-foreground">
+            Record-only · Period {periods.find((p) => p.id === periodId)?.label || "—"}
+          </p>
+        </div>
         <div className="flex flex-wrap gap-2">
           <Button data-testid="purchase-upload" onClick={() => setUploadOpen(true)}>
             Upload bills
@@ -577,18 +616,19 @@ export default function PurchasesPage() {
             </div>
           ) : null}
 
+          <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm" data-testid="purchase-bills-table">
-            <thead>
-              <tr className="text-left text-muted-foreground">
-                <th className="w-8 py-2" />
-                <th>Number</th>
-                <th>Supplier</th>
-                <th>Date</th>
-                <th>Due</th>
-                <th className="text-end">Outstanding</th>
-                <th className="text-end">Gross</th>
-                <th>Status</th>
-                <th />
+            <thead className="bg-muted/40 text-left">
+              <tr>
+                <th className="w-8 px-3 py-2" />
+                <th className="px-3 py-2">Bill no</th>
+                <th className="px-3 py-2">Supplier</th>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Due</th>
+                <th className="px-3 py-2 text-end">Outstanding</th>
+                <th className="px-3 py-2 text-end">Total</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody>
@@ -664,6 +704,7 @@ export default function PurchasesPage() {
               ) : null}
             </tbody>
           </table>
+          </div>
         </>
       )}
 

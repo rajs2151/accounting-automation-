@@ -291,11 +291,12 @@ export default function BankingPage() {
             <tr>
               <th className="px-3 py-2">Account</th>
               <th className="px-3 py-2">Type</th>
+              <th className="px-3 py-2">Currency</th>
               <th className="px-3 py-2">Bank</th>
               <th className="px-3 py-2">IBAN</th>
               <th className="px-3 py-2">Coverage</th>
               <th className="px-3 py-2">Last closing</th>
-              <th className="px-3 py-2">Ledger</th>
+              <th className="px-3 py-2">Ledger (AED)</th>
               <th className="px-3 py-2">Diff</th>
               <th className="px-3 py-2">Reconciled</th>
               <th className="px-3 py-2">Unreviewed</th>
@@ -317,10 +318,20 @@ export default function BankingPage() {
                   ) : null}
                 </td>
                 <td className="px-3 py-2">{TYPE_LABEL[r.instrumentType]}</td>
+                <td className="px-3 py-2 tabular-nums">
+                  {r.currency || "AED"}
+                  {r.currency && r.currency !== "AED" ? (
+                    <div className="text-xs text-muted-foreground">Ledger shown in AED</div>
+                  ) : null}
+                </td>
                 <td className="px-3 py-2">{r.bankName || "—"}</td>
                 <td className="px-3 py-2 font-mono text-xs">{ibanDisplay(r)}</td>
                 <td className="px-3 py-2">
-                  <div>{coverageLabel(r)}</div>
+                  <div>
+                    {r.instrumentType === "cash"
+                      ? "Cash count (no statement)"
+                      : coverageLabel(r)}
+                  </div>
                   {r.gaps.length ? (
                     <p className="text-xs text-red-600" data-testid={`banking-gaps-${r.code}`}>
                       Gap{" "}
@@ -375,7 +386,7 @@ export default function BankingPage() {
                   >
                     Transactions
                   </Link>
-                  {!r.setupOk ? (
+                  {!r.setupOk && r.instrumentType !== "cash" ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -384,6 +395,14 @@ export default function BankingPage() {
                     >
                       Set up
                     </Button>
+                  ) : r.instrumentType === "cash" ? (
+                    <Link
+                      href="/books/journals?voucherType=Journal"
+                      className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs hover:bg-muted"
+                      data-testid={`banking-cash-count-${r.code}`}
+                    >
+                      Record cash count
+                    </Link>
                   ) : (
                     <Button
                       size="sm"
@@ -402,7 +421,7 @@ export default function BankingPage() {
             ))}
             {!loading && !rows.length ? (
               <tr>
-                <td colSpan={11} className="px-3 py-6 text-muted-foreground">
+                <td colSpan={12} className="px-3 py-6 text-muted-foreground">
                   No bank / card / gateway / cash accounts on the COA.
                 </td>
               </tr>

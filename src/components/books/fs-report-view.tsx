@@ -27,6 +27,7 @@ import {
 } from "@/lib/fs-report-tree";
 import { buildProjectedPnlColumn } from "@/lib/fs-projection";
 import { formatMinor } from "@/lib/money";
+import { describeReportBasis } from "@/lib/report-basis";
 
 type CtBanner = {
   taxYearLabel: string;
@@ -35,6 +36,9 @@ type CtBanner = {
   estimateMinor: number;
   revenueMinor?: number;
   smallBusinessReliefMayApply?: boolean;
+  sbrElected?: boolean | null;
+  isQfzp?: boolean | null;
+  noTaxDueRecorded?: boolean;
   disclaimer: string;
 };
 
@@ -555,11 +559,31 @@ export function FsReportView({ statement }: { statement: Statement }) {
     return selected?.label || query?.from || "—";
   })();
 
+  // Shell period is the SoT; range / FY / prior-column views are explicit overrides.
+  const overridesShell =
+    mode === "range" || mode === "quarterly" || mode === "yearly" || showPrior || asOfToday;
+  const basisLine = describeReportBasis({
+    mode,
+    from: query?.from,
+    to: query?.to,
+    periodLabel,
+    overridesShell,
+    shellPeriodLabel: selected?.label || null,
+  });
+  const chartColumns = projectedPnl || [];
+  const showMetricChart = statement === "pnl" && chartColumns.length >= 3;
+
   const gateFails: string[] = [];
   if (integrity) {
-    if (!integrity.tbBalances.ok) gateFails.push(`TB (${integrity.tbBalances.differenceMinor} fils)`);
-    if (!integrity.bsBalances.ok) gateFails.push(`Balance sheet (${integrity.bsBalances.differenceMinor} fils)`);
-    if (!integrity.cfTies.ok) gateFails.push(`Cash flow ties (${integrity.cfTies.differenceMinor} fils)`);
+    if (!integrity.tbBalances.ok) {
+      gateFails.push(`TB (off by ${formatMinor(integrity.tbBalances.differenceMinor)} AED)`);
+    }
+    if (!integrity.bsBalances.ok) {
+      gateFails.push(`Balance sheet (off by ${formatMinor(integrity.bsBalances.differenceMinor)} AED)`);
+    }
+    if (!integrity.cfTies.ok) {
+      gateFails.push(`Cash flow ties (off by ${formatMinor(integrity.cfTies.differenceMinor)} AED)`);
+    }
   }
 
   if (periodsLoaded && !periods.length) {
@@ -582,6 +606,18 @@ export function FsReportView({ statement }: { statement: Statement }) {
           <p className="text-sm text-muted-foreground">
             Posted journals · AED · {periodLabel}
           </p>
+          <p className="text-xs text-muted-foreground" data-testid="fs-report-basis">
+            {basisLine}
+          </p>
+          {overridesShell ? (
+            <p
+              className="mt-0.5 text-xs font-medium text-amber-800 dark:text-amber-200"
+              data-testid="fs-period-override"
+            >
+              Showing a different range than the top-bar period
+              {selected?.label ? ` (${selected.label})` : ""}.
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <label className="text-xs text-muted-foreground">
@@ -696,17 +732,35 @@ export function FsReportView({ statement }: { statement: Statement }) {
             Estimate {formatMinor(ctBanner.estimateMinor)} AED on taxable income{" "}
             {formatMinor(ctBanner.taxableIncomeMinor)} ({ctBanner.disclaimer})
           </div>
-          {ctBanner.smallBusinessReliefMayApply ? (
+          {ctBanner.noTaxDueRecorded ? (
+            <div className="text-muted-foreground" data-testid="fs-ct-no-tax">
+              No corporate tax due recorded
+              {ctBanner.sbrElected
+                ? " (Small Business Relief elected)"
+                : ctBanner.isQfzp
+                  ? " (QFZP)"
+                  : ""}
+              .
+            </div>
+          ) : ctBanner.smallBusinessReliefMayApply ? (
             <div className="text-muted-foreground" data-testid="fs-ct-sbr">
               Revenue so far {formatMinor(ctBanner.revenueMinor ?? 0)} AED is within the AED 3,000,000 Small
-              Business Relief limit — if the company elects relief, no corporate tax is due for this period.
+              Business Relief limit — record the SBR election in Settings before treating tax as zero.
+            </div>
+          ) : ctBanner.sbrElected == null && ctBanner.isQfzp == null ? (
+            <div className="text-muted-foreground" data-testid="fs-ct-unset">
+              SBR election and QFZP status are not set for this company — estimate assumes standard 9% CT.
             </div>
           ) : null}
         </div>
       ) : null}
 
-      {statement === "pnl" && projectedPnl?.length ? (
-        <FsMetricChart columns={projectedPnl} />
+      {showMetricChart ? <FsMetricChart columns={chartColumns} /> : null}
+      {statement === "pnl" && chartColumns.length > 0 && chartColumns.length < 3 ? (
+        <p className="text-xs text-muted-foreground print:hidden" data-testid="fs-chart-need-periods">
+          Chart needs at least 3 period columns — switch to quarterly/yearly, enable prior period, or turn
+          projections on.
+        </p>
       ) : null}
 
       {gateFails.length ? (

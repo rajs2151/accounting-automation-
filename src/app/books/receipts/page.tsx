@@ -134,7 +134,8 @@ export default function ReceiptsPage() {
         if (cancelled) return;
         const list: Party[] = res.ok && Array.isArray(data) ? data : [];
         setParties(list);
-        setPartyId((cur) => (list.some((p) => p.id === cur) ? cur : list[0]?.id || ""));
+        // Do not auto-pick a customer/supplier — accountant must choose.
+        setPartyId((cur) => (list.some((p) => p.id === cur) ? cur : ""));
       } catch {
         if (!cancelled) setParties([]);
       }
@@ -524,7 +525,7 @@ export default function ReceiptsPage() {
         <div className="flex items-end gap-2 md:col-span-3">
           <Button
             onClick={() => void record()}
-            disabled={saving || Boolean(allocError)}
+            disabled={saving || Boolean(allocError) || !amountValid || !partyId}
             data-testid="receipt-record"
           >
             {saving ? "Saving…" : `Record ${noun}`}

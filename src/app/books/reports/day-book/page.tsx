@@ -13,6 +13,7 @@ import {
 } from "@/components/books/report-table";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { describeReportBasis } from "@/lib/report-basis";
 
 // Same list as DAY_BOOK_TYPES (server/books/day-book.ts = vouchers.ts VOUCHER_TYPES + Reversal).
 const TYPES = [
@@ -107,6 +108,9 @@ function DayBookInner() {
           <h1 className="text-2xl font-semibold tracking-tight">Day book</h1>
           <p className="text-sm text-muted-foreground">
             Every posted voucher in the range, in date order, with its debit and credit totals. Expand a voucher for its lines.
+          </p>
+          <p className="text-xs text-muted-foreground" data-testid="daybook-report-basis">
+            {describeReportBasis({ mode: "range", from, to })}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">

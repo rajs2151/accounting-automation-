@@ -36,6 +36,9 @@ type VatSettings = {
   establishmentEmirate: string | null;
   vatReturnFrequency: "monthly" | "quarterly" | null;
   vatPeriodEndMonth: number | null;
+  vatRegistrationStatus: "registered" | "not_registered" | "voluntary" | null;
+  designatedZone: boolean;
+  trn: string | null;
 };
 
 const selectClass = "h-9 w-full rounded-lg border border-border bg-background px-2 text-sm disabled:opacity-60";
@@ -46,6 +49,9 @@ export function VatSettingsSection() {
   const [emirate, setEmirate] = useState("");
   const [frequency, setFrequency] = useState<"" | "monthly" | "quarterly">("");
   const [endMonth, setEndMonth] = useState(3);
+  const [regStatus, setRegStatus] = useState<"" | "registered" | "not_registered" | "voluntary">("");
+  const [designatedZone, setDesignatedZone] = useState(false);
+  const [trn, setTrn] = useState<string | null>(null);
   const [gapCount, setGapCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -60,6 +66,9 @@ export function VatSettingsSection() {
       setEmirate(v.establishmentEmirate || "");
       setFrequency(v.vatReturnFrequency || "");
       setEndMonth(v.vatPeriodEndMonth || 3);
+      setRegStatus(v.vatRegistrationStatus || "");
+      setDesignatedZone(Boolean(v.designatedZone));
+      setTrn(v.trn);
     }
     setIsAdmin(me?.me?.role === "admin");
     setGapCount(Array.isArray(gaps) ? gaps.length : null);
@@ -78,6 +87,8 @@ export function VatSettingsSection() {
         establishmentEmirate: emirate || null,
         vatReturnFrequency: frequency || null,
         vatPeriodEndMonth: frequency === "quarterly" ? endMonth : null,
+        vatRegistrationStatus: regStatus || null,
+        designatedZone,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -108,12 +119,45 @@ export function VatSettingsSection() {
       <div>
         <h2 className="text-lg font-medium">VAT</h2>
         <p className="text-sm text-muted-foreground">
-          Establishment emirate is the place of supply for services you sell (goods follow the customer&apos;s
-          emirate). The VAT return period sets the due dates on the dashboard.
+          Establishment emirate and VAT return period must both be set before due dates appear and before a VAT
+          return draft can be generated. TRN is edited on the company profile
+          {trn ? ` (current ${trn})` : " (not set)"}.
           {isAdmin ? "" : " Only an admin can change these."}
         </p>
       </div>
       <div className="grid gap-3 md:grid-cols-3">
+        <div className="space-y-1">
+          <Label htmlFor="vat-reg-status">VAT registration</Label>
+          <select
+            id="vat-reg-status"
+            className={selectClass}
+            value={regStatus}
+            disabled={!isAdmin}
+            onChange={(e) =>
+              setRegStatus(e.target.value as "" | "registered" | "not_registered" | "voluntary")
+            }
+            data-testid="vat-registration-status"
+          >
+            <option value="">Not set</option>
+            <option value="registered">Registered</option>
+            <option value="voluntary">Voluntary</option>
+            <option value="not_registered">Not registered</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="vat-designated-zone">Designated zone</Label>
+          <select
+            id="vat-designated-zone"
+            className={selectClass}
+            value={designatedZone ? "yes" : "no"}
+            disabled={!isAdmin}
+            onChange={(e) => setDesignatedZone(e.target.value === "yes")}
+            data-testid="vat-designated-zone"
+          >
+            <option value="no">No</option>
+            <option value="yes">Yes</option>
+          </select>
+        </div>
         <div className="space-y-1">
           <Label htmlFor="vat-emirate">Establishment emirate</Label>
           <select

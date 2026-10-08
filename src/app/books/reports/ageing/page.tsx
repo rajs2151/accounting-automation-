@@ -12,6 +12,7 @@ import {
 } from "@/components/books/report-table";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { describeReportBasis } from "@/lib/report-basis";
 import type { ReportRow } from "@/lib/report-table";
 
 const BUCKETS = ["not_due", "0-30", "31-60", "61-90", "90+"] as const;
@@ -124,6 +125,9 @@ function AgeingInner() {
           <p className="text-sm text-muted-foreground">
             Open {side === "ap" ? "bills" : "invoices"} as of the date, by days past due. On-account and advance amounts
             are shown as their own negative rows.
+          </p>
+          <p className="text-xs text-muted-foreground" data-testid="ageing-report-basis">
+            {describeReportBasis({ mode: "as_of", to: asOf })}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">

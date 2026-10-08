@@ -3,7 +3,15 @@ import { randomUUID } from "node:crypto";
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
 import { BooksError } from "@/server/books/errors";
+import { isValidTrn } from "@/server/books/parsing";
 import { assertSyntheticTenant } from "@/server/security-gate";
+
+function normalizeTrnOrThrow(trn: string | null | undefined): string | null {
+  if (trn == null || String(trn).trim() === "") return null;
+  const cleaned = String(trn).replace(/\s/g, "");
+  if (!isValidTrn(cleaned)) throw new BooksError("invalid_trn", "invalid");
+  return cleaned;
+}
 
 export type PartyInput = {
   partyType: "customer" | "supplier";
@@ -45,7 +53,16 @@ export async function listBooksParties(
       `SELECT p.id, p.party_type AS "partyType", p.name, p.trn, p.country, p.emirate, p.zone,
               p.default_account_id AS "defaultAccountId", p.default_vat_code AS "defaultVatCode",
               p.payment_terms_days AS "paymentTermsDays", p.active,
-              a.code AS "defaultAccountCode"
+              a.code AS "defaultAccountCode",
+              COALESCE((
+                SELECT SUM(oi.open_aed_minor)::bigint
+                FROM books_open_items oi
+                JOIN books_documents d ON d.id = oi.document_id
+                WHERE d.client_id = p.client_id
+                  AND d.party_id = p.id
+                  AND d.deleted_at IS NULL
+                  AND oi.status IN ('open', 'partial')
+              ), 0)::bigint AS "balanceMinor"
        FROM books_parties p
        LEFT JOIN books_accounts a ON a.id = p.default_account_id
        WHERE p.client_id = $1
@@ -54,7 +71,10 @@ export async function listBooksParties(
        ORDER BY p.party_type, p.name`,
       [clientId, opts?.partyType || null, opts?.q?.trim() || null],
     );
-    return rows.rows;
+    return rows.rows.map((r) => ({
+      ...r,
+      balanceMinor: Number(r.balanceMinor || 0),
+    }));
   });
 }
 
@@ -103,6 +123,7 @@ export async function createBooksParty(
   if (!["customer", "supplier"].includes(body.partyType)) {
     throw new BooksError("invalid_party_type", "invalid");
   }
+  const trn = normalizeTrnOrThrow(body.trn);
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     if (!body.force) {
@@ -114,7 +135,7 @@ export async function createBooksParty(
       const suggestions = [];
       for (const row of existing.rows) {
         const score =
-          body.trn && row.trn && String(row.trn) === body.trn
+          trn && row.trn && String(row.trn) === trn
             ? 1
             : trgmSimilar(name, String(row.name));
         if (score >= 0.6) {
@@ -141,7 +162,7 @@ export async function createBooksParty(
         clientId,
         body.partyType,
         name,
-        body.trn?.trim() || null,
+        trn,
         (body.country || "AE").toUpperCase().slice(0, 2),
         body.emirate || null,
         body.zone || null,
@@ -170,6 +191,8 @@ export async function updateBooksParty(
   partyId: string,
   body: Partial<PartyInput> & { active?: boolean },
 ) {
+  const trn =
+    body.trn === undefined ? undefined : normalizeTrnOrThrow(body.trn);
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const before = await db.query(
@@ -194,7 +217,7 @@ export async function updateBooksParty(
         partyId,
         clientId,
         body.name?.trim() || null,
-        body.trn === undefined ? null : body.trn?.trim() || null,
+        trn === undefined ? null : trn,
         body.country?.toUpperCase().slice(0, 2) || null,
         body.emirate === undefined ? null : body.emirate,
         body.zone === undefined ? null : body.zone,

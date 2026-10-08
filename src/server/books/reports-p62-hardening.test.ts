@@ -463,7 +463,8 @@ test("P6-2 #5/#6: BS drill = opening + period lines (closing entries kept); synt
         totalEquityMinor: 300,
       },
     ]);
-    const eq = bsTree.rows.find((r) => r.id === "equity")!.children![0].children!;
+    // Equity group children are accounts directly (no nested "Equity" section).
+    const eq = bsTree.rows.find((r) => r.id === "equity")!.children!;
     const pye = eq.find((r) => r.label.startsWith("Prior years"))!;
     const cye = eq.find((r) => r.label === "Current year profit")!;
     const cap = eq.find((r) => r.label === "Share capital")!;

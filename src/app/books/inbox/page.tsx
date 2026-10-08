@@ -13,8 +13,10 @@ import { UploadDialog } from "@/components/books/upload-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { findFilenameNearDuplicates } from "@/lib/inbox-classify";
 import { docTypeLabel, inboxStatusLabel } from "@/lib/status-labels";
 
 type InboxRow = {
@@ -34,11 +36,28 @@ type InboxRow = {
 
 type Tab = "uploads" | "needs_review" | "all";
 
+const TYPE_OPTIONS = [
+  { value: "sales_invoice", label: "Sales invoice" },
+  { value: "purchase_bill", label: "Purchase bill" },
+  { value: "credit_note", label: "Credit note" },
+  { value: "debit_note", label: "Debit note" },
+  { value: "receipt", label: "Receipt" },
+  { value: "payment", label: "Payment" },
+  { value: "bank_statement", label: "Bank statement" },
+  { value: "card_statement", label: "Card statement" },
+  { value: "gateway_statement", label: "Gateway statement" },
+] as const;
+
 function formatBytes(n: number | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatConfidence(c: number | null | undefined): string {
+  if (c == null || !Number.isFinite(c)) return "—";
+  return `${Math.round(c * 100)}%`;
 }
 
 export default function InboxPage() {
@@ -50,6 +69,7 @@ export default function InboxPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [typeBusy, setTypeBusy] = useState<string | null>(null);
   const pageSize = 25;
 
   const reload = useCallback(async () => {
@@ -77,6 +97,29 @@ export default function InboxPage() {
     const t = window.setInterval(() => void reload(), 3000);
     return () => window.clearInterval(t);
   }, [extracting, reload]);
+
+  const hashDupes = useMemo(() => {
+    const byHash = new Map<string, string[]>();
+    for (const r of rows) {
+      if (!r.sha256 || r.error === "duplicate_file") continue;
+      const list = byHash.get(r.sha256) || [];
+      list.push(r.id);
+      byHash.set(r.sha256, list);
+    }
+    const out = new Set<string>();
+    for (const ids of byHash.values()) {
+      if (ids.length > 1) for (const id of ids) out.add(id);
+    }
+    for (const r of rows) {
+      if (r.error === "duplicate_file") out.add(r.id);
+    }
+    return out;
+  }, [rows]);
+
+  const nameDupes = useMemo(
+    () => findFilenameNearDuplicates(rows.map((r) => ({ id: r.id, filename: r.filename }))),
+    [rows],
+  );
 
   const filtered = useMemo(() => {
     let list = rows;
@@ -122,6 +165,25 @@ export default function InboxPage() {
     }
     toast.success("Routed to company");
     void reload();
+  }
+
+  async function changeType(id: string, docType: string) {
+    setTypeBusy(id);
+    try {
+      const res = await fetch(`/api/books/inbox/${id}/type`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ docType }),
+      });
+      if (!res.ok) {
+        toast.error(apiErrorMessage(await res.json().catch(() => ({}))));
+        return;
+      }
+      toast.success("Type updated");
+      void reload();
+    } finally {
+      setTypeBusy(null);
+    }
   }
 
   return (
@@ -202,12 +264,13 @@ export default function InboxPage() {
         />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm" data-testid="inbox-table">
             <thead className="bg-muted/40 text-left">
               <tr>
                 <th className="px-3 py-2">File</th>
                 <th className="px-3 py-2">Size</th>
                 <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2">Confidence</th>
                 <th className="px-3 py-2">Uploaded</th>
                 <th className="px-3 py-2">By</th>
                 <th className="px-3 py-2">Status</th>
@@ -215,55 +278,111 @@ export default function InboxPage() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((r) => (
-                <tr
-                  key={r.id}
-                  className="group border-t border-border"
-                  {...rowOpenProps(() => {
-                    window.location.href = `/books/inbox/${r.id}`;
-                  })}
-                >
-                  <td className="px-3 py-2">
-                    <span className="text-foreground">{r.filename}</span>
-                    {r.status === "failed" && r.error ? (
-                      <div className="mt-0.5 text-xs text-destructive">{r.error}</div>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                    {formatBytes(r.byteSize)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <StatusBadge meta={docTypeLabel(r.intendedType || r.detectedType)} />
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground">
-                    {r.createdAt ? formatDateUae(r.createdAt.slice(0, 10)) : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground">{r.uploadedByName || "—"}</td>
-                  <td className="px-3 py-2">
-                    <StatusBadge
-                      meta={inboxStatusLabel(r.status, r.error === "duplicate_file")}
-                    />
-                  </td>
-                  <td className="px-3 py-2 space-x-2" onClick={(e) => e.stopPropagation()}>
-                    {unassigned ? (
-                      <Button size="sm" variant="outline" onClick={() => void routeHere(r.id)}>
-                        Route here
-                      </Button>
-                    ) : null}
-                    {r.status === "failed" ? (
-                      <Button size="sm" variant="outline" onClick={() => void retry(r.id)}>
-                        Retry
-                      </Button>
-                    ) : null}
-                    <Link
-                      href={`/books/inbox/${r.id}`}
-                      className="inline-flex h-8 items-center rounded-lg px-2.5 text-sm hover:bg-muted"
+              {pageRows.map((r) => {
+                const currentType = r.intendedType || r.detectedType || "";
+                const isHashDupe = hashDupes.has(r.id);
+                const isNameDupe = nameDupes.has(r.id);
+                return (
+                  <tr
+                    key={r.id}
+                    className="group border-t border-border"
+                    {...rowOpenProps(() => {
+                      window.location.href = `/books/inbox/${r.id}`;
+                    })}
+                  >
+                    <td className="px-3 py-2">
+                      <span className="text-foreground">{r.filename}</span>
+                      {isHashDupe || isNameDupe ? (
+                        <div className="mt-0.5 text-xs text-amber-700" data-testid="inbox-dupe-hint">
+                          {isHashDupe ? "Duplicate file (same content)" : "Similar file name"}
+                        </div>
+                      ) : null}
+                      {r.status === "failed" && r.error ? (
+                        <div className="mt-0.5 text-xs text-destructive">{r.error}</div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-muted-foreground">
+                      {formatBytes(r.byteSize)}
+                    </td>
+                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                      <select
+                        className="h-8 max-w-[11rem] rounded-md border border-input bg-background px-1.5 text-xs"
+                        value={currentType}
+                        disabled={typeBusy === r.id}
+                        data-testid={`inbox-type-${r.id}`}
+                        onChange={(e) => void changeType(r.id, e.target.value)}
+                        title={docTypeLabel(currentType).label}
+                      >
+                        {!currentType ? <option value="">Unknown</option> : null}
+                        {TYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                        {currentType && !TYPE_OPTIONS.some((o) => o.value === currentType) ? (
+                          <option value={currentType}>{docTypeLabel(currentType).label}</option>
+                        ) : null}
+                      </select>
+                    </td>
+                    <td
+                      className="px-3 py-2 tabular-nums text-muted-foreground"
+                      data-testid={`inbox-confidence-${r.id}`}
                     >
-                      Review
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+                      {formatConfidence(r.classificationConfidence)}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {r.createdAt ? formatDateUae(r.createdAt.slice(0, 10)) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">{r.uploadedByName || "—"}</td>
+                    <td className="px-3 py-2">
+                      <StatusBadge
+                        meta={inboxStatusLabel(r.status, r.error === "duplicate_file" || isHashDupe)}
+                      />
+                    </td>
+                    <td className="px-3 py-2 space-x-2" onClick={(e) => e.stopPropagation()}>
+                      {unassigned ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void routeHere(r.id)}
+                              />
+                            }
+                          >
+                            Route here
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Assign this upload to the company you are working as, then queue
+                            extraction.
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {r.status === "failed" ? (
+                        <Button size="sm" variant="outline" onClick={() => void retry(r.id)}>
+                          Retry
+                        </Button>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Link
+                              href={`/books/inbox/${r.id}`}
+                              className="inline-flex h-8 items-center rounded-lg px-2.5 text-sm hover:bg-muted"
+                            />
+                          }
+                        >
+                          Review
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Open the extraction review screen for this file (fields, parties, confirm).
+                        </TooltipContent>
+                      </Tooltip>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

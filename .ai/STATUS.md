@@ -2,7 +2,107 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **Snippet split MVP** shipped; next = knowledge cards / email-in (Phase 2+), owner inputs
+- Current task: **2nd-review Phase 2** (page consistency) closed; next = Phase 3 coverage audit (report-only)
+- 2026-10-08: **2nd-review Phase 2** (no migration; no RLS)
+  - DONE: dashboard documents-to-review SoT + filtered hrefs (`inbox-classify`); Inbox confidence/type/dupes/tooltips
+  - DONE: Sales/Purchases tab deep-links + Total column + subtitle parity; statements `?status=`
+  - DONE: Parties Zone/VAT/Terms create+edit, TRN validation, search, balance column
+  - DONE: Banking currency/cash-count/setup; Transactions “Bank accounts”; gateway Stripe ready without printed balances
+  - DONE: FA blank defaults, disable Run with 0 assets, catch-up copy, bill-first for VAT, dd/mm/yyyy
+  - DONE: Health Overview tab, tap info, Not enough data reasons, hide DIO/collection when no inventory, monthly CF detail
+  - DONE: Issues badge already merges close gates (`dashboard/issues`) — confirmed SoT with checklist
+  - **Phase 2 results**
+
+| # | Item | Status | Files / notes |
+|---|------|--------|----------------|
+| 6 | Inbox counts / confidence / type / dupes / tooltips | fixed | `inbox-classify`, dashboard hrefs, inbox page, statements filter |
+| 7 | Sales/Purchases table parity | fixed | Gross→Total; period subtitle; `?tab=` |
+| 8 | Parties Zone/VAT/Terms / TRN / search / edit / balance | fixed | parties.ts + page; `parties-trn.test` |
+| 9 | Bank/cash UX, currency, Banking label, balance_history | fixed | banking/transactions UI; worker gateway ready when account linked |
+| 10 | Fixed assets UX / catch-up / dates | fixed | FA page; catch-up already in `depreciationDueThisPeriod` |
+| 11 | Health KPIs / service hide / vs prior / Overview | fixed | health page MetricCard |
+| 12 | Issues badge = checklist source | fixed | `listBooksIssuesMerged` shared by badge API + month checklist count |
+
+- 2026-10-08: **2nd-review Phase 1** (db/65 AR seed OI + waive dual-control; no RLS change)
+  - DONE: Desert Falcon May AR → sales invoice + open item (GL unchanged); hard-block **2220**; AR/AP close gate
+  - DONE: money labels without "fils"; Health/FA copy; structured amounts on drift issues
+  - DONE: VAT gate `not_set_up` when emirate/period unset; inbox_unreviewed blocking; statement coverage only if set up + activity/balance; recon no double-count; waive request→confirm dual-control + per-account columns; Exceptions + detail expander
+  - DONE: due date from party terms; default issue date today/open period; Receipt disable at 0 / no party preselect
+  - PENDING owner: VAT on advances design (see Known issues); sequential period-lock rule (propose only)
+  - **Migration proposed:** `db/65-books-ar-seed-and-waive.sql` — apply to local/dev DB (tests apply all `db/*.sql`)
+  - **Phase 1 results**
+
+| # | Item | Status | Files / notes |
+|---|------|--------|----------------|
+| 1 | AR 1210 vs open 0 | fixed | Seed backfill INV+OI; close `ar_ap_tieout`; 2220 forbid; issues already had drift |
+| 2 | fils in display | fixed | `money-display`; dashboard/health/FA |
+| 3 | Close false passes / waive / UX | fixed | VAT not_set_up; inbox gate; coverage; dual waive; Exceptions |
+| 4 | Period/date risks | fixed (order = decision) | due date + default issue date; **propose** sequential monthly lock — not enforced |
+| 5 | Advances | verified + UI | 2320 OK; VAT TBD; Record disabled at 0; no preselect |
+
+- Prior: **Phase 3–4 screenshot review bugs** closed; VAT return *posting* still pending owner review
+- 2026-10-08: **Phase 3–4 review-bug fixes** (no migration; no RLS)
+  - DONE: report basis labels (month / FY / range / as-of) + top-bar override indicator on FS/TB/Day book/Ageing
+  - DONE: P&L always emits section headers; chart only when ≥3 columns; expenses series matches table (incl. PL_other)
+  - DONE: BS Total liabilities + Total L+E; equity flatten; Current year profit presentation
+  - DONE: shared `REPORT_TABS` / `BOOKS_NAV_GROUPS`; Company health **Soon**
+  - DONE: Close Lock disabled reason + Checklist item copy; plain-English bank migration errors
+  - DONE: issues badge popover with deep links; bank statements card instrument + cash n/a
+  - DONE: Journals Columns picker + sticky Date/Voucher/Status
+  - PENDING (owner review): VAT return *posting* generator (Phase 2 item 9) — draft + seed warn only
+  - **Phase 3–4 results**
+
+| # | Bug | Status | Files / notes |
+|---|-----|--------|----------------|
+| 13 | Basis labels month vs FY YTD | fixed | `report-basis`, FS/TB/Day book/Ageing subtitles |
+| 14 | P&L sections + chart ≥3 + match table | fixed | `fs-report-tree`, `fs-chart-series`, chart gate in `fs-report-view` |
+| 15 | BS totals / equity / CYE | fixed | `fs-report-tree` + CYE in engine |
+| 16 | One period SoT + override | fixed | shell period SoT; override banner when range/FY/prior |
+| 17 | Shared report toolbar/tabs | fixed | `books-nav` `REPORT_TABS` → `ReportsNav` |
+| 18 | Close checklist + Lock reason + plain text | fixed | Close banner; Gate→Checklist item; api-error C2/C3 |
+| 19 | Clickable issues badge | fixed | `issues-badge` dropdown + dashboard `#issues` |
+| 20 | Bank statements card account definition | fixed | instrument label; cash `n/a`; required-only ok |
+| 21 | Journals column picker / sticky | fixed | `data-grid` picker + sticky Date/Voucher/Status |
+| 22 | Unify nav + Health placeholder | fixed | `books-nav` + Soon on Company health |
+
+- 2026-10-08: **Phase 2 review-bug fixes** (db/64 compliance settings; no RLS change)
+  - DONE: VAT return + dashboard due dates require establishment emirate AND return period; registration status + designated zone on VAT settings
+  - DONE: JV-2026-0009 confirmed seed (`db/22` VAT return Jun 2026); warn on manual pure VAT settlement journals; VAT return *posting* generator deferred (draft exists) — **still pending owner review**
+  - DONE: dual control honour `clients.require_dual_control` (default true); `posted_by` on post; Approved by on journal drawer
+  - DONE: confirmed posted immutability (DB trigger) + reverse path + audit; unit coverage
+  - DONE: SBR election + QFZP company settings; CT banner `noTaxDueRecorded` only when recorded
+  - DONE: units `phase2-compliance.test.ts`
+  - **Phase 2 results**
+
+| # | Bug | Status | Files / notes |
+|---|-----|--------|----------------|
+| 8 | Block VAT return/due dates until emirate + period; TRN/reg/zone | fixed | `db/64`, `company-vat-settings`, `vat201`, `dashboard`, `vat-settings-section` |
+| 9 | JV-2026-0009 manual VAT before period end | **pending review** | Seed in `db/22`. Warn on manual VAT settlement. Draft VAT201 exists; dedicated post flow not built — wait for OK |
+| 10 | Maker-checker + show approver | fixed | `require_dual_control`, `posted_by`, journal drawer Approved by |
+| 11 | Posted immutable + audit | fixed (confirmed) | Trigger + reverse + audit; unit in `phase2-compliance` |
+| 12 | SBR assumed / no tax due | fixed | `sbr_elected` / `is_qfzp`; banner only zeros tax when recorded |
+
+- 2026-10-08: **Phase 1 review-bug fixes** (no migration; no RLS; seed AR deferred)
+  - DONE: shell `reloadPeriods` after Close/Settings lock/unlock/waive; Close empty-history copy when LOCKED without events
+  - DONE: plain-English `c2_bank_accounts_migration_required`; month checklist soft-fails bank list (empty banks, Lock not blanked)
+  - DONE: Receivables tile Outstanding + Overdue; AR/AP control-vs-open drift hint (open items ≠ GL 1210)
+  - DONE: TB sticky footer outside scroll; hide-zero = closing net zero; checkbox “Hide zero closing balances”
+  - DONE: Day Book particulars prefer memo → party → lead account → voucher no.; Journals `entryType` header/filter/CSV = Source
+  - DONE: Working-as label never bare UUID when name exists; control shown for admin or Dev UI (development)
+  - DONE: units `working-as-label`, `dashboard-money-labels`, TB hide-zero, day-book memo particulars, api-error C2
+  - NOT DONE (owner decision): replace Desert Falcon seed AR bare journal with posted sales invoice + open item
+  - **Phase 1 results**
+
+| # | Bug | Verdict | Fix |
+|---|-----|---------|-----|
+| 1 | Lock vs Open across screens / Lock disabled | Real (stale shell + C2 soft-fail UX) | `reloadPeriods`; C2 message; checklist soft-fail banks; locked empty-history copy |
+| 2 | Receivables 0 vs 1210 on TB | Real (open items vs GL) | Outstanding/Overdue + drift hint; seed AR deferred |
+| 3 | TB footer overlaps last rows | Real | Totals outside scroll body |
+| 4 | Hide-zero keeps settled VAT | Real (period movement HAVING) | Drop closing Dr=Cr=0; rename checkbox |
+| 5 | Day Book particulars = lead account | Real | Prefer memo, then party, then lead, then voucher no. |
+| 6 | Journals two “Type” columns | Real | `entryType` → Source (header/filter/CSV) |
+| 7 | Working-as shows UUID | Real | Name · role label; admin or Dev UI only |
+
 - 2026-10-08: **Snippet split** (db/63 inbox parent + page ranges; no RLS)
   - DONE: `splitInboxPdfSnippets` + `POST /api/books/inbox/:id/split-pages`; parent → `routed`; children share `file_id`
   - DONE: worker clips PDF pages for extract; remaps word-box pages to original; confirm copies page range to documents
@@ -192,6 +292,9 @@
 5. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
 
 ## Known issues / open decisions
+- **VAT on customer advances (2nd-review item 5):** propose — on unmatched receipt Cr 2320 net + Cr 2210 VAT (gross÷1.05) when party taxable; store VAT on advance; reverse into invoice apply without double-count. **Do not build until approved.** Today: gross → 2320 only + memo flag.
+- **Period lock order (2nd-review item 4):** propose — require prior month LOCKED before locking month N (same fiscal year); unlock of N invalidates readiness of N+1 until re-locked. **Not enforced yet.**
+- **VAT return posting generator** (Phase 2 item 9): pending owner review — seed JV + draft VAT201 + warn on manual settlement only; do not auto-post from return until approved.
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
 - Company A month-1 golden is PROVISIONAL - owner to supply hand-computed values (Claude offered to prepare).
 - VAT on customer advances: policy TBD (not implemented).
@@ -202,6 +305,8 @@
 - E1d closed (confirm never invents SR).
 
 ## Log
+- 2026-10-08 | 2nd-review Phase 1 | PASS | db/65 AR OI + waive dual-control; close gates; money labels; VAT advances + period-order proposals pending
+- 2026-10-08 | Phase 3–4 review bugs | PASS | items 13–22; VAT return posting still pending owner review
 - 2026-10-08 | Snippet-split | PASS | db/63 + split API/UI + worker clip; unit 2p
 - 2026-10-08 | ING-4e | PASS | weak-field extract + bank headers; eval acc ~0.65; unit green
 - 2026-10-08 | Real-docs+A+B+C | PASS | eval rates in STATUS; local PASS override; B5/B6; polish db/62

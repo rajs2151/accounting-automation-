@@ -17,11 +17,27 @@ import {
   type LegacyRow,
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, Columns3, Loader2 } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 export type BooksGridColumn<T> = {
@@ -33,6 +49,10 @@ export type BooksGridColumn<T> = {
   cell: (row: T) => ReactNode;
   /** If set, used for sorting/filtering instead of rendered cell */
   accessor?: (row: T) => string | number;
+  /** Pin column while scrolling horizontally. */
+  sticky?: "left" | "right";
+  /** When false, column cannot be hidden via the picker (default true). */
+  hideable?: boolean;
 };
 
 export type BooksDataGridProps<T extends { id: string; entryDate?: string }> = {
@@ -48,6 +68,10 @@ export type BooksDataGridProps<T extends { id: string; entryDate?: string }> = {
   enableRowSelection?: boolean;
   onSelectionChange?: (ids: string[]) => void;
   showGridMeta?: boolean;
+  /** Show Columns menu to toggle visibility (persisted when columnStorageKey set). */
+  enableColumnPicker?: boolean;
+  /** localStorage key for column visibility (e.g. books-journals-cols). */
+  columnStorageKey?: string;
   /** Extra classes per data row (e.g. grey reversed entries). */
   getRowClassName?: (row: T) => string | undefined;
 };
@@ -77,13 +101,46 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
   enableRowSelection = false,
   onSelectionChange,
   showGridMeta = false,
+  enableColumnPicker = false,
+  columnStorageKey,
   getRowClassName,
 }: BooksDataGridProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
-  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({});
+  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>(() => {
+    if (!columnStorageKey || typeof window === "undefined") return {};
+    try {
+      const raw = window.localStorage.getItem(columnStorageKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as ColumnVisibilityState;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({});
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!columnStorageKey || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(columnStorageKey, JSON.stringify(columnVisibility));
+    } catch {
+      /* ignore quota */
+    }
+  }, [columnStorageKey, columnVisibility]);
+
+  const stickyMeta = useMemo(() => {
+    const leftOffsets = new Map<string, number>();
+    let left = enableRowSelection ? 40 : 0;
+    for (const col of columns) {
+      if (col.sticky === "left") {
+        leftOffsets.set(col.id, left);
+        left += col.size ?? 140;
+      }
+    }
+    return { leftOffsets };
+  }, [columns, enableRowSelection]);
 
   const columnDefs = useMemo<LegacyColumnDef<T>[]>(() => {
     const defs: LegacyColumnDef<T>[] = [];
@@ -92,6 +149,7 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
         id: "_select",
         size: 40,
         enableSorting: false,
+        enableHiding: false,
         header: ({ table }) => (
           <Checkbox
             checked={table.getIsAllPageRowsSelected()}
@@ -107,6 +165,11 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
             aria-label="Select row"
           />
         ),
+        meta: {
+          className: "sticky left-0 z-20 bg-card",
+          sticky: "left" as const,
+          stickyLeft: 0,
+        },
       });
     }
     for (const col of columns) {
@@ -116,12 +179,17 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
         header: col.header,
         size: col.size ?? 140,
         enableSorting: col.enableSorting !== false,
+        enableHiding: col.hideable !== false,
         cell: ({ row }) => col.cell(row.original),
-        meta: { className: col.className },
+        meta: {
+          className: col.className,
+          sticky: col.sticky,
+          stickyLeft: col.sticky === "left" ? stickyMeta.leftOffsets.get(col.id) : undefined,
+        },
       });
     }
     return defs;
-  }, [columns, enableRowSelection]);
+  }, [columns, enableRowSelection, stickyMeta]);
 
   const table = useLegacyTable({
     data: rows,
@@ -224,11 +292,64 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
     );
   }
 
+  function stickyCellClass(meta: {
+    className?: string;
+    sticky?: "left" | "right";
+  } | undefined) {
+    return cn(
+      meta?.className,
+      meta?.sticky === "left" && "sticky z-20 bg-inherit shadow-[1px_0_0_0_var(--border)]",
+      meta?.sticky === "right" && "sticky z-20 bg-inherit shadow-[-1px_0_0_0_var(--border)]",
+    );
+  }
+
+  function stickyCellStyle(
+    meta: { sticky?: "left" | "right"; stickyLeft?: number } | undefined,
+    width: number,
+  ): CSSProperties {
+    const style: CSSProperties = { width };
+    if (meta?.sticky === "left" && meta.stickyLeft != null) style.left = meta.stickyLeft;
+    if (meta?.sticky === "right") style.right = 0;
+    return style;
+  }
+
   return (
     <div className="space-y-2" data-testid="books-data-grid-root">
-      {showGridMeta ? (
+      {showGridMeta || enableColumnPicker ? (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>{tableRows.length} entries</span>
+          <span>{showGridMeta ? `${tableRows.length} entries` : null}</span>
+          {enableColumnPicker ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-muted"
+                data-testid="books-column-picker"
+              >
+                <Columns3 className="size-3.5" aria-hidden />
+                Columns
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel>Show columns</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {columns.map((col) => {
+                  const hideable = col.hideable !== false;
+                  const visible = columnVisibility[col.id] !== false;
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={col.id}
+                      checked={visible}
+                      disabled={!hideable}
+                      onCheckedChange={(v) => {
+                        setColumnVisibility((prev) => ({ ...prev, [col.id]: Boolean(v) }));
+                      }}
+                      data-testid={`books-col-toggle-${col.id}`}
+                    >
+                      {col.header}
+                    </DropdownMenuCheckboxItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </div>
       ) : null}
 
@@ -240,17 +361,21 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
         data-testid="books-data-grid"
       >
         <table data-own-style="" className="w-full min-w-max border-collapse text-sm" style={{ width: table.getCenterTotalSize() }}>
-          <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
+          <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur">
             {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id} className="border-b border-border">
-                {hg.headers.map((header) => (
+              <tr key={hg.id} className="border-b border-border bg-muted/95">
+                {hg.headers.map((header) => {
+                  const meta = header.column.columnDef.meta as
+                    | { className?: string; sticky?: "left" | "right"; stickyLeft?: number }
+                    | undefined;
+                  return (
                   <th
                     key={header.id}
                     className={cn(
-                      "relative px-3 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap",
-                      (header.column.columnDef.meta as { className?: string } | undefined)?.className,
+                      "relative px-3 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap bg-muted/95",
+                      stickyCellClass(meta),
                     )}
-                    style={{ width: header.getSize() }}
+                    style={stickyCellStyle(meta, header.getSize())}
                   >
                     {header.isPlaceholder ? null : (
                       <button
@@ -276,7 +401,8 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
                       />
                     ) : null}
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             ))}
           </thead>
@@ -328,7 +454,7 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
                     height: `${virtualRow.size}px`,
                   }}
                   className={cn(
-                    "border-b border-border/80 hover:bg-muted/30",
+                    "border-b border-border/80 bg-card hover:bg-muted/30",
                     onRowClick && "cursor-pointer",
                     isSelected && "bg-primary-subtle/60",
                     row.getIsSelected() && "ring-1 ring-inset ring-primary/20",
@@ -336,18 +462,20 @@ export function BooksDataGrid<T extends RowData & { id: string; entryDate?: stri
                   )}
                   onClick={() => onRowClick?.(row.original)}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      className={cn(
-                        "px-3 py-3 align-middle",
-                        (cell.column.columnDef.meta as { className?: string } | undefined)?.className,
-                      )}
-                      style={{ width: cell.column.getSize() }}
-                    >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
+                  {row.getVisibleCells().map((cell) => {
+                    const meta = cell.column.columnDef.meta as
+                      | { className?: string; sticky?: "left" | "right"; stickyLeft?: number }
+                      | undefined;
+                    return (
+                      <td
+                        key={cell.id}
+                        className={cn("px-3 py-3 align-middle bg-inherit", stickyCellClass(meta))}
+                        style={stickyCellStyle(meta, cell.column.getSize())}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}

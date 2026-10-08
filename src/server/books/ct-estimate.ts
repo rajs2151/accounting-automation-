@@ -48,9 +48,20 @@ export type CtBanner = {
   estimateMinor: number;
   /** Revenue for the year so far (fils). */
   revenueMinor: number;
-  /** Revenue so far is within the Small Business Relief limit and the tax period qualifies:
-   *  the company may elect relief, in which case no CT is due. */
+  /**
+   * Revenue so far is within the Small Business Relief limit and the tax period qualifies.
+   * Eligibility only — does not mean relief is elected.
+   */
   smallBusinessReliefMayApply: boolean;
+  /** Company recorded SBR election (null = unset). */
+  sbrElected: boolean | null;
+  /** Company recorded QFZP status (null = unset). */
+  isQfzp: boolean | null;
+  /**
+   * True only when SBR is elected and eligibility holds, or QFZP is recorded true.
+   * UI must not claim "no tax due" unless this is true.
+   */
+  noTaxDueRecorded: boolean;
   disclaimer: string;
 };
 
@@ -62,8 +73,17 @@ export function buildCtBanner(args: {
   taxableIncomeMinor: number;
   /** YTD revenue (fils). */
   revenueMinor?: number;
+  sbrElected?: boolean | null;
+  isQfzp?: boolean | null;
 }): CtBanner {
   const revenueMinor = args.revenueMinor ?? 0;
+  const sbrElected = args.sbrElected ?? null;
+  const isQfzp = args.isQfzp ?? null;
+  const smallBusinessReliefMayApply =
+    revenueMinor <= SBR_REVENUE_LIMIT_MINOR && args.fiscalYearEnd <= SBR_LAST_PERIOD_END;
+  const noTaxDueRecorded =
+    (sbrElected === true && smallBusinessReliefMayApply) || isQfzp === true;
+  const estimateMinor = noTaxDueRecorded ? 0 : estimateCtPayableMinor(args.taxableIncomeMinor);
   return {
     taxYearLabel: `FY${args.fiscalYear}`,
     fiscalYear: args.fiscalYear,
@@ -71,10 +91,12 @@ export function buildCtBanner(args: {
     fiscalYearEnd: args.fiscalYearEnd,
     filingDue: ctFilingDueDate(args.fiscalYearEnd),
     taxableIncomeMinor: args.taxableIncomeMinor,
-    estimateMinor: estimateCtPayableMinor(args.taxableIncomeMinor),
+    estimateMinor,
     revenueMinor,
-    smallBusinessReliefMayApply:
-      revenueMinor <= SBR_REVENUE_LIMIT_MINOR && args.fiscalYearEnd <= SBR_LAST_PERIOD_END,
+    smallBusinessReliefMayApply,
+    sbrElected,
+    isQfzp,
+    noTaxDueRecorded,
     disclaimer: "estimate — not a tax computation",
   };
 }
@@ -92,16 +114,19 @@ export async function booksCtEstimateBanner(
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const client = await db.query(
-      `SELECT fiscal_year_start_month AS m FROM clients WHERE id = $1`,
+      `SELECT fiscal_year_start_month AS m, sbr_elected, is_qfzp FROM clients WHERE id = $1`,
       [clientId],
     );
     const fyStartMonth = Number(client.rows[0]?.m || 1);
     const fy = fiscalYearForDate(asOf, fyStartMonth);
     const bounds = fiscalYearBounds(fy, fyStartMonth);
     const to = asOf < bounds.end ? asOf : bounds.end;
+    const sbrElected =
+      client.rows[0]?.sbr_elected == null ? null : Boolean(client.rows[0].sbr_elected);
+    const isQfzp = client.rows[0]?.is_qfzp == null ? null : Boolean(client.rows[0].is_qfzp);
     // Leave withUser so nested booksProfitAndLoss can open its own transaction.
-    return { fy, bounds, to, fyStartMonth };
-  }).then(async ({ fy, bounds, to }) => {
+    return { fy, bounds, to, fyStartMonth, sbrElected, isQfzp };
+  }).then(async ({ fy, bounds, to, sbrElected, isQfzp }) => {
     const pnl = await booksProfitAndLoss(userId, clientId, {
       mode: "range",
       from: bounds.start,
@@ -119,6 +144,8 @@ export async function booksCtEstimateBanner(
       fiscalYearEnd: bounds.end,
       taxableIncomeMinor,
       revenueMinor,
+      sbrElected,
+      isQfzp,
     });
   });
 }

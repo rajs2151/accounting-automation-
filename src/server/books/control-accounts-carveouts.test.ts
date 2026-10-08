@@ -102,6 +102,8 @@ test("a pure VAT settlement journal may move 2210/1430; trade controls and mixed
     // Trade controls are never manual.
     await blocked([L(A["1210"], 500, 0), L(A["4100"], 0, 500)], "1210");
     await blocked([L(A["2110"], 500, 0), L(A["2210"], 0, 500)], "2110");
+    // VAT payable (2220) alone with bank is not a pure settlement.
+    await blocked([L(A["2220"], 500, 0), L(A["1120"], 0, 500)], "2220");
   } finally {
     await admin.end();
   }

@@ -100,6 +100,26 @@ export function bankInstrumentType(row: {
   return "bank";
 }
 
+/** Statement coverage is required for bank / card / gateway — not petty cash. */
+export function requiresStatementCoverage(instrumentType: BankInstrumentType): boolean {
+  return instrumentType === "bank" || instrumentType === "card" || instrumentType === "gateway";
+}
+
+/**
+ * Close / dashboard: only demand statements when the account is set up AND has
+ * period activity or a non-zero ledger balance. Otherwise n/a (idle / not set up).
+ */
+export function statementCoverageApplicable(opts: {
+  instrumentType: BankInstrumentType;
+  setupOk: boolean;
+  ledgerBalanceMinor: number;
+  hasPeriodActivity: boolean;
+}): boolean {
+  if (!requiresStatementCoverage(opts.instrumentType)) return false;
+  if (!opts.setupOk) return false;
+  return opts.hasPeriodActivity || Math.trunc(opts.ledgerBalanceMinor) !== 0;
+}
+
 /** Setup gate: bank/card need IBAN (or last4 for card); cash/gateway need bank_name or code alone OK for cash. */
 export function isBankAccountSetUp(row: {
   instrumentType: BankInstrumentType;

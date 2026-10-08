@@ -436,21 +436,49 @@ export async function routeInboxItem(
   });
 }
 
+const ALLOWED_INBOX_DOC_TYPES = new Set([
+  "sales_invoice",
+  "purchase_bill",
+  "credit_note",
+  "debit_note",
+  "receipt",
+  "payment",
+  "bank_statement",
+  "card_statement",
+  "gateway_statement",
+]);
+
 export async function setInboxDocType(
   userId: string,
   clientId: string,
   inboxItemId: string,
   docType: string,
 ) {
+  const t = String(docType || "").trim();
+  if (!ALLOWED_INBOX_DOC_TYPES.has(t)) {
+    throw new BooksError("invalid_doc_type", "invalid");
+  }
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    await db.query(
+    const updated = await db.query(
       `UPDATE books_inbox_items
-       SET detected_type = $3, classification_confidence = 1, status = 'needs_review', updated_at = now()
-       WHERE id = $1 AND client_id = $2`,
-      [inboxItemId, clientId, docType],
+       SET intended_type = $3,
+           detected_type = COALESCE(detected_type, $3),
+           classification_confidence = 1,
+           status = CASE WHEN status IN ('queued', 'extracting', 'failed') THEN status ELSE 'needs_review' END,
+           updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING id, intended_type, detected_type, classification_confidence, status`,
+      [inboxItemId, clientId, t],
     );
-    return { id: inboxItemId, detectedType: docType };
+    if (!updated.rowCount) throw new BooksError("inbox_not_found", "not_found");
+    return {
+      id: inboxItemId,
+      intendedType: t,
+      detectedType: updated.rows[0].detected_type,
+      classificationConfidence: 1,
+      status: updated.rows[0].status,
+    };
   });
 }
 

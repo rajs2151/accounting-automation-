@@ -325,13 +325,11 @@ test("RPT-1: Day Book lists posted vouchers with type, particulars, side; filter
     const clientId = company.clientId;
     const c = await party(company, "customer", "Delta", "100000000000084");
     const s = await party(company, "supplier", "Epsilon", "100000000000085");
-    const cName = (await admin.query(`SELECT name FROM books_parties WHERE id = $1`, [c.id])).rows[0].name;
-    const sName = (await admin.query(`SELECT name FROM books_parties WHERE id = $1`, [s.id])).rows[0].name;
 
     const inv = await postDoc(company, {
       docType: "sales_invoice", partyId: c.id, issueDate: "2026-05-02", net: 100000, vat: 5000, period: "May 2026",
     });
-    await postDoc(company, {
+    const bill = await postDoc(company, {
       docType: "purchase_bill", partyId: s.id, issueDate: "2026-05-03", net: 20000, vat: 1000, period: "May 2026",
     });
     await createReceiptOrPayment(OMAR, LAYLA, clientId, {
@@ -364,18 +362,25 @@ test("RPT-1: Day Book lists posted vouchers with type, particulars, side; filter
       ],
     });
 
+    const voidEntryNo = String(
+      (
+        await admin.query(`SELECT entry_no FROM books_journal_entries WHERE id = $1`, [
+          toVoid.journalEntryId,
+        ])
+      ).rows[0].entry_no,
+    );
+
     const book = await booksDayBook(OMAR, clientId, { from: "2026-05-01", to: "2026-05-31" });
-    // Each voucher carries its own debit and credit totals (equal), and the party's side separately
-    // (was: one amount in the party's column, which left the book's totals unequal).
+    // Particulars prefer memo (then party / lead account) — not first-line account name.
     assert.deepEqual(
       book.rows.map((r) => [r.date, r.type, r.particulars, r.partySide, r.debitMinor, r.creditMinor]),
       [
-        ["2026-05-02", "Sales", cName, "Dr", 105000, 105000],
-        ["2026-05-03", "Purchase", sName, "Cr", 21000, 21000],
-        ["2026-05-04", "Receipt", cName, "Cr", 105000, 105000],
-        ["2026-05-05", "Journal", "Bank charges", null, 1500, 1500],
-        ["2026-05-06", "Sales", cName, "Dr", 10500, 10500],
-        ["2026-05-06", "Reversal", cName, "Cr", 10500, 10500],
+        ["2026-05-02", "Sales", `sales_invoice ${inv.number}`, "Dr", 105000, 105000],
+        ["2026-05-03", "Purchase", `purchase_bill ${bill.number}`, "Cr", 21000, 21000],
+        ["2026-05-04", "Receipt", "Receipt", "Cr", 105000, 105000],
+        ["2026-05-05", "Journal", "Bank charge", null, 1500, 1500],
+        ["2026-05-06", "Sales", `sales_invoice ${toVoid.number}`, "Dr", 10500, 10500],
+        ["2026-05-06", "Reversal", `Reversal of ${voidEntryNo}`, "Cr", 10500, 10500],
       ],
     );
     assert.ok(book.rows.every((r) => r.number), "every posted voucher has its number");

@@ -292,10 +292,24 @@ export async function createBooksDocument(userId: string, clientId: string, body
     await assertSyntheticTenant(db, clientId);
     if (!body.periodId) throw new BooksError("period_required", "invalid");
     const party = await db.query(
-      `SELECT id, party_type, trn FROM books_parties WHERE id = $1 AND client_id = $2`,
+      `SELECT id, party_type, trn, payment_terms_days FROM books_parties WHERE id = $1 AND client_id = $2`,
       [body.partyId, clientId],
     );
     if (!party.rowCount) throw new BooksError("party_not_found", "not_found");
+
+    // Default due date from party payment terms when the UI omitted it.
+    let dueDate = body.dueDate || null;
+    if (
+      !dueDate &&
+      body.issueDate &&
+      (body.docType === "sales_invoice" || body.docType === "purchase_bill")
+    ) {
+      const { dueDateFromTerms } = await import("@/lib/default-issue-date");
+      dueDate = dueDateFromTerms(
+        body.issueDate,
+        party.rows[0].payment_terms_days as number | null,
+      );
+    }
 
     // Compute VAT where missing
     const withVat: DocLineInput[] = [];
@@ -413,7 +427,7 @@ export async function createBooksDocument(userId: string, clientId: string, body
         body.documentNumber || null,
         body.partyId,
         body.issueDate,
-        body.dueDate || null,
+        dueDate,
         body.serviceStart || null,
         body.serviceEnd || null,
         defer,
@@ -903,7 +917,7 @@ export async function approveAndPostBooksDocument(
     if (["receipt", "payment"].includes(String(doc.doc_type))) {
       throw new BooksError("settlement_post_via_receipts", "invalid");
     }
-    await requireDualControlActor(db, userId, String(doc.created_by), "post");
+    await requireDualControlActor(db, userId, String(doc.created_by), "post", { clientId });
 
     if (doc.check_vat_reason && !doc.check_vat_ack_at) {
       throw new BooksError("check_vat_unacknowledged", "conflict");
@@ -1215,7 +1229,7 @@ export async function voidBooksDocument(
     if (d.status !== "posted" || !d.journal_entry_id || d.journal_status !== "posted") {
       throw new BooksError("void_requires_posted", "conflict");
     }
-    await requireDualControlActor(db, userId, String(d.created_by), "reverse");
+    await requireDualControlActor(db, userId, String(d.created_by), "reverse", { clientId });
 
     if (d.doc_type === "sales_invoice" || d.doc_type === "purchase_bill") {
       const oi = await db.query(

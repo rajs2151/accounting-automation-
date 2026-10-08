@@ -16,7 +16,7 @@ export type FsChartPoint = {
 
 export type PnlColumnForChart = {
   column: { key: string; label: string };
-  sections: Array<{ key: string; totalMinor: number }>;
+  sections: Array<{ key: string; totalMinor: number; netMinor?: number }>;
   netProfitMinor: number;
   projected?: boolean;
 };
@@ -26,11 +26,17 @@ export function metricAmountMinor(col: PnlColumnForChart, metric: FsChartMetric)
   if (metric === "revenue") {
     return Math.trunc(col.sections.find((s) => s.key === "PL_revenue")?.totalMinor || 0);
   }
-  // Expenses = cogs + opex + depr + tax (+ expense side of other ignored for chart simplicity)
+  // Match table: cogs + opex + depr + tax + expense side of PL_other (negative net → expense).
   const keys = new Set(["PL_cogs", "PL_opex", "PL_depr", "PL_tax"]);
-  return col.sections
+  let sum = col.sections
     .filter((s) => keys.has(s.key))
-    .reduce((sum, s) => sum + Math.trunc(s.totalMinor || 0), 0);
+    .reduce((acc, s) => acc + Math.trunc(s.totalMinor || 0), 0);
+  const other = col.sections.find((s) => s.key === "PL_other");
+  if (other) {
+    const net = other.netMinor != null ? Math.trunc(other.netMinor) : 0;
+    if (net < 0) sum += -net;
+  }
+  return sum;
 }
 
 export function buildFsChartSeries(

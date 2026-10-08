@@ -618,6 +618,11 @@ export function CreateEntrySheet({
           });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || payload.message || "create_failed");
+      if (Array.isArray(payload.warnings) && payload.warnings.includes("manual_vat_control_journal")) {
+        toast.warning(
+          "This journal moves VAT control accounts. Prefer the VAT return flow when available — check period and amounts.",
+        );
+      }
       const entryId = String(payload.id);
       if (post && !schedule && !editEntryId) {
         const postRes = await fetch(`/api/books/journals/${entryId}/post`, { method: "POST" });

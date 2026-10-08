@@ -553,7 +553,7 @@ function TransactionsInner() {
             href="/books/banking"
             className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-sm hover:bg-muted"
           >
-            Banking
+            Bank accounts
           </Link>
         </div>
       </div>
@@ -741,7 +741,7 @@ function TransactionsInner() {
               <tr>
                 <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
                   No transactions in this tab
-                  {counts.current === 0 ? " — upload a balanced statement from Banking" : ""}.
+                  {counts.current === 0 ? " — upload a balanced statement from Bank accounts" : ""}.
                 </td>
               </tr>
             ) : (

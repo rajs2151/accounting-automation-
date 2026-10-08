@@ -2,7 +2,8 @@
  * Trade / VAT control accounts must only move via documents & settlements (open items),
  * never via a free-form bank category or manual journal line.
  */
-export const BOOKS_CONTROL_ACCOUNT_CODES = ["1210", "2110", "1430", "2210"] as const;
+/** Trade + VAT controls — never via free-form manual journal (VAT settlement carve-out separate). */
+export const BOOKS_CONTROL_ACCOUNT_CODES = ["1210", "2110", "1430", "2210", "2220"] as const;
 
 export type BooksControlAccountCode = (typeof BOOKS_CONTROL_ACCOUNT_CODES)[number];
 

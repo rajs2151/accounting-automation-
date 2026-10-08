@@ -3,6 +3,8 @@
  * Pure functions — unit-tested with hand-chosen thresholds.
  */
 
+import { controlDriftInsightBody } from "@/lib/money-display";
+
 export type InsightSeverity = "info" | "warn" | "critical";
 
 export type HealthInsight = {
@@ -83,7 +85,7 @@ export function buildHealthInsights(input: InsightInput): HealthInsight[] {
       id: "ar_control_vs_open_items",
       severity: "critical",
       title: "AR control vs open items",
-      body: `Trade receivables control (1210) differs from open AR items by ${arDrift} fils (control − open).`,
+      body: controlDriftInsightBody("AR", arDrift),
       actions: [
         { label: "AR ageing", href: "/books/reports/ageing?side=ar" },
         { label: "Journals", href: "/books/journals" },
@@ -97,7 +99,7 @@ export function buildHealthInsights(input: InsightInput): HealthInsight[] {
       id: "ap_control_vs_open_items",
       severity: "critical",
       title: "AP control vs open items",
-      body: `Trade payables control (2110) differs from open AP items by ${apDrift} fils (control − open).`,
+      body: controlDriftInsightBody("AP", apDrift),
       actions: [
         { label: "AP ageing", href: "/books/reports/ageing?side=ap" },
         { label: "Journals", href: "/books/journals" },

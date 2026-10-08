@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/books/status-badge";
@@ -50,6 +50,8 @@ function bankLabel(r: Row): string {
 
 export default function StatementsListPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const statusFilter = searchParams.get("status") || "all";
   const [rows, setRows] = useState<Row[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [csvText, setCsvText] = useState(
@@ -60,6 +62,11 @@ export default function StatementsListPage() {
     const data = await fetch("/api/books/statements").then((r) => r.json());
     if (Array.isArray(data)) setRows(data);
   }, []);
+
+  const visible = useMemo(() => {
+    if (statusFilter === "all" || !statusFilter) return rows;
+    return rows.filter((r) => r.status === statusFilter);
+  }, [rows, statusFilter]);
 
   useEffect(() => {
     void reload();
@@ -136,14 +143,16 @@ export default function StatementsListPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {visible.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
-                  No statements yet — upload a PDF or CSV, or ingest the Stripe preset below.
+                  {statusFilter !== "all" && rows.length
+                    ? `No statements with status “${statusFilter}”.`
+                    : "No statements yet — upload a PDF or CSV, or ingest the Stripe preset below."}
                 </td>
               </tr>
             ) : (
-              rows.map((r) => {
+              visible.map((r) => {
                 const isPending = r.rowKind === "pending" || r.status === "queued" || r.status === "extracting";
                 const href =
                   !isPending && r.rowKind !== "pending" ? `/books/statements/${r.id}` : null;

@@ -1,6 +1,7 @@
 /**
  * Company VAT settings (admin only, audited): establishment emirate (place-of-supply rule for
- * services, P2B-5) and VAT return stagger (dashboard due date, P2B-4).
+ * services, P2B-5), VAT return stagger (dashboard due date, P2B-4), registration status and
+ * designated-zone flag (Phase 2 item 8).
  */
 import { withUser } from "@/lib/db";
 import { writeBooksAudit } from "@/server/books/audit";
@@ -9,26 +10,50 @@ import { normalizeEmirate, type Emirate } from "@/server/books/place-of-supply";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export type VatFrequency = "monthly" | "quarterly";
+export type VatRegistrationStatus = "registered" | "not_registered" | "voluntary";
 
 export type CompanyVatSettings = {
   establishmentEmirate: Emirate | null;
   vatReturnFrequency: VatFrequency | null;
   vatPeriodEndMonth: number | null;
+  vatRegistrationStatus: VatRegistrationStatus | null;
+  designatedZone: boolean;
+  trn: string | null;
 };
 
 function mapRow(r: Record<string, unknown> | undefined): CompanyVatSettings {
+  const status = r?.vat_registration_status;
   return {
     establishmentEmirate: (r?.establishment_emirate as Emirate | null) ?? null,
     vatReturnFrequency: (r?.vat_return_frequency as VatFrequency | null) ?? null,
     vatPeriodEndMonth: r?.vat_period_end_month == null ? null : Number(r.vat_period_end_month),
+    vatRegistrationStatus:
+      status === "registered" || status === "not_registered" || status === "voluntary"
+        ? status
+        : null,
+    designatedZone: Boolean(r?.designated_zone),
+    trn: r?.trn == null ? null : String(r.trn),
   };
+}
+
+/** True when emirate + return frequency are set (quarterly also needs end month). */
+export function vatReturnPrerequisitesMet(s: CompanyVatSettings): boolean {
+  if (!s.establishmentEmirate) return false;
+  if (!s.vatReturnFrequency) return false;
+  if (s.vatReturnFrequency === "quarterly") {
+    const m = s.vatPeriodEndMonth;
+    if (!(Number.isInteger(m) && m! >= 1 && m! <= 12)) return false;
+  }
+  return true;
 }
 
 export async function getCompanyVatSettings(userId: string, clientId: string): Promise<CompanyVatSettings> {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const r = await db.query(
-      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
+      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month,
+              vat_registration_status, designated_zone, trn
+       FROM clients WHERE id = $1`,
       [clientId],
     );
     return mapRow(r.rows[0]);
@@ -36,7 +61,8 @@ export async function getCompanyVatSettings(userId: string, clientId: string): P
 }
 
 /**
- * Update any subset of the VAT settings. Fields left undefined are kept; null clears.
+ * Update any subset of the VAT settings. Fields left undefined are kept; null clears
+ * (except designatedZone, which is boolean).
  * Quarterly needs the month (1–12) in which one of the company's quarters ends.
  */
 export async function setCompanyVatSettings(
@@ -46,6 +72,8 @@ export async function setCompanyVatSettings(
     establishmentEmirate?: string | null;
     vatReturnFrequency?: VatFrequency | null;
     vatPeriodEndMonth?: number | null;
+    vatRegistrationStatus?: VatRegistrationStatus | null;
+    designatedZone?: boolean;
   },
 ): Promise<CompanyVatSettings> {
   return withUser(userId, async (db) => {
@@ -55,7 +83,8 @@ export async function setCompanyVatSettings(
       throw new BooksError("vat_settings_require_admin", "forbidden");
     }
     const beforeRow = await db.query(
-      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month
+      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month,
+              vat_registration_status, designated_zone, trn
        FROM clients WHERE id = $1 FOR UPDATE`,
       [clientId],
     );
@@ -88,11 +117,33 @@ export async function setCompanyVatSettings(
     ) {
       throw new BooksError("vat_stagger_invalid", "invalid");
     }
+    if (body.vatRegistrationStatus !== undefined) {
+      const s = body.vatRegistrationStatus;
+      if (s !== null && s !== "registered" && s !== "not_registered" && s !== "voluntary") {
+        throw new BooksError("invalid_vat_registration_status", "invalid");
+      }
+      next.vatRegistrationStatus = s;
+    }
+    if (body.designatedZone !== undefined) {
+      next.designatedZone = Boolean(body.designatedZone);
+    }
 
     await db.query(
-      `UPDATE clients SET establishment_emirate = $2, vat_return_frequency = $3, vat_period_end_month = $4
+      `UPDATE clients SET
+         establishment_emirate = $2,
+         vat_return_frequency = $3,
+         vat_period_end_month = $4,
+         vat_registration_status = $5,
+         designated_zone = $6
        WHERE id = $1`,
-      [clientId, next.establishmentEmirate, next.vatReturnFrequency, next.vatPeriodEndMonth],
+      [
+        clientId,
+        next.establishmentEmirate,
+        next.vatReturnFrequency,
+        next.vatPeriodEndMonth,
+        next.vatRegistrationStatus,
+        next.designatedZone,
+      ],
     );
     await writeBooksAudit(db, {
       clientId,

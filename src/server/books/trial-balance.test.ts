@@ -31,30 +31,37 @@ test("Desert Falcon Jun TB matches hand-computed golden", async (t) => {
       return;
     }
     const tb = await booksTrialBalance(OMAR, DESERT, PERIOD_JUN);
+    const tbAll = await booksTrialBalance(OMAR, DESERT, PERIOD_JUN, { includeZeroBalances: true });
     const golden = JSON.parse(
       readFileSync(path.join(ROOT, "fixtures/books-goldens/a/expected/tb.json"), "utf8"),
     ) as {
       balanced: boolean;
       accounts: Record<string, { debitMinor: number; creditMinor: number }>;
     };
-    assert.equal(tb.balanced, golden.balanced);
-    assert.equal(tb.totalClosingDebit, tb.totalClosingCredit);
+    // Golden period movement includes settled VAT (2210); compare with zeros included.
+    assert.equal(tbAll.balanced, golden.balanced);
+    assert.equal(tbAll.totalClosingDebit, tbAll.totalClosingCredit);
     for (const [code, expected] of Object.entries(golden.accounts)) {
-      assert.ok(tb.accounts[code], `missing account ${code}`);
-      const row = tb.accounts[code];
+      assert.ok(tbAll.accounts[code], `missing account ${code}`);
+      const row = tbAll.accounts[code];
       assert.equal(row.periodDebitMinor, expected.debitMinor, `${code} period debit`);
       assert.equal(row.periodCreditMinor, expected.creditMinor, `${code} period credit`);
     }
-    const vat = tb.accounts["2210"];
-    assert.ok(vat);
+    // Hide-zero = hide zero *closing* balances: settled VAT control (2210) drops out.
+    assert.equal(tb.accounts["2210"], undefined, "2210 closing 0 hidden when includeZero false");
+    const vat = tbAll.accounts["2210"];
+    assert.ok(vat, "2210 present when includeZero true");
     assert.equal(vat.periodDebitMinor, 1500);
     assert.equal(vat.closingDebitMinor, 0);
     assert.equal(vat.closingCreditMinor, 0);
     const rent = tb.accounts["6200"];
     assert.ok(rent);
     assert.equal(rent.periodDebitMinor, 8000, "June rent only in Jun period");
-    assert.ok(tb.accounts["2220"], "VAT payable from settlement");
-    assert.equal(tb.accounts["1430"].periodCreditMinor, 100);
+    assert.ok(tb.accounts["2220"] || tbAll.accounts["2220"], "VAT payable from settlement");
+    assert.equal(
+      (tb.accounts["1430"] || tbAll.accounts["1430"])?.periodCreditMinor,
+      100,
+    );
   } finally {
     await admin.end().catch(() => undefined);
   }

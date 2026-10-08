@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Download, Printer } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { REPORT_TABS, type ReportTabKey } from "@/config/books-nav";
 import { csvCell } from "@/lib/csv";
 import { formatDateUae } from "@/lib/date";
 import {
@@ -309,7 +310,10 @@ export function ReportTable(props: {
         onKeyDown={onKeyDown}
         onScroll={() => save()}
         data-report-scroll=""
-        className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring print:max-h-none print:overflow-visible"
+        className={cn(
+          "max-h-[70vh] overflow-auto border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring print:max-h-none print:overflow-visible",
+          props.footer?.length || (diff && props.difference) ? "rounded-t-lg" : "rounded-lg",
+        )}
       >
         <table className="w-full min-w-[640px] text-sm" data-own-style="">
           <thead className="sticky top-0 z-10 bg-muted">
@@ -428,34 +432,46 @@ export function ReportTable(props: {
               </tr>
             ) : null}
           </tbody>
-          <tfoot className="sticky bottom-0 bg-card">
-            {(props.footer || []).map((f) => (
-              <tr key={f.id} className="border-t-2 border-border font-semibold" data-testid={f.testId}>
-                <td className="px-3 py-2">{f.label}</td>
-                {columns.map((c) => (
-                  <td
-                    key={c.key}
-                    className={cn("px-3 py-2", c.kind === "text" ? "text-start" : "text-end tabular-nums")}
-                    title={c.kind === "text" ? undefined : amountTitle(f.values[c.key]) || undefined}
-                  >
-                    {cell(f, c)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {diff && props.difference ? (
-              <tr className="bg-red-50 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-200" data-testid="report-difference">
-                <td className="px-3 py-2">Difference</td>
-                {columns.map((c) => (
-                  <td key={c.key} className="px-3 py-2 text-end tabular-nums">
-                    {c.key === props.difference!.debitKey ? formatReportAmount(diff.differenceMinor) : ""}
-                  </td>
-                ))}
-              </tr>
-            ) : null}
-          </tfoot>
         </table>
       </div>
+      {(props.footer?.length || (diff && props.difference)) ? (
+        <div
+          className="-mt-px overflow-x-auto rounded-b-lg border border-t-0 border-border bg-card"
+          data-testid="report-footer-bar"
+        >
+          <table className="w-full min-w-[640px] text-sm" data-own-style="">
+            <tbody>
+              {(props.footer || []).map((f) => (
+                <tr key={f.id} className="border-t-2 border-border font-semibold" data-testid={f.testId}>
+                  <td className="px-3 py-2">{f.label}</td>
+                  {columns.map((c) => (
+                    <td
+                      key={c.key}
+                      className={cn("px-3 py-2", c.kind === "text" ? "text-start" : "text-end tabular-nums")}
+                      title={c.kind === "text" ? undefined : amountTitle(f.values[c.key]) || undefined}
+                    >
+                      {cell(f, c)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {diff && props.difference ? (
+                <tr
+                  className="bg-red-50 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-200"
+                  data-testid="report-difference"
+                >
+                  <td className="px-3 py-2">Difference</td>
+                  {columns.map((c) => (
+                    <td key={c.key} className="px-3 py-2 text-end tabular-nums">
+                      {c.key === props.difference!.debitKey ? formatReportAmount(diff.differenceMinor) : ""}
+                    </td>
+                  ))}
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -472,18 +488,8 @@ export function useReportMeta() {
   return meta;
 }
 
-const REPORT_TABS = [
-  { href: "/books/reports/pnl", label: "Profit & Loss", key: "pnl" },
-  { href: "/books/reports/balance-sheet", label: "Balance sheet", key: "bs" },
-  { href: "/books/reports/cash-flow", label: "Cash flow", key: "cf" },
-  { href: "/books/reports/trial-balance", label: "Trial balance", key: "tb" },
-  { href: "/books/reports/day-book", label: "Day book", key: "daybook" },
-  { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", key: "ar" },
-  { href: "/books/reports/ageing?side=ap", label: "Payables ageing", key: "ap" },
-] as const;
-
-/** Reports tab strip (Phase 6 FS tabs first, then RPT-1 reports). */
-export function ReportsNav({ active }: { active: (typeof REPORT_TABS)[number]["key"] }) {
+/** Reports tab strip — order from books-nav config. */
+export function ReportsNav({ active }: { active: ReportTabKey }) {
   return (
     <div className="flex flex-wrap gap-2 border-b border-border pb-2 text-sm print:hidden" data-testid="reports-nav">
       {REPORT_TABS.map((t) => (

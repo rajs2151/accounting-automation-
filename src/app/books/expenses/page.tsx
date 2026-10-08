@@ -934,7 +934,7 @@ export default function BooksExpensesPage() {
                   <th className="py-1 font-medium">VAT</th>
                   <th className="py-1 text-right font-medium">Net</th>
                   <th className="py-1 text-right font-medium">VAT amt</th>
-                  <th className="py-1 text-right font-medium">Gross</th>
+                  <th className="py-1 text-right font-medium">Total</th>
                 </tr>
               </thead>
               <tbody>

@@ -1477,7 +1477,7 @@ export async function postBooksBankTransaction(
       throw new BooksError("bank_txn_not_ready", "conflict");
     }
     if (!row.reviewed_by) throw new BooksError("bank_txn_not_reviewed", "conflict");
-    await requireDualControlActor(db, approverId, String(row.reviewed_by), "post");
+    await requireDualControlActor(db, approverId, String(row.reviewed_by), "post", { clientId });
 
     let counterpart: typeof row | null = null;
     if (String(row.txn_type || "") === "transfer") {
@@ -1496,7 +1496,9 @@ export async function postBooksBankTransaction(
       }
       if (!counterpart.reviewed_by) throw new BooksError("bank_txn_not_reviewed", "conflict");
       if (String(counterpart.reviewed_by) !== String(row.reviewed_by)) {
-        await requireDualControlActor(db, approverId, String(counterpart.reviewed_by), "post");
+        await requireDualControlActor(db, approverId, String(counterpart.reviewed_by), "post", {
+          clientId,
+        });
       }
       if (String(counterpart.linked_txn_id) !== String(row.id)) {
         throw new BooksError("transfer_link_broken", "conflict");

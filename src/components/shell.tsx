@@ -47,7 +47,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { BOOKS_NAV_GROUPS } from "@/config/books-nav";
 import { BOOKS_CLIENT_ID_SET, PRODUCT_NAME } from "@/config/product";
+import { canShowWorkingAs, workingAsLabel } from "@/lib/working-as-label";
 import { cn } from "@/lib/utils";
 
 type Directory = {
@@ -66,47 +68,32 @@ type NavItem = {
   soon?: boolean;
 };
 
-/**
- * Books menu in the order work flows: documents come in → sales / purchases / expenses → money in and
- * out → bank → the books themselves. Bank rules and statements live inside Bank transactions / Bank
- * accounts. Company Health (Phase 7) sits with Accounting.
- */
-const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
-  {
-    items: [
-      { href: "/books", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/books/inbox", label: "Inbox", icon: Inbox },
-    ],
-  },
-  {
-    label: "Sales & purchases",
-    items: [
-      { href: "/books/sales", label: "Sales", icon: FileText },
-      { href: "/books/purchases", label: "Purchases", icon: Receipt },
-      { href: "/books/expenses", label: "Expenses", icon: Wallet },
-      { href: "/books/receipts", label: "Receipts & payments", icon: HandCoins },
-      { href: "/books/parties", label: "Customers & suppliers", icon: Users },
-    ],
-  },
-  {
-    label: "Bank",
-    items: [
-      { href: "/books/banking", label: "Bank accounts", icon: Landmark, also: ["/books/statements"] },
-      { href: "/books/transactions", label: "Bank transactions", icon: ArrowLeftRight, also: ["/books/rules"] },
-    ],
-  },
-  {
-    label: "Accounting",
-    items: [
-      { href: "/books/journals", label: "Journals", icon: BookOpen },
-      { href: "/books/fixed-assets", label: "Fixed assets", icon: Building2 },
-      { href: "/books/close", label: "Close", icon: CalendarCheck },
-      { href: "/books/reports/trial-balance", label: "Reports", icon: ChartColumn, also: ["/books/reports"] },
-      { href: "/books/health", label: "Company Health", icon: Activity, also: ["/books/firm"] },
-    ],
-  },
-  { items: [{ href: "/books/settings", label: "Settings", icon: Settings }] },
-];
+const NAV_ICONS: Record<string, typeof LayoutDashboard> = {
+  "/books": LayoutDashboard,
+  "/books/inbox": Inbox,
+  "/books/sales": FileText,
+  "/books/purchases": Receipt,
+  "/books/expenses": Wallet,
+  "/books/receipts": HandCoins,
+  "/books/parties": Users,
+  "/books/banking": Landmark,
+  "/books/transactions": ArrowLeftRight,
+  "/books/journals": BookOpen,
+  "/books/fixed-assets": Building2,
+  "/books/close": CalendarCheck,
+  "/books/reports/trial-balance": ChartColumn,
+  "/books/health": Activity,
+  "/books/settings": Settings,
+};
+
+/** Labels/hrefs from books-nav config; icons attached here. */
+const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = BOOKS_NAV_GROUPS.map((g) => ({
+  label: g.label,
+  items: g.items.map((item) => ({
+    ...item,
+    icon: NAV_ICONS[item.href] || LayoutDashboard,
+  })),
+}));
 
 function periodDotClass(status: string) {
   const open = status === "OPEN" || status === "REOPENED";
@@ -538,10 +525,12 @@ function WorkingAsUser({
   onSwitch: (userId: string, clientId: string) => void;
 }) {
   if (!directory?.me) return null;
+  if (!canShowWorkingAs(directory.me.role)) return null;
 
   const items = Object.fromEntries(
-    directory.users.map((u) => [u.id, collapsed ? u.name : `${u.name} · ${u.role}`]),
+    directory.users.map((u) => [u.id, workingAsLabel(u, { collapsed })]),
   );
+  const meLabel = workingAsLabel(directory.me, { collapsed });
 
   if (collapsed) {
     return (
@@ -553,12 +542,12 @@ function WorkingAsUser({
         }}
       >
         <SelectTrigger size="sm" className="w-full" title="Working as" aria-label="Working as">
-          <SelectValue />
+          <SelectValue>{meLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           {directory.users.map((user) => (
             <SelectItem key={user.id} value={user.id}>
-              {user.name}
+              {workingAsLabel(user, { collapsed: true })}
             </SelectItem>
           ))}
         </SelectContent>
@@ -578,12 +567,12 @@ function WorkingAsUser({
         }}
       >
         <SelectTrigger size="sm" className="w-full" data-testid="working-as-select">
-          <SelectValue />
+          <SelectValue>{meLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           {directory.users.map((user) => (
             <SelectItem key={user.id} value={user.id}>
-              {user.name} · {user.role}
+              {workingAsLabel(user)}
             </SelectItem>
           ))}
         </SelectContent>

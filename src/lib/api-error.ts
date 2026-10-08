@@ -11,6 +11,8 @@ const MESSAGES: Record<string, string> = {
   period_not_found: "There is no accounting period for that date.",
   close_gates_failing: "Close checklist has failing gates. Waive with a reason or fix them before locking.",
   waiver_reason_required: "Give a reason when waiving a close gate.",
+  waiver_request_required: "Request a waiver first, then a different approver must confirm it.",
+  waiver_dual_control: "Someone else must confirm this waiver — you requested it.",
   reopen_reason_required: "Give a reason when unlocking a period.",
   period_already_locked: "That period is already locked.",
   not_draft: "Only draft documents can be changed or approved.",
@@ -28,9 +30,15 @@ const MESSAGES: Record<string, string> = {
   exclude_reason_required: "Give a reason when excluding a transaction.",
   bank_txn_not_found: "That bank transaction was not found.",
   bank_txn_not_editable: "That transaction can no longer be edited.",
-  c3_bank_transactions_migration_required: "Database migration db/35 is required for Transactions.",
-  c3_bank_txn_match_migration_required: "Database migration db/36 is required for match/post.",
-  c3_bank_txn_transfer_migration_required: "Database migration db/37 is required for transfer pairs.",
+  c2_bank_accounts_migration_required:
+    "Banking isn’t available until the latest database update is applied. Ask your admin to update the app.",
+  c3_bank_transactions_migration_required:
+    "Transactions isn’t available until the latest database update is applied. Ask your admin to update the app.",
+  c3_bank_txn_match_migration_required:
+    "Matching isn’t available until the latest database update is applied. Ask your admin to update the app.",
+  c3_bank_txn_transfer_migration_required:
+    "Transfer pairing isn’t available until the latest database update is applied. Ask your admin to update the app.",
+  invalid_close_gate: "That checklist item isn’t valid for this period.",
   bank_txn_not_ready: "Only Ready transactions can be posted.",
   bank_txn_not_reviewed: "Mark the transaction reviewed before posting.",
   match_requires_receipt_or_payment: "Match is only for customer receipts or supplier payments.",
@@ -81,6 +89,12 @@ const MESSAGES: Record<string, string> = {
   vat_return_blocked_place_of_supply_gaps:
     "Some posted documents in this VAT period have no place of supply. Fix the gap list first.",
   vat_stagger_not_set: "Set the company's VAT return period in Settings first.",
+  vat_establishment_emirate_required:
+    "Set the company's establishment emirate in Settings before generating a VAT return.",
+  invalid_vat_registration_status: "Choose a valid VAT registration status.",
+  ct_settings_require_admin: "Only an admin can change corporate tax settings.",
+  manual_vat_control_journal:
+    "This journal moves VAT control accounts (2210/1430/2220/1440). Prefer the VAT return flow when available — check the period and amounts carefully.",
   vat_return_range_required: "Choose a VAT period or a date range.",
   entry_date_outside_period: "The date is outside the selected period. Pick a date inside the period, or switch period.",
   journal_unbalanced: "Debits and credits must be equal before saving.",
@@ -228,6 +242,7 @@ const MESSAGES: Record<string, string> = {
   period_label_exists: "A period with that name already exists.",
   period_label_required: "Enter a name for the period.",
   invalid_company_trn: "The TRN must be exactly 15 digits, or left empty.",
+  invalid_trn: "The TRN must be 15 digits starting with 100, or left empty.",
   invalid_currency_code: "Use a three-letter currency code in capitals, such as AED.",
   base_currency_fixed: "The base currency is AED and can't be changed.",
   invalid_fiscal_year_start_month: "The financial year start month must be a whole number from 1 to 12.",

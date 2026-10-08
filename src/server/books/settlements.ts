@@ -89,7 +89,7 @@ async function assertCanPostFor(approverId: string, clientId: string, preparerId
   if (!preparerId) throw new BooksError("preparer_required", "invalid");
   await withUser(approverId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    await requireDualControlActor(db, approverId, preparerId, "post");
+    await requireDualControlActor(db, approverId, preparerId, "post", { clientId });
   });
 }
 
@@ -1038,7 +1038,7 @@ export async function postSettlementDraft(approverId: string, clientId: string, 
   const draft = await withUser(approverId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const loaded = await loadSettlementDraft(db, clientId, documentId);
-    await requireDualControlActor(db, approverId, loaded.createdBy, "post");
+    await requireDualControlActor(db, approverId, loaded.createdBy, "post", { clientId });
     return loaded;
   });
   return createReceiptOrPayment(draft.createdBy, approverId, clientId, draft.plan, {

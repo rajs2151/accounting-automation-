@@ -10,6 +10,8 @@ import { withUser } from "@/lib/db";
 import { formatMinor } from "@/lib/money";
 import { writeBooksAudit } from "@/server/books/audit";
 import { listBankReconciliations } from "@/server/books/bank-recon";
+import { formatMoneyAmount } from "@/lib/money-display";
+import { controlVsOpenItemsDrift } from "@/server/books/control-drift";
 import { getBooksMonthChecklist, vatPeriodForMonth, type VatFrequency } from "@/server/books/dashboard";
 import { requireApproverOrAdmin } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
@@ -30,7 +32,9 @@ export const CLOSE_GATE_KEYS = [
   "clearing_info",
   "scheduled",
   "unposted_drafts",
+  "inbox_unreviewed",
   "vat_control",
+  "ar_ap_tieout",
   "missing_documents",
   "depreciation",
   "fx_revaluation",
@@ -44,13 +48,15 @@ export type CloseGate = {
   key: CloseGateKey;
   label: string;
   status: CloseGateStatus;
-  /** Blocking fail unless waived. info / not_set_up never block. */
+  /** Blocking fail unless waived. info / not_set_up never block lock once waived. */
   blocking: boolean;
   count: number;
   href: string;
   detail?: string;
   balanceMinor?: number;
   waiverReason?: string | null;
+  /** Pending dual-control waive request awaiting a different approver. */
+  pendingWaiver?: { reason: string; requestedBy: string } | null;
 };
 
 export type BooksCloseChecklist = {
@@ -116,11 +122,15 @@ async function loadWaivers(
   db: PoolClient,
   clientId: string,
   periodId: string,
-): Promise<Map<string, string>> {
-  // A waiver only counts until the period is next reopened: any 'unlock' audit event on the
-  // period at/after the waiver's timestamp invalidates it (re-waiving refreshes `at`).
+): Promise<{
+  byGate: Map<string, string>;
+  byAccount: Map<string, string>;
+  pendingByGate: Map<string, { reason: string; requestedBy: string }>;
+}> {
+  // Active waivers unlock-invalidated; pending shown until confirmed or superseded.
   const rows = await db.query(
-    `SELECT w.gate_key, w.reason FROM books_close_waivers w
+    `SELECT w.gate_key, w.reason, w.account_id, w.status, w.requested_by
+     FROM books_close_waivers w
      WHERE w.client_id = $1 AND w.period_id = $2
        AND NOT EXISTS (
          SELECT 1 FROM books_audit_events a
@@ -132,7 +142,25 @@ async function loadWaivers(
        )`,
     [clientId, periodId],
   );
-  return new Map(rows.rows.map((r) => [String(r.gate_key), String(r.reason)]));
+  const byGate = new Map<string, string>();
+  const byAccount = new Map<string, string>();
+  const pendingByGate = new Map<string, { reason: string; requestedBy: string }>();
+  for (const r of rows.rows) {
+    const key = String(r.gate_key);
+    const acct = r.account_id ? String(r.account_id) : null;
+    const status = String(r.status || "active");
+    if (status === "pending" && !acct) {
+      pendingByGate.set(key, {
+        reason: String(r.reason),
+        requestedBy: String(r.requested_by || ""),
+      });
+      continue;
+    }
+    if (status !== "active") continue;
+    if (acct) byAccount.set(`${key}:${acct}`, String(r.reason));
+    else byGate.set(key, String(r.reason));
+  }
+  return { byGate, byAccount, pendingByGate };
 }
 
 /** 2210 (output, Cr−Dr) and 1430 (input, Dr−Cr) movement for posted/reversed entries by entry_date. */
@@ -176,13 +204,19 @@ export async function vatControlMovement(
   return { vatOutMinor, vatInMinor };
 }
 
-function applyWaiver(gate: CloseGate, waivers: Map<string, string>): CloseGate {
-  const reason = waivers.get(gate.key);
-  if (!reason) return gate;
-  if (gate.status === "fail" && gate.blocking) {
-    return { ...gate, status: "waived", waiverReason: reason };
+function applyWaiver(
+  gate: CloseGate,
+  waivers: {
+    byGate: Map<string, string>;
+    pendingByGate: Map<string, { reason: string; requestedBy: string }>;
+  },
+): CloseGate {
+  const pending = waivers.pendingByGate.get(gate.key) || null;
+  const reason = waivers.byGate.get(gate.key);
+  if (reason && (gate.status === "fail" || gate.status === "not_set_up") && gate.blocking) {
+    return { ...gate, status: "waived", waiverReason: reason, pendingWaiver: null };
   }
-  return { ...gate, waiverReason: reason };
+  return { ...gate, waiverReason: reason || null, pendingWaiver: pending };
 }
 
 export async function getBooksCloseChecklist(
@@ -207,10 +241,12 @@ export async function getBooksCloseChecklist(
     const end = iso(periodRow.rows[0].period_end);
     const waivers = await loadWaivers(db, clientId, periodId);
 
-    // 1. Statements — vacuously pass when the company has no bank/card/gateway accounts yet.
-    const uncovered = month.statements.accounts.filter((a) => a.state !== "covered");
-    const statementsOk =
-      month.statements.accounts.length === 0 || month.statements.ok;
+    // 1. Statements — only accounts that require coverage (set up + activity/balance).
+    const requiredStmt = month.statements.accounts.filter((a) => a.requiresStatement);
+    const uncovered = requiredStmt.filter(
+      (a) => a.state !== "covered" && !waivers.byAccount.has(`statements:${a.accountId}`),
+    );
+    const statementsOk = requiredStmt.length === 0 || uncovered.length === 0;
     const statements: CloseGate = {
       key: "statements",
       label: "Bank / card / gateway statement coverage",
@@ -222,7 +258,9 @@ export async function getBooksCloseChecklist(
         ? uncovered
             .map((a) => `${a.code} ${a.name} — ${COVERAGE_STATE_TEXT[a.state] || a.state}`)
             .join("; ")
-        : undefined,
+        : requiredStmt.length === 0
+          ? "No accounts need statements this period"
+          : undefined,
     };
 
     // 2. Bank lines in period still needs_review or ready
@@ -243,8 +281,17 @@ export async function getBooksCloseChecklist(
       href: "/books/transactions",
     };
 
-    // 3. Bank recon
-    const reconDiffs = recons.filter((r) => r.status === "difference" || r.status === "no_statement");
+    // 3. Bank recon — only for accounts that required (and have) statement coverage.
+    // Missing coverage is owned by the statements gate (no double-count).
+    const requiredIds = new Set(requiredStmt.map((a) => a.accountId));
+    const coveredIds = new Set(
+      requiredStmt.filter((a) => a.state === "covered").map((a) => a.accountId),
+    );
+    const reconDiffs = recons.filter((r) => {
+      if (!requiredIds.has(r.accountId) || !coveredIds.has(r.accountId)) return false;
+      if (waivers.byAccount.has(`bank_recon:${r.accountId}`)) return false;
+      return r.status === "difference";
+    });
     const bankRecon: CloseGate = {
       key: "bank_recon",
       label: "Bank reconciliation (difference = 0)",
@@ -351,6 +398,7 @@ export async function getBooksCloseChecklist(
       blocking: true,
       count: dueN,
       href: "/books/journals?status=scheduled",
+      detail: dueN === 0 ? "Nothing due in this period" : `${dueN} still unposted`,
     };
 
     // 6b. Unposted drafts — draft / scheduled journals dated inside the period that the scheduled
@@ -388,22 +436,44 @@ export async function getBooksCloseChecklist(
       detail: draftN ? `${draftList}${draftN > 5 ? `; and ${draftN - 5} more` : ""}` : undefined,
     };
 
-    // 7. VAT control
+    // 6c. Unreviewed inbox (blocking)
+    const inboxReview = await db.query(
+      `SELECT COUNT(*)::int AS n FROM books_inbox_items
+       WHERE client_id = $1 AND status = 'needs_review'`,
+      [clientId],
+    );
+    const inboxN = Number(inboxReview.rows[0].n);
+    const inboxUnreviewed: CloseGate = {
+      key: "inbox_unreviewed",
+      label: "Unreviewed inbox documents",
+      status: inboxN === 0 ? "pass" : "fail",
+      blocking: true,
+      count: inboxN,
+      href: "/books/inbox",
+      detail: inboxN ? `${inboxN} document(s) still need review` : undefined,
+    };
+
+    // 7. VAT control — emirate + return period required; otherwise not configured (fail).
     const client = await db.query(
-      `SELECT vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
+      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
       [clientId],
     );
     const freq = (client.rows[0]?.vat_return_frequency as VatFrequency | null) || null;
+    const emirate = (client.rows[0]?.establishment_emirate as string | null) || null;
     let vatGate: CloseGate;
-    if (!freq) {
+    if (!freq || !emirate) {
       vatGate = {
         key: "vat_control",
         label: "VAT control",
-        status: "pass",
+        status: "not_set_up",
         blocking: true,
-        count: 0,
+        count: 1,
         href: "/books/settings",
-        detail: "VAT stagger not set — treated as not a VAT period end",
+        detail: !emirate && !freq
+          ? "Not configured — set establishment emirate and VAT return period in Settings"
+          : !emirate
+            ? "Not configured — set establishment emirate in Settings"
+            : "Not configured — set VAT return period in Settings",
       };
     } else {
       const vatWindow = vatPeriodForMonth(end, freq, client.rows[0].vat_period_end_month as number | null);
@@ -492,6 +562,42 @@ export async function getBooksCloseChecklist(
       detail: "Information only — does not block lock",
     };
 
+    // AR/AP control vs open items (month-end tie-out)
+    let arApGate: CloseGate;
+    try {
+      const drift = await controlVsOpenItemsDrift(userId, clientId, periodId);
+      const parts: string[] = [];
+      if (drift.ar.driftMinor !== 0) {
+        parts.push(
+          `AR ${formatMoneyAmount({ amountMinor: drift.ar.controlMinor })} vs open ${formatMoneyAmount({ amountMinor: drift.ar.openMinor })}`,
+        );
+      }
+      if (drift.ap.driftMinor !== 0) {
+        parts.push(
+          `AP ${formatMoneyAmount({ amountMinor: drift.ap.controlMinor })} vs open ${formatMoneyAmount({ amountMinor: drift.ap.openMinor })}`,
+        );
+      }
+      arApGate = {
+        key: "ar_ap_tieout",
+        label: "AR/AP control vs open items",
+        status: parts.length ? "fail" : "pass",
+        blocking: true,
+        count: parts.length,
+        href: "/books/reports/ageing?side=ar",
+        detail: parts.length ? parts.join("; ") : "Controls match open items",
+      };
+    } catch {
+      arApGate = {
+        key: "ar_ap_tieout",
+        label: "AR/AP control vs open items",
+        status: "fail",
+        blocking: true,
+        count: 1,
+        href: "/books/reports/ageing?side=ar",
+        detail: "Could not compute tie-out",
+      };
+    }
+
     const missingDepr = await missingPostedDepreciation(db, clientId, periodId, start, end);
     const depreciation: CloseGate = {
       key: "depreciation",
@@ -525,14 +631,16 @@ export async function getBooksCloseChecklist(
       clearingInfo,
       scheduledGate,
       unpostedDrafts,
+      inboxUnreviewed,
       vatGate,
+      arApGate,
       missingDocuments,
       depreciation,
       fx,
     ].map((g) => applyWaiver(g, waivers));
 
     const failing = gates
-      .filter((g) => g.blocking && g.status === "fail")
+      .filter((g) => g.blocking && (g.status === "fail" || g.status === "not_set_up"))
       .map((g) => g.key);
 
     return {
@@ -551,22 +659,28 @@ export async function getBooksCloseChecklist(
   });
 }
 
+/**
+ * Dual-control waive: accountant/approver requests (pending); a different approver/admin confirms (active).
+ * Optional accountId for per-account statements/recon waivers.
+ */
 export async function waiveBooksCloseGate(
   userId: string,
   clientId: string,
   periodId: string,
   gateKey: string,
   reason: string,
+  opts?: { accountId?: string | null; action?: "request" | "confirm" },
 ) {
   const trimmed = String(reason || "").trim();
   if (!trimmed) throw new BooksError("waiver_reason_required", "invalid");
   if (!(CLOSE_GATE_KEYS as readonly string[]).includes(gateKey)) {
     throw new BooksError("invalid_close_gate", "invalid");
   }
+  const accountId = opts?.accountId?.trim() || null;
+  const action = opts?.action === "confirm" ? "confirm" : "request";
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    await requireApproverOrAdmin(db, userId, "lock");
     const period = await db.query(
       `SELECT id, status FROM books_periods WHERE id = $1 AND client_id = $2`,
       [periodId, clientId],
@@ -576,12 +690,68 @@ export async function waiveBooksCloseGate(
       throw new BooksError("period_locked", "period_closed");
     }
 
+    if (accountId) {
+      const acct = await db.query(
+        `SELECT id FROM books_accounts WHERE id = $1 AND client_id = $2`,
+        [accountId, clientId],
+      );
+      if (!acct.rowCount) throw new BooksError("account_not_found", "not_found");
+    }
+
+    const existing = await db.query(
+      `SELECT id, status, requested_by, reason FROM books_close_waivers
+       WHERE client_id = $1 AND period_id = $2 AND gate_key = $3
+         AND COALESCE(account_id, '00000000-0000-0000-0000-000000000000')
+           = COALESCE($4::uuid, '00000000-0000-0000-0000-000000000000')`,
+      [clientId, periodId, gateKey, accountId],
+    );
+
+    if (action === "request") {
+      // Any books writer with access may request; confirm needs approver ≠ requester.
+      const id = existing.rowCount ? String(existing.rows[0].id) : randomUUID();
+      if (existing.rowCount) {
+        await db.query(
+          `UPDATE books_close_waivers
+           SET reason = $2, requested_by = $3, actor = $3, status = 'pending', at = now()
+           WHERE id = $1`,
+          [id, trimmed, userId],
+        );
+      } else {
+        await db.query(
+          `INSERT INTO books_close_waivers
+             (id, client_id, period_id, gate_key, reason, actor, requested_by, account_id, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$6,$7,'pending')`,
+          [id, clientId, periodId, gateKey, trimmed, userId, accountId],
+        );
+      }
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "request_waive_close_gate",
+        entity: "books_period",
+        entityId: periodId,
+        after: { gate: gateKey, reason: trimmed, accountId, status: "pending" },
+      });
+      return { ok: true, gateKey, reason: trimmed, status: "pending" as const, accountId };
+    }
+
+    // confirm
+    await requireApproverOrAdmin(db, userId, "lock");
+    if (!existing.rowCount || String(existing.rows[0].status) !== "pending") {
+      throw new BooksError("waiver_request_required", "invalid");
+    }
+    const requestedBy = existing.rows[0].requested_by
+      ? String(existing.rows[0].requested_by)
+      : null;
+    if (requestedBy && requestedBy === userId) {
+      throw new BooksError("waiver_dual_control", "forbidden");
+    }
+    const finalReason = trimmed || String(existing.rows[0].reason || "");
     await db.query(
-      `INSERT INTO books_close_waivers (id, client_id, period_id, gate_key, reason, actor)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (client_id, period_id, gate_key)
-       DO UPDATE SET reason = EXCLUDED.reason, actor = EXCLUDED.actor, at = now()`,
-      [randomUUID(), clientId, periodId, gateKey, trimmed, userId],
+      `UPDATE books_close_waivers
+       SET status = 'active', actor = $2, reason = $3, at = now()
+       WHERE id = $1`,
+      [String(existing.rows[0].id), userId, finalReason],
     );
     await db.query(
       `INSERT INTO books_close_events (id, client_id, period_id, action, actor, reason, checklist_json)
@@ -591,8 +761,8 @@ export async function waiveBooksCloseGate(
         clientId,
         periodId,
         userId,
-        trimmed,
-        JSON.stringify({ gate: gateKey }),
+        finalReason,
+        JSON.stringify({ gate: gateKey, accountId, requestedBy }),
       ],
     );
     await writeBooksAudit(db, {
@@ -601,9 +771,9 @@ export async function waiveBooksCloseGate(
       action: "waive_close_gate",
       entity: "books_period",
       entityId: periodId,
-      after: { gate: gateKey, reason: trimmed },
+      after: { gate: gateKey, reason: finalReason, accountId, status: "active", requestedBy },
     });
-    return { ok: true, gateKey, reason: trimmed };
+    return { ok: true, gateKey, reason: finalReason, status: "active" as const, accountId };
   });
 }
 
@@ -617,7 +787,9 @@ export async function lockBooksPeriodWithChecklist(
     throw new BooksError("period_already_locked", "conflict");
   }
   if (!checklist.ready) {
-    throw new CloseGatesFailingError(checklist.gates.filter((g) => g.blocking && g.status === "fail"));
+    throw new CloseGatesFailingError(
+      checklist.gates.filter((g) => g.blocking && (g.status === "fail" || g.status === "not_set_up")),
+    );
   }
 
   const locked = await lockBooksPeriod(userId, clientId, periodId);

@@ -810,7 +810,7 @@ export async function rejectBooksExpense(
     if (String(row.status) !== "pending") {
       throw new BooksError("expense_not_pending", "conflict");
     }
-    await requireDualControlActor(db, userId, String(row.submitted_by), "post");
+    await requireDualControlActor(db, userId, String(row.submitted_by), "post", { clientId });
 
     const updated = await db.query(
       `UPDATE books_expenses SET

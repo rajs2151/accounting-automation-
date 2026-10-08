@@ -150,7 +150,9 @@ export async function postOpeningImport(
     );
     if (!row.rowCount) throw new BooksError("import_not_found", "not_found");
     if (row.rows[0].status !== "mapped") throw new BooksError("not_mapped", "conflict");
-    await requireDualControlActor(db, approverId, String(row.rows[0].created_by), "post");
+    await requireDualControlActor(db, approverId, String(row.rows[0].created_by), "post", {
+      clientId,
+    });
 
     const period = await db.query(
       `SELECT id, status, period_start FROM books_periods WHERE id = $1`,

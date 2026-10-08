@@ -7,6 +7,7 @@ import {
   ibanLast4,
   isBankAccountSetUp,
   normalizeIban,
+  statementCoverageApplicable,
 } from "@/lib/statement-coverage";
 
 test("computeStatementCoverage merges overlap and reports day gaps", () => {
@@ -52,4 +53,34 @@ test("iban helpers and setup gate", () => {
     true,
   );
   assert.equal(isBankAccountSetUp({ instrumentType: "cash" }), true);
+});
+
+test("statementCoverageApplicable: setup + activity/balance only", () => {
+  assert.equal(
+    statementCoverageApplicable({
+      instrumentType: "bank",
+      setupOk: true,
+      ledgerBalanceMinor: 0,
+      hasPeriodActivity: false,
+    }),
+    false,
+  );
+  assert.equal(
+    statementCoverageApplicable({
+      instrumentType: "bank",
+      setupOk: true,
+      ledgerBalanceMinor: 100,
+      hasPeriodActivity: false,
+    }),
+    true,
+  );
+  assert.equal(
+    statementCoverageApplicable({
+      instrumentType: "cash",
+      setupOk: true,
+      ledgerBalanceMinor: 100,
+      hasPeriodActivity: true,
+    }),
+    false,
+  );
 });

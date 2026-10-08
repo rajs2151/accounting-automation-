@@ -128,14 +128,23 @@ export async function booksDayBook(
         ? ls.find((l) => l.is_ar || l.is_ap) || ls.find((l) => PARTY_ADVANCE_CODES.has(String(l.code)))
         : undefined;
       const lead = ls[0];
+      const memo = e.memo ? String(e.memo).trim() : "";
+      const entryNo = e.entry_no ? String(e.entry_no) : "";
+      // Prefer memo, then party, then lead account; voucher number last.
+      const particulars =
+        memo ||
+        (e.party_name ? String(e.party_name) : "") ||
+        (lead?.name ? String(lead.name) : "") ||
+        entryNo ||
+        "";
       const row: DayBookRow = {
         entryId: String(e.id),
         date: iso(e.entry_date),
-        particulars: String(e.party_name || lead?.name || e.memo || ""),
+        particulars,
         party: e.party_name ? String(e.party_name) : null,
         partySide: partyLine ? (Number(partyLine.debit_minor) > 0 ? "Dr" : "Cr") : null,
         type,
-        number: e.entry_no ? String(e.entry_no) : null,
+        number: entryNo || null,
         debitMinor,
         creditMinor,
         documentId: e.document_id ? String(e.document_id) : null,

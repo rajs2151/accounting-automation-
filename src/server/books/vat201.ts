@@ -97,17 +97,25 @@ export async function generateVat201Draft(
 ): Promise<Vat201Draft> {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    const settings = await db.query(
+      `SELECT establishment_emirate, vat_return_frequency, vat_period_end_month
+       FROM clients WHERE id = $1`,
+      [clientId],
+    );
+    const emirate = settings.rows[0]?.establishment_emirate as string | null;
+    const freq = settings.rows[0]?.vat_return_frequency as VatFrequency | null;
+    if (!emirate) throw new BooksError("vat_establishment_emirate_required", "invalid");
+    if (!freq) throw new BooksError("vat_stagger_not_set", "invalid");
+
     let from = opts.from;
     let to = opts.to;
     if (!from || !to) {
       if (!opts.monthEnd) throw new BooksError("vat_return_range_required", "invalid");
-      const c = await db.query(
-        `SELECT vat_return_frequency, vat_period_end_month FROM clients WHERE id = $1`,
-        [clientId],
+      const p = vatPeriodForMonth(
+        opts.monthEnd,
+        freq,
+        settings.rows[0].vat_period_end_month as number | null,
       );
-      const freq = c.rows[0]?.vat_return_frequency as VatFrequency | null;
-      if (!freq) throw new BooksError("vat_stagger_not_set", "invalid");
-      const p = vatPeriodForMonth(opts.monthEnd, freq, c.rows[0].vat_period_end_month as number | null);
       from = p.periodStart;
       to = p.periodEnd;
     }

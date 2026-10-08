@@ -166,6 +166,13 @@ export default function TrialBalancePage() {
           <p className="text-sm text-muted-foreground">
             Net closing balances from posted journal lines{current?.periodLabel ? ` · ${current.periodLabel}` : ""}.
           </p>
+          <p className="text-xs text-muted-foreground" data-testid="tb-report-basis">
+            {view === "monthly"
+              ? "Basis: Monthly columns (fiscal year to date)"
+              : view === "compare"
+                ? `Basis: Period vs previous${current?.periodLabel ? ` (${current.periodLabel})` : ""}`
+                : `Basis: Calendar month${current?.periodLabel ? ` (${current.periodLabel})` : ""}`}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <label className="text-xs text-muted-foreground">
@@ -189,7 +196,7 @@ export default function TrialBalancePage() {
           ) : null}
           <label className="flex items-center gap-2" data-testid="tb-hide-zero">
             <input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.target.checked)} />
-            Hide zero balances
+            Hide zero closing balances
           </label>
           <label className="text-xs text-muted-foreground">
             Period

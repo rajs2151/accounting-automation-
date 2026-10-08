@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { StatusBadge } from "@/components/books/status-badge";
 import { apiErrorMessage } from "@/lib/api-error";
+import { parseControlDriftLabel, type DriftSide } from "@/lib/dashboard-money-labels";
 import { formatMinor } from "@/lib/money";
 import { formatDateUae } from "@/lib/date";
 import { isDevUiEnabled } from "@/lib/dev-ui";
@@ -20,8 +21,10 @@ type Checklist = {
       code: string;
       name: string;
       setupOk: boolean;
-      state: "covered" | "gap" | "missing";
+      state: "covered" | "gap" | "missing" | "n/a";
       coverageTo: string | null;
+      requiresStatement?: boolean;
+      instrumentType?: "bank" | "card" | "cash" | "gateway";
     }>;
   };
   documentsToReview: {
@@ -31,6 +34,12 @@ type Checklist = {
     notes: number;
     statements: number;
     href: string;
+    hrefs?: {
+      purchaseBills: string;
+      salesInvoices: string;
+      notes: string;
+      statements: string;
+    };
   };
   bankLines: { needsReview: number; readyNotPosted: number; href: string };
   unassignedInbox: { count: number; href: string };
@@ -86,9 +95,25 @@ function Card(props: {
 }
 
 type Kpi = { totalOutstandingAedMinor: number; overdueAedMinor: number; dueIn7DaysAedMinor: number };
-type Money = { ar: Kpi | null; ap: Kpi | null; cashMinor: number | null; cashAccounts: number };
+type Money = {
+  ar: Kpi | null;
+  ap: Kpi | null;
+  cashMinor: number | null;
+  cashAccounts: number;
+  arDrift: DriftSide | null;
+  apDrift: DriftSide | null;
+};
 
-function MoneyTile(props: { testId: string; label: string; amountMinor: number | null; note: string; href: string; tone?: "danger" }) {
+function MoneyTile(props: {
+  testId: string;
+  label: string;
+  amountMinor: number | null;
+  overdueMinor?: number | null;
+  note: string;
+  href: string;
+  tone?: "danger";
+  drift?: DriftSide | null;
+}) {
   return (
     <Link
       href={props.href}
@@ -96,13 +121,31 @@ function MoneyTile(props: { testId: string; label: string; amountMinor: number |
       className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40 hover:bg-muted/30"
     >
       <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{props.label}</div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums">
+      <div className="mt-1 text-2xl font-semibold tabular-nums" data-testid={`${props.testId}-outstanding`}>
         {props.amountMinor == null ? "—" : formatMinor(props.amountMinor)}
-        <span className="ms-1 text-xs font-normal text-muted-foreground">AED</span>
+        <span className="ms-1 text-xs font-normal text-muted-foreground">AED outstanding</span>
       </div>
+      {props.overdueMinor != null ? (
+        <div
+          className={
+            props.overdueMinor > 0
+              ? "mt-1 text-sm font-medium tabular-nums text-red-600"
+              : "mt-1 text-sm tabular-nums text-muted-foreground"
+          }
+          data-testid={`${props.testId}-overdue`}
+        >
+          {formatMinor(props.overdueMinor)} AED overdue
+        </div>
+      ) : null}
       <div className={props.tone === "danger" ? "mt-1 text-xs text-red-600" : "mt-1 text-xs text-muted-foreground"}>
         {props.note}
       </div>
+      {props.drift && props.drift.driftMinor !== 0 ? (
+        <div className="mt-1 text-xs text-amber-800" data-testid={`${props.testId}-drift`}>
+          Control {formatMinor(props.drift.controlMinor)} ≠ open items {formatMinor(props.drift.openMinor)}{" "}
+          — see issues below
+        </div>
+      ) : null}
     </Link>
   );
 }
@@ -199,7 +242,19 @@ function BooksFlow({ d }: { d: Checklist }) {
   );
 }
 
-const COVERAGE_LABEL = { covered: "✓ to month end", gap: "✗ gap", missing: "✗ no statement" } as const;
+const COVERAGE_LABEL = {
+  covered: "✓ to month end",
+  gap: "✗ gap",
+  missing: "✗ no statement",
+  "n/a": "n/a — cash (no statement)",
+} as const;
+
+const INSTRUMENT_LABEL: Record<string, string> = {
+  bank: "Bank",
+  card: "Card",
+  cash: "Cash",
+  gateway: "Gateway",
+};
 
 export default function BooksHomePage() {
   const { periodId } = useBooksShell();
@@ -208,25 +263,34 @@ export default function BooksHomePage() {
   const [error, setError] = useState<string | null>(null);
   const [money, setMoney] = useState<Money | null>(null);
 
-  // Money at a glance (today): open receivables / payables and cash & bank balances.
+  // Money at a glance (today): open receivables / payables, cash, and control vs open drift.
   useEffect(() => {
     let cancelled = false;
+    const driftQ = periodId ? `?periodId=${encodeURIComponent(periodId)}` : "";
     void Promise.all([
       fetch("/api/books/open-items/kpis?side=AR").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch("/api/books/open-items/kpis?side=AP").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch("/api/books/bank-accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    ]).then(([ar, ap, banks]) => {
+      periodId
+        ? fetch(`/api/books/dashboard/issues${driftQ}`).then((r) => (r.ok ? r.json() : [])).catch(() => [])
+        : Promise.resolve([]),
+    ]).then(([ar, ap, banks, iss]) => {
       if (cancelled) return;
       const cash = Array.isArray(banks)
         ? (banks as Array<{ instrumentType: string; ledgerBalanceMinor: number }>).filter(
             (b) => b.instrumentType === "bank" || b.instrumentType === "cash",
           )
         : null;
+      const issues = Array.isArray(iss) ? (iss as Array<{ kind?: string; label?: string }>) : [];
+      const arIssue = issues.find((i) => i.kind === "ar_control_vs_open_items");
+      const apIssue = issues.find((i) => i.kind === "ap_control_vs_open_items");
       setMoney({
         ar: ar && !ar.error ? (ar as Kpi) : null,
         ap: ap && !ap.error ? (ap as Kpi) : null,
         cashMinor: cash ? cash.reduce((s, b) => s + Number(b.ledgerBalanceMinor || 0), 0) : null,
         cashAccounts: cash?.length ?? 0,
+        arDrift: arIssue ? parseControlDriftLabel(arIssue.label) : null,
+        apDrift: apIssue ? parseControlDriftLabel(apIssue.label) : null,
       });
     });
     return () => {
@@ -278,17 +342,21 @@ export default function BooksHomePage() {
             testId="dash-money-ar"
             label="Receivables"
             amountMinor={money.ar?.totalOutstandingAedMinor ?? null}
-            note={money.ar ? (money.ar.overdueAedMinor ? `${formatMinor(money.ar.overdueAedMinor)} overdue` : "Nothing overdue") : "—"}
+            overdueMinor={money.ar?.overdueAedMinor ?? null}
+            note="Open invoices (sub-ledger)"
             tone={money.ar?.overdueAedMinor ? "danger" : undefined}
             href="/books/reports/ageing?side=ar"
+            drift={money.arDrift}
           />
           <MoneyTile
             testId="dash-money-ap"
             label="Payables"
             amountMinor={money.ap?.totalOutstandingAedMinor ?? null}
-            note={money.ap ? (money.ap.overdueAedMinor ? `${formatMinor(money.ap.overdueAedMinor)} overdue` : "Nothing overdue") : "—"}
+            overdueMinor={money.ap?.overdueAedMinor ?? null}
+            note="Open bills (sub-ledger)"
             tone={money.ap?.overdueAedMinor ? "danger" : undefined}
             href="/books/reports/ageing?side=ap"
+            drift={money.apDrift}
           />
           <MoneyTile
             testId="dash-money-cash"
@@ -318,9 +386,24 @@ export default function BooksHomePage() {
                   <li key={a.accountId} className="flex justify-between gap-2">
                     <span>
                       {a.code} {a.name}
+                      {a.instrumentType ? (
+                        <span className="ms-1 text-muted-foreground">
+                          ({INSTRUMENT_LABEL[a.instrumentType] || a.instrumentType})
+                        </span>
+                      ) : null}
                     </span>
-                    <span className={`shrink-0 whitespace-nowrap ${a.state === "covered" ? "text-emerald-700" : "text-red-600"}`}>
-                      {COVERAGE_LABEL[a.state]}
+                    <span
+                      className={`shrink-0 whitespace-nowrap ${
+                        a.state === "covered"
+                          ? "text-emerald-700"
+                          : a.state === "n/a"
+                            ? "text-muted-foreground"
+                            : "text-red-600"
+                      }`}
+                    >
+                      {a.state === "n/a" && a.instrumentType && a.instrumentType !== "cash"
+                        ? "n/a — no statement"
+                        : COVERAGE_LABEL[a.state]}
                     </span>
                   </li>
                 ))}
@@ -339,16 +422,28 @@ export default function BooksHomePage() {
             action="Review documents"
           >
             <span className="flex flex-wrap gap-x-3 gap-y-1">
-              <Link href="/books/purchases" className="hover:text-foreground hover:underline">
+              <Link
+                href={d.documentsToReview.hrefs?.purchaseBills || "/books/purchases?tab=needs_review"}
+                className="hover:text-foreground hover:underline"
+              >
                 Bills {d.documentsToReview.purchaseBills}
               </Link>
-              <Link href="/books/sales" className="hover:text-foreground hover:underline">
+              <Link
+                href={d.documentsToReview.hrefs?.salesInvoices || "/books/sales?tab=needs_review"}
+                className="hover:text-foreground hover:underline"
+              >
                 Invoices {d.documentsToReview.salesInvoices}
               </Link>
-              <Link href="/books/sales" className="hover:text-foreground hover:underline">
+              <Link
+                href={d.documentsToReview.hrefs?.notes || "/books/sales?tab=needs_review&docType=note"}
+                className="hover:text-foreground hover:underline"
+              >
                 Notes {d.documentsToReview.notes}
               </Link>
-              <Link href="/books/statements" className="hover:text-foreground hover:underline">
+              <Link
+                href={d.documentsToReview.hrefs?.statements || "/books/statements?status=needs_review"}
+                className="hover:text-foreground hover:underline"
+              >
                 Statements {d.documentsToReview.statements}
               </Link>
             </span>

@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatMinor } from "@/lib/money";
 
@@ -17,6 +19,7 @@ type HealthSummary = {
   cashOnHandChange: { priorMinor: number | null; deltaMinor: number | null };
   avgNetCashFlowMinor: number;
   avgNetCashFlowChange: { priorMinor: number | null; deltaMinor: number | null };
+  monthlyNetCashFlowsMinor?: number[];
   runway: CashRunway;
   priorRunway: CashRunway | null;
   liabilitiesAssetsRatioBps: number | null;
@@ -131,7 +134,7 @@ type HealthPanel = {
 type TabKey = "dashboard" | "scorecard" | "runway" | "profitability" | "debtors";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "dashboard", label: "Dashboard" },
+  { key: "dashboard", label: "Overview" },
   { key: "scorecard", label: "Company Scorecard" },
   { key: "runway", label: "Cash Flow & Runway" },
   { key: "profitability", label: "Profitability & Cost Trends" },
@@ -172,16 +175,48 @@ function MetricCard(props: {
   value: string;
   change: string;
   formula: string;
+  emptyReason?: string;
+  detail?: string;
+  priorPeriodLabel?: string;
 }) {
+  const empty = props.value === "—" || props.value === "";
   return (
     <div
       className="rounded-lg border border-border bg-card px-4 py-3"
       data-testid={props.testId}
-      title={props.formula}
     >
-      <div className="text-xs text-muted-foreground">{props.title}</div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{props.value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">vs prior: {props.change}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs text-muted-foreground">{props.title}</div>
+        {props.formula ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label={`How ${props.title} is calculated`}
+                  data-testid={`${props.testId}-info`}
+                />
+              }
+            >
+              <Info className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent>{props.formula}</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">
+        {empty ? "Not enough data" : props.value}
+      </div>
+      {empty && props.emptyReason ? (
+        <div className="mt-1 text-xs text-muted-foreground">{props.emptyReason}</div>
+      ) : null}
+      {!empty && props.detail ? (
+        <div className="mt-1 text-xs text-muted-foreground">{props.detail}</div>
+      ) : null}
+      <div className="mt-1 text-xs text-muted-foreground">
+        vs prior{props.priorPeriodLabel ? ` (${props.priorPeriodLabel})` : ""}: {props.change}
+      </div>
     </div>
   );
 }
@@ -328,7 +363,7 @@ export default function CompanyHealthPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Company Health</h1>
           <p className="text-sm text-muted-foreground">
-            Ledger-backed metrics · AED fils · {data?.periodLabel || "select a period"}
+            Ledger-backed metrics · AED · {data?.periodLabel || "select a period"}
           </p>
         </div>
         <Link
@@ -370,16 +405,31 @@ export default function CompanyHealthPage() {
             <MetricCard
               testId="health-metric-cash"
               title="Cash on hand"
-              value={data ? formatMinor(data.cashOnHandMinor) : "…"}
-              change={fmtDelta(data?.cashOnHandChange.deltaMinor)}
+              value={data ? `${formatMinor(data.cashOnHandMinor)} AED` : "…"}
+              change={
+                data?.cashOnHandChange.deltaMinor != null
+                  ? `${fmtDelta(data.cashOnHandChange.deltaMinor)} AED`
+                  : "—"
+              }
               formula={data?.formulas.cashOnHand || ""}
+              priorPeriodLabel="prior month"
             />
             <MetricCard
               testId="health-metric-avg-cf"
               title="Avg net cash flow (3 mo)"
-              value={data ? formatMinor(data.avgNetCashFlowMinor) : "…"}
-              change={fmtDelta(data?.avgNetCashFlowChange.deltaMinor)}
+              value={data ? `${formatMinor(data.avgNetCashFlowMinor)} AED` : "…"}
+              change={
+                data?.avgNetCashFlowChange.deltaMinor != null
+                  ? `${fmtDelta(data.avgNetCashFlowChange.deltaMinor)} AED`
+                  : "—"
+              }
               formula={data?.formulas.avgNetCashFlow || ""}
+              priorPeriodLabel="prior month avg"
+              detail={
+                data?.monthlyNetCashFlowsMinor?.length
+                  ? `Months (oldest→newest): ${data.monthlyNetCashFlowsMinor.map((m) => formatMinor(m)).join(" · ")} AED`
+                  : undefined
+              }
             />
             <MetricCard
               testId="health-metric-runway"
@@ -391,6 +441,12 @@ export default function CompanyHealthPage() {
                   : "—"
               }
               formula={data?.formulas.runway || ""}
+              emptyReason={
+                data?.runway.kind === "cash_positive"
+                  ? undefined
+                  : "Need a negative average net cash flow to estimate burn"
+              }
+              priorPeriodLabel="prior month"
             />
             <MetricCard
               testId="health-metric-la"
@@ -402,11 +458,13 @@ export default function CompanyHealthPage() {
                   : "—"
               }
               formula={data?.formulas.liabilitiesAssets || ""}
+              emptyReason="Need posted assets on the balance sheet"
+              priorPeriodLabel="prior month"
             />
           </div>
 
           <div
-            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
+            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
             data-testid="health-payment-behaviour"
           >
             <MetricCard
@@ -415,6 +473,8 @@ export default function CompanyHealthPage() {
               value={pb?.dsoDays != null ? `${pb.dsoDays} days` : "—"}
               change={fmtDayDelta(pb?.dsoDays ?? null, pb?.prior.dsoDays ?? null)}
               formula={pb?.formulas.dso || ""}
+              emptyReason="Need credit sales and AR balances in the period"
+              priorPeriodLabel="prior month"
             />
             <MetricCard
               testId="health-metric-dpo"
@@ -422,36 +482,47 @@ export default function CompanyHealthPage() {
               value={pb?.dpoDays != null ? `${pb.dpoDays} days` : "—"}
               change={fmtDayDelta(pb?.dpoDays ?? null, pb?.prior.dpoDays ?? null)}
               formula={pb?.formulas.dpo || ""}
+              emptyReason="Need credit purchases and AP balances in the period"
+              priorPeriodLabel="prior month"
             />
-            <MetricCard
-              testId="health-metric-dio"
-              title="DIO"
-              value={pb?.dioDays != null ? `${pb.dioDays} days` : "—"}
-              change={fmtDayDelta(pb?.dioDays ?? null, pb?.prior.dioDays ?? null)}
-              formula={pb?.formulas.dio || ""}
-            />
+            {pb?.dioDays != null ? (
+              <MetricCard
+                testId="health-metric-dio"
+                title="DIO"
+                value={`${pb.dioDays} days`}
+                change={fmtDayDelta(pb.dioDays, pb.prior.dioDays ?? null)}
+                formula={pb.formulas.dio || ""}
+                priorPeriodLabel="prior month"
+              />
+            ) : null}
             <MetricCard
               testId="health-metric-ccc"
               title="Cash conversion cycle"
               value={pb?.cashConversionCycleDays != null ? `${pb.cashConversionCycleDays} days` : "—"}
               change={
                 pb?.cashConversionCycleDays != null && pb.prior.cashConversionCycleDays != null
-                  ? `${pb.cashConversionCycleDays - pb.prior.cashConversionCycleDays} vs prior`
+                  ? `${pb.cashConversionCycleDays - pb.prior.cashConversionCycleDays} days`
                   : "—"
               }
               formula={pb?.formulas.ccc || ""}
+              emptyReason="Need DSO and DPO (DIO omitted when no inventory)"
+              priorPeriodLabel="prior month"
             />
-            <MetricCard
-              testId="health-metric-collection"
-              title="Collection rate"
-              value={fmtPctBps(pb?.collectionRateBps ?? null)}
-              change={
-                pb?.collectionRateBps != null && pb.prior.collectionRateBps != null
-                  ? `${((pb.collectionRateBps - pb.prior.collectionRateBps) / 100).toFixed(1)} pp`
-                  : "—"
-              }
-              formula={pb?.formulas.collectionRate || ""}
-            />
+            {pb?.dioDays != null ? (
+              <MetricCard
+                testId="health-metric-collection"
+                title="Collection rate"
+                value={fmtPctBps(pb.collectionRateBps ?? null)}
+                change={
+                  pb.collectionRateBps != null && pb.prior.collectionRateBps != null
+                    ? `${((pb.collectionRateBps - pb.prior.collectionRateBps) / 100).toFixed(1)} pp`
+                    : "—"
+                }
+                formula={pb.formulas.collectionRate || ""}
+                emptyReason="Need billings and collections in the period"
+                priorPeriodLabel="prior month"
+              />
+            ) : null}
           </div>
 
           {panel?.insights?.length ? (
@@ -485,7 +556,7 @@ export default function CompanyHealthPage() {
           ) : null}
 
           <p className="text-xs text-muted-foreground">
-            Hover a card for the formula. Open{" "}
+            Tap the info icon on a card for the formula. Open{" "}
             <button type="button" className="underline-offset-2 hover:underline" onClick={() => setTab("debtors")}>
               Debtors &amp; Creditors
             </button>{" "}
@@ -567,7 +638,7 @@ export default function CompanyHealthPage() {
             title="Cash / runway"
             value={sc ? formatMinor(sc.cashOnHandMinor) : "…"}
             change={sc ? fmtRunway(sc.runway) : "—"}
-            formula="Same cash and runway formulas as the Dashboard"
+            formula="Same cash and runway formulas as the Overview tab"
           />
           <MetricCard
             testId="health-sc-dso"

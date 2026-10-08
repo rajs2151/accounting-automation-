@@ -5,6 +5,10 @@ import { apiErrorMessage } from "@/lib/api-error";
 
 test("apiErrorMessage: known codes read as sentences, unknown server errors show a ref, never 'request failed'", () => {
   assert.equal(
+    apiErrorMessage({ error: "c2_bank_accounts_migration_required" }),
+    "Banking isn’t available until the latest database update is applied. Ask your admin to update the app.",
+  );
+  assert.equal(
     apiErrorMessage({ error: "post_preparer_cannot_approve" }),
     "You prepared this document, so someone else must approve it.",
   );

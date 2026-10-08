@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { FileText, Filter } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { defaultIssueDateIso } from "@/lib/default-issue-date";
 import { displayToMinor, MoneyTypeError } from "@/lib/money";
 import { docTypeLabel, documentStatusLabel, inboxStatusLabel } from "@/lib/status-labels";
 
@@ -73,9 +75,19 @@ function isSalesUpload(u: InboxRow): boolean {
   return t.includes("sales") || t.includes("invoice");
 }
 
+function tabFromSearch(raw: string | null): Tab {
+  if (raw === "needs_review" || raw === "uploads" || raw === "all") return raw;
+  return "all";
+}
+
 export default function SalesPage() {
+  const searchParams = useSearchParams();
   const { periodId, periods } = useBooksShell();
-  const [tab, setTab] = useState<Tab>("all");
+  const [tab, setTab] = useState<Tab>(() => tabFromSearch(searchParams.get("tab")));
+
+  useEffect(() => {
+    setTab(tabFromSearch(searchParams.get("tab")));
+  }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState<string | "all">("all");
   const [rows, setRows] = useState<Doc[]>([]);
   const [uploads, setUploads] = useState<InboxRow[]>([]);
@@ -94,7 +106,7 @@ export default function SalesPage() {
   const [form, setForm] = useState({
     partyId: "",
     documentNumber: "",
-    issueDate: "2026-05-15",
+    issueDate: "",
     netAed: "100.00",
     lineKind: "revenue" as "revenue" | "disbursement" | "taxable_recharge",
     vatCode: "SR",
@@ -105,6 +117,28 @@ export default function SalesPage() {
     fxRateScaled: "100000000",
     manualReason: "",
   });
+
+  useEffect(() => {
+    if (!periods.length) return;
+    setForm((f) => {
+      if (f.issueDate) return f;
+      return {
+        ...f,
+        issueDate: defaultIssueDateIso({
+          todayIso: new Date().toISOString().slice(0, 10),
+          selectedPeriodId: periodId,
+          periods: periods
+            .filter((p) => p.periodStart && p.periodEnd)
+            .map((p) => ({
+              id: p.id,
+              periodStart: p.periodStart!,
+              periodEnd: p.periodEnd!,
+              status: p.status,
+            })),
+        }),
+      };
+    });
+  }, [periods, periodId]);
 
   const reload = useCallback(async () => {
     const [docs, pts, inbox, notes, sess] = await Promise.all([

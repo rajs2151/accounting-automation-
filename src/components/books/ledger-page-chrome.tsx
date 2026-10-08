@@ -383,7 +383,7 @@ export function LedgerToolbar({
   }, [appliedFilters, onApplyFilters, users]);
 
   async function exportCsv() {
-    const header = ["Date", "Entry ID", "Description", "Amount (fils)", "Type", "Status", "Tags"];
+    const header = ["Date", "Entry ID", "Description", "Amount (fils)", "Source", "Status", "Tags"];
     const lines = selectedRows.length
       ? selectedRows
       : [];
@@ -444,7 +444,7 @@ export function LedgerToolbar({
             Guide
           </PopoverTrigger>
           <PopoverContent className="w-80 text-sm" align="start">
-            <p className="font-medium">Entry types</p>
+            <p className="font-medium">Source</p>
             <ul className="mt-1 list-disc pl-4 text-muted-foreground">
               <li>Manual — accountant-created journals</li>
               <li>Auto — system-generated from rules/imports</li>
@@ -466,7 +466,7 @@ export function LedgerToolbar({
           <DropdownMenuTrigger
             render={<Button variant="outline" size="sm" data-testid="ledger-type-filter" />}
           >
-            Type{types.length ? ` (${types.length})` : ""}
+            Source{types.length ? ` (${types.length})` : ""}
             <ChevronDown className="ml-1 size-3" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">

@@ -1,8 +1,22 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
-export type BooksPeriod = { id: string; label: string; status: string };
+export type BooksPeriod = {
+  id: string;
+  label: string;
+  status: string;
+  periodStart?: string;
+  periodEnd?: string;
+};
 
 type BooksShellContextValue = {
   periods: BooksPeriod[];
@@ -10,6 +24,8 @@ type BooksShellContextValue = {
   periodsLoaded: boolean;
   periodId: string;
   setPeriodId: (id: string) => void;
+  /** Refetch periods so LOCKED/OPEN stays in sync after Close/Settings lock actions. */
+  reloadPeriods: () => Promise<void>;
   globalSearch: string;
   setGlobalSearch: (q: string) => void;
   /** App sidebar collapsed (icon rail). Review page can force-collapse. */
@@ -26,23 +42,29 @@ export function BooksShellProvider({ children }: { children: ReactNode }) {
   const [globalSearch, setGlobalSearch] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/books/periods")
-      .then(async (r) => {
-        if (!r.ok) return;
-        const list = await r.json();
-        if (!Array.isArray(list)) return;
-        setPeriods(list);
-        if (!periodId && list.length) {
-          const jun = list.find((p: BooksPeriod) => /Jun\s*2026/i.test(p.label));
-          const open = list.find((p: BooksPeriod) => p.status === "OPEN" || p.status === "REOPENED");
-          setPeriodId(jun?.id || open?.id || list[0].id);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => setPeriodsLoaded(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const reloadPeriods = useCallback(async () => {
+    try {
+      const r = await fetch("/api/books/periods");
+      if (!r.ok) return;
+      const list = await r.json();
+      if (!Array.isArray(list)) return;
+      setPeriods(list);
+      setPeriodId((current) => {
+        if (current && list.some((p: BooksPeriod) => p.id === current)) return current;
+        const jun = list.find((p: BooksPeriod) => /Jun\s*2026/i.test(p.label));
+        const open = list.find((p: BooksPeriod) => p.status === "OPEN" || p.status === "REOPENED");
+        return jun?.id || open?.id || list[0]?.id || "";
+      });
+    } catch {
+      /* ignore */
+    } finally {
+      setPeriodsLoaded(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void reloadPeriods();
+  }, [reloadPeriods]);
 
   const value = useMemo(
     () => ({
@@ -50,12 +72,13 @@ export function BooksShellProvider({ children }: { children: ReactNode }) {
       periodsLoaded,
       periodId,
       setPeriodId,
+      reloadPeriods,
       globalSearch,
       setGlobalSearch,
       sidebarCollapsed,
       setSidebarCollapsed,
     }),
-    [periods, periodsLoaded, periodId, globalSearch, sidebarCollapsed],
+    [periods, periodsLoaded, periodId, reloadPeriods, globalSearch, sidebarCollapsed],
   );
 
   return <BooksShellContext.Provider value={value}>{children}</BooksShellContext.Provider>;
@@ -69,6 +92,7 @@ export function useBooksShell() {
       periodsLoaded: true,
       periodId: "",
       setPeriodId: () => undefined,
+      reloadPeriods: async () => undefined,
       globalSearch: "",
       setGlobalSearch: () => undefined,
       sidebarCollapsed: false,

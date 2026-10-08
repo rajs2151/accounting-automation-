@@ -113,6 +113,9 @@ test("P6-4b: YTD banner from posted journals; forecasts excluded", async (t) => 
     assert.equal(banner.filingDue, "2027-09-30");
     // AED 500k revenue in a period ending by 31 Dec 2026: Small Business Relief may be elected.
     assert.equal(banner.smallBusinessReliefMayApply, true);
+    // Election not recorded → still show standard estimate (item 12).
+    assert.equal(banner.noTaxDueRecorded, false);
+    assert.equal(banner.sbrElected, null);
   } finally {
     await admin.end();
   }

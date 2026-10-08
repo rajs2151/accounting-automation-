@@ -91,6 +91,8 @@ type JournalDetail = {
   periodStatus?: string;
   createdBy?: string;
   createdByName?: string | null;
+  postedBy?: string | null;
+  postedByName?: string | null;
   createdAt?: string;
   postedAt?: string | null;
   reversesEntryId?: string | null;
@@ -406,6 +408,8 @@ export default function BooksJournalsPage() {
       id: "date",
       header: "Date",
       size: 110,
+      sticky: "left",
+      hideable: false,
       accessor: (r) => r.entryDate,
       cell: (r) => <CellDate value={r.entryDate} />,
     },
@@ -413,6 +417,8 @@ export default function BooksJournalsPage() {
       id: "entryId",
       header: "Voucher",
       size: 118,
+      sticky: "left",
+      hideable: false,
       accessor: (r) => r.entryNo || r.reference || r.id,
       cell: (r) => <CellEntryId entryNo={r.entryNo} reference={r.reference} id={r.id} />,
     },
@@ -467,18 +473,11 @@ export default function BooksJournalsPage() {
       cell: (r) => <CellAmount minor={r.amount ?? r.debitTotal} />,
     },
     {
-      id: "type",
-      header: "Type",
+      id: "source",
+      header: "Source",
       size: 88,
       accessor: (r) => r.entryType,
       cell: (r) => <CellTypePill entryType={r.entryType || "manual"} />,
-    },
-    {
-      id: "status",
-      header: "Status",
-      size: 100,
-      accessor: (r) => r.status,
-      cell: (r) => <CellStatusPill status={r.status} />,
     },
     {
       id: "tags",
@@ -486,6 +485,15 @@ export default function BooksJournalsPage() {
       size: 120,
       enableSorting: false,
       cell: (r) => <CellTags tags={r.tags || []} />,
+    },
+    {
+      id: "status",
+      header: "Status",
+      size: 100,
+      sticky: "right",
+      hideable: false,
+      accessor: (r) => r.status,
+      cell: (r) => <CellStatusPill status={r.status} />,
     },
   ];
 
@@ -564,6 +572,8 @@ export default function BooksJournalsPage() {
           emptyLabel="No journals in this period."
           enableRowSelection={selectionMode}
           onSelectionChange={setSelectedIds}
+          enableColumnPicker
+          columnStorageKey="books-journals-columns"
           getRowClassName={(r) =>
             r.status === "reversed" || r.reversedByEntryId
               ? "opacity-55 text-muted-foreground"
@@ -801,6 +811,8 @@ export default function BooksJournalsPage() {
                 <dd>{detail.voucherType || "Journal"}</dd>
                 <dt className="text-muted-foreground">Created by</dt>
                 <dd>{detail.createdByName || "—"}</dd>
+                <dt className="text-muted-foreground">Approved by</dt>
+                <dd data-testid="journal-posted-by">{detail.postedByName || "—"}</dd>
                 <dt className="text-muted-foreground">Created</dt>
                 <dd>
                   {detail.createdAt

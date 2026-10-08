@@ -28,6 +28,7 @@ type CloseGate = {
   detail?: string;
   balanceMinor?: number;
   waiverReason?: string | null;
+  pendingWaiver?: { reason: string; requestedBy: string } | null;
 };
 
 type Checklist = {
@@ -76,18 +77,21 @@ function statusBadge(status: CloseGate["status"]) {
 }
 
 export default function BooksClosePage() {
-  const { periodId, periods } = useBooksShell();
+  const { periodId, periods, reloadPeriods } = useBooksShell();
   const [checklist, setChecklist] = useState<Checklist | null>(null);
   const [events, setEvents] = useState<CloseEvent[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [waiveGate, setWaiveGate] = useState<CloseGate | null>(null);
+  const [waiveAction, setWaiveAction] = useState<"request" | "confirm">("request");
   const [waiveReason, setWaiveReason] = useState("");
+  const [expandedDetail, setExpandedDetail] = useState<Record<string, boolean>>({});
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [lockConfirmOpen, setLockConfirmOpen] = useState(false);
   const [unlockReason, setUnlockReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
+  const [meId, setMeId] = useState("");
   const [revaluing, setRevaluing] = useState(false);
   const [closingYear, setClosingYear] = useState(false);
   const [yearEnd, setYearEnd] = useState<YearEndStatus | null>(null);
@@ -98,6 +102,7 @@ export default function BooksClosePage() {
       .then((d) => {
         const role = String(d?.me?.role || "");
         setCanApprove(role === "admin" || role === "approver");
+        setMeId(String(d?.me?.id || ""));
       })
       .catch(() => setCanApprove(false));
   }, []);
@@ -151,6 +156,7 @@ export default function BooksClosePage() {
       }
       setLockConfirmOpen(false);
       toast.success(`${periodLabel} locked`);
+      await reloadPeriods();
       await reload();
     } catch (err) {
       setLockConfirmOpen(false);
@@ -163,7 +169,8 @@ export default function BooksClosePage() {
   }
 
   async function confirmWaive() {
-    if (!periodId || !waiveGate || !waiveReason.trim()) return;
+    if (!periodId || !waiveGate) return;
+    if (waiveAction === "request" && !waiveReason.trim()) return;
     setBusy(true);
     try {
       const res = await fetch("/api/books/close/waive", {
@@ -172,13 +179,16 @@ export default function BooksClosePage() {
         body: JSON.stringify({
           periodId,
           gateKey: waiveGate.key,
-          reason: waiveReason.trim(),
+          reason: waiveReason.trim() || waiveGate.pendingWaiver?.reason || "",
+          action: waiveAction,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(apiErrorMessage(data) || data.error);
       setWaiveGate(null);
       setWaiveReason("");
+      toast.success(waiveAction === "confirm" ? "Waiver confirmed" : "Waiver requested — needs approver");
+      await reloadPeriods();
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "waive_failed");
@@ -201,6 +211,7 @@ export default function BooksClosePage() {
       setUnlockOpen(false);
       setUnlockReason("");
       toast.success(`${periodLabel} unlocked`);
+      await reloadPeriods();
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "unlock_failed");
@@ -334,7 +345,17 @@ export default function BooksClosePage() {
               Unlock
             </Button>
           ) : (
-            <Button disabled={!canApprove || busy || !checklist?.ready} onClick={() => setLockConfirmOpen(true)}>
+            <Button
+              disabled={!canApprove || busy || !checklist?.ready}
+              onClick={() => setLockConfirmOpen(true)}
+              title={
+                !canApprove
+                  ? "Only an approver or admin can lock"
+                  : !checklist?.ready
+                    ? "Fix or waive failing checklist items first"
+                    : undefined
+              }
+            >
               Lock period
             </Button>
           )}
@@ -343,6 +364,29 @@ export default function BooksClosePage() {
 
       {!periodId ? (
         <p className="text-sm text-muted-foreground">Select a period in the top bar.</p>
+      ) : null}
+      {checklist && !locked && !checklist.ready ? (
+        <div
+          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100"
+          data-testid="close-lock-blocked"
+        >
+          <p className="font-medium">Lock is disabled until these checklist items pass or are waived:</p>
+          <ul className="mt-1 list-inside list-disc space-y-0.5">
+            {checklist.gates
+              .filter((g) => g.blocking && g.status === "fail")
+              .map((g) => (
+                <li key={g.key}>
+                  <Link href={g.href} className="underline-offset-2 hover:underline">
+                    {g.label}
+                  </Link>
+                  {g.detail ? <span className="text-muted-foreground"> — {g.detail}</span> : null}
+                </li>
+              ))}
+          </ul>
+          {!canApprove ? (
+            <p className="mt-1 text-muted-foreground">Only an approver or admin can lock this period.</p>
+          ) : null}
+        </div>
       ) : null}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       {yearEndPending ? (
@@ -360,15 +404,22 @@ export default function BooksClosePage() {
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 font-medium">Gate</th>
+                <th className="px-3 py-2 font-medium">Checklist item</th>
                 <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Count</th>
+                <th className="px-3 py-2 font-medium">Exceptions</th>
                 <th className="px-3 py-2 font-medium">Detail</th>
                 <th className="px-3 py-2 font-medium" />
               </tr>
             </thead>
             <tbody>
-              {checklist.gates.map((g) => (
+              {checklist.gates.map((g) => {
+                const longDetail = Boolean(g.detail && g.detail.length > 80);
+                const open = Boolean(expandedDetail[g.key]);
+                const detailText =
+                  g.balanceMinor != null
+                    ? `${formatMinor(g.balanceMinor)} AED · ${g.detail || g.waiverReason || ""}`
+                    : g.detail || g.waiverReason || "—";
+                return (
                 <tr key={g.key} className="border-t border-border">
                   <td className="px-3 py-2.5">
                     <Link href={g.href} className="font-medium text-foreground underline-offset-2 hover:underline">
@@ -378,25 +429,71 @@ export default function BooksClosePage() {
                   <td className="px-3 py-2.5">{statusBadge(g.status)}</td>
                   <td className="px-3 py-2.5 tabular-nums">{g.count}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">
-                    {g.balanceMinor != null ? `${formatMinor(g.balanceMinor)} AED · ` : ""}
-                    {g.detail || g.waiverReason || "—"}
+                    {longDetail && !open ? (
+                      <button
+                        type="button"
+                        className="text-left underline-offset-2 hover:underline"
+                        onClick={() => setExpandedDetail((m) => ({ ...m, [g.key]: true }))}
+                      >
+                        {g.count} exception{g.count === 1 ? "" : "s"} — show detail
+                      </button>
+                    ) : (
+                      <span>
+                        {detailText}
+                        {longDetail ? (
+                          <button
+                            type="button"
+                            className="ms-2 text-xs underline-offset-2 hover:underline"
+                            onClick={() => setExpandedDetail((m) => ({ ...m, [g.key]: false }))}
+                          >
+                            Hide
+                          </button>
+                        ) : null}
+                      </span>
+                    )}
+                    {g.pendingWaiver ? (
+                      <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
+                        Waiver pending confirmation
+                      </div>
+                    ) : null}
                   </td>
-                  <td className="px-3 py-2.5 text-right">
-                    {canApprove && !locked && g.blocking && g.status === "fail" ? (
+                  <td className="px-3 py-2.5 text-right space-x-1">
+                    {!locked &&
+                    g.blocking &&
+                    (g.status === "fail" || g.status === "not_set_up") &&
+                    !g.pendingWaiver ? (
                       <Button
                         size="sm"
                         variant="ghost"
                         onClick={() => {
                           setWaiveGate(g);
+                          setWaiveAction("request");
                           setWaiveReason("");
                         }}
                       >
-                        Waive
+                        Request waive
+                      </Button>
+                    ) : null}
+                    {canApprove &&
+                    !locked &&
+                    g.pendingWaiver &&
+                    g.pendingWaiver.requestedBy !== meId ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setWaiveGate(g);
+                          setWaiveAction("confirm");
+                          setWaiveReason(g.pendingWaiver?.reason || "");
+                        }}
+                      >
+                        Confirm waive
                       </Button>
                     ) : null}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -405,7 +502,11 @@ export default function BooksClosePage() {
       <div>
         <h2 className="mb-2 text-sm font-semibold">Close history</h2>
         {events.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No lock / unlock / waive events yet.</p>
+          <p className="text-sm text-muted-foreground" data-testid="close-events-empty">
+            {locked
+              ? "Locked (no close events recorded — seed or legacy)."
+              : "No lock / unlock / waive events yet."}
+          </p>
         ) : (
           <ul className="space-y-1 text-sm">
             {events.map((ev) => (
@@ -422,19 +523,30 @@ export default function BooksClosePage() {
       <Dialog open={Boolean(waiveGate)} onOpenChange={(o) => !o && setWaiveGate(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Waive: {waiveGate?.label}</DialogTitle>
+            <DialogTitle>
+              {waiveAction === "confirm" ? "Confirm waive" : "Request waive"}: {waiveGate?.label}
+            </DialogTitle>
           </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {waiveAction === "confirm"
+              ? "A different approver must confirm. Reason was set by the requester."
+              : "Reason is required. An approver other than you must confirm before lock."}
+          </p>
           <Textarea
             placeholder="Reason (required)"
             value={waiveReason}
             onChange={(e) => setWaiveReason(e.target.value)}
+            disabled={waiveAction === "confirm"}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setWaiveGate(null)}>
               Cancel
             </Button>
-            <Button disabled={!waiveReason.trim() || busy} onClick={() => void confirmWaive()}>
-              Waive gate
+            <Button
+              disabled={(waiveAction === "request" && !waiveReason.trim()) || busy}
+              onClick={() => void confirmWaive()}
+            >
+              {waiveAction === "confirm" ? "Confirm waive" : "Request waive"}
             </Button>
           </DialogFooter>
         </DialogContent>

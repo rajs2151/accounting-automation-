@@ -39,15 +39,17 @@ async function withAdmin(t: test.TestContext) {
   return admin;
 }
 
+/** Dual-control: requester ≠ confirmer (Omar requests, Layla confirms). */
 async function waiveAllFailing(
-  userId: string,
+  _userId: string,
   clientId: string,
   periodId: string,
   reason = "P5-1 test waiver",
 ) {
-  const cl = await getBooksCloseChecklist(userId, clientId, periodId);
+  const cl = await getBooksCloseChecklist(OMAR, clientId, periodId);
   for (const key of cl.failing) {
-    await waiveBooksCloseGate(userId, clientId, periodId, key, reason);
+    await waiveBooksCloseGate(OMAR, clientId, periodId, key, reason, { action: "request" });
+    await waiveBooksCloseGate(LAYLA, clientId, periodId, key, reason, { action: "confirm" });
   }
 }
 
@@ -64,17 +66,24 @@ test("P5-1: placeholders + dual control; waive then lock", async (t) => {
     assert.ok(checklist.gates.some((g) => g.key === "depreciation" && g.status === "pass"));
     assert.ok(checklist.gates.some((g) => g.key === "fx_revaluation" && g.status === "pass"));
     assert.ok(checklist.gates.some((g) => g.key === "clearing_info" && g.status === "info"));
-    // Fresh synthetic companies have bank COA accounts without statements → fail until waived.
-    assert.ok(checklist.failing.includes("statements") || checklist.failing.includes("bank_recon"));
+    // Fresh synthetic companies fail close until waived (VAT not configured, statements, etc.).
+    assert.ok(checklist.failing.length > 0);
 
     await assert.rejects(
       () => lockBooksPeriodWithChecklist(OMAR, company.clientId, periodId),
       (err: unknown) =>
         err instanceof CloseGatesFailingError || /lock_requires_approver/.test(String(err)),
     );
+    // Omar may request a waive; he cannot confirm his own request.
+    await waiveBooksCloseGate(OMAR, company.clientId, periodId, "vat_control", "demo", {
+      action: "request",
+    });
     await assert.rejects(
-      () => waiveBooksCloseGate(OMAR, company.clientId, periodId, "statements", "no"),
-      /lock_requires_approver/,
+      () =>
+        waiveBooksCloseGate(OMAR, company.clientId, periodId, "vat_control", "demo", {
+          action: "confirm",
+        }),
+      /waiver_dual_control|lock_requires_approver/,
     );
 
     await waiveAllFailing(LAYLA, company.clientId, periodId, "Demo close — no live statements");
@@ -121,16 +130,28 @@ test("P5-1: suspense fail blocks lock; waive then lock; unlock needs reason; pos
     );
 
     await assert.rejects(
-      () => waiveBooksCloseGate(LAYLA, company.clientId, periodId, "suspense", "  "),
+      () =>
+        waiveBooksCloseGate(LAYLA, company.clientId, periodId, "suspense", "  ", {
+          action: "request",
+        }),
       /waiver_reason_required/,
     );
 
+    await waiveBooksCloseGate(
+      OMAR,
+      company.clientId,
+      periodId,
+      "suspense",
+      "Items identified; clearing next month",
+      { action: "request" },
+    );
     await waiveBooksCloseGate(
       LAYLA,
       company.clientId,
       periodId,
       "suspense",
       "Items identified; clearing next month",
+      { action: "confirm" },
     );
     assert.equal(
       (await getBooksCloseChecklist(OMAR, company.clientId, periodId)).gates.find(

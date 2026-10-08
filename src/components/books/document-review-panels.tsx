@@ -74,6 +74,32 @@ export function DocumentReviewPanels({
   const [advanceBalanceMinor, setAdvanceBalanceMinor] = useState(0);
   const [applyAdvance, setApplyAdvance] = useState(false);
   const [applyAdvanceAed, setApplyAdvanceAed] = useState("");
+  const [postingPeriod, setPostingPeriod] = useState<{
+    label: string;
+    status: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const issue = doc?.issueDate?.slice(0, 10);
+    if (!issue) {
+      setPostingPeriod(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch("/api/books/periods")
+      .then((r) => r.json())
+      .then((list: Array<{ label: string; status: string; periodStart?: string; periodEnd?: string }>) => {
+        if (cancelled || !Array.isArray(list)) return;
+        const hit = list.find(
+          (p) => p.periodStart && p.periodEnd && p.periodStart <= issue && p.periodEnd >= issue,
+        );
+        setPostingPeriod(hit ? { label: hit.label, status: hit.status } : null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [doc?.issueDate]);
 
   const load = useCallback(async () => {
     const [dRes, pRes] = await Promise.all([
@@ -444,11 +470,27 @@ export function DocumentReviewPanels({
       ) : null}
 
       {doc.status === "draft" && !hideApproveActions ? (
+        <div className="space-y-2">
+          {postingPeriod || doc.issueDate ? (
+            <p className="text-xs text-muted-foreground" data-testid="approve-posting-period">
+              Posts into{" "}
+              {postingPeriod
+                ? `${postingPeriod.label} (${postingPeriod.status})`
+                : `period containing ${doc.issueDate}`}
+              {postingPeriod?.status === "LOCKED"
+                ? " — locked; approve will be refused until the period is reopened"
+                : ""}
+            </p>
+          ) : null}
         <div className="flex flex-wrap gap-2">
           <Button
             data-testid="review-approve"
-            disabled={Boolean(blockReason)}
-            title={blockReason || undefined}
+            disabled={Boolean(blockReason) || postingPeriod?.status === "LOCKED"}
+            title={
+              postingPeriod?.status === "LOCKED"
+                ? "Posting period is locked"
+                : blockReason || undefined
+            }
             onClick={() => void approve()}
           >
             Approve
@@ -457,13 +499,18 @@ export function DocumentReviewPanels({
             <Button
               data-testid="review-approve-next"
               variant="secondary"
-              disabled={Boolean(blockReason)}
-              title={blockReason || undefined}
+              disabled={Boolean(blockReason) || postingPeriod?.status === "LOCKED"}
+              title={
+                postingPeriod?.status === "LOCKED"
+                  ? "Posting period is locked"
+                  : blockReason || undefined
+              }
               onClick={() => void approve({ andNext: true })}
             >
               Approve &amp; Next
             </Button>
           ) : null}
+        </div>
         </div>
       ) : doc.status !== "draft" ? (
         <p className="text-sm text-muted-foreground">Status: {doc.status}</p>

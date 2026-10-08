@@ -673,6 +673,18 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     # Never invent 0/0 for missing printed balances.
                     opening_val = None
                     closing_val = None
+                    # Gateway CSVs (e.g. Stripe balance_history) have no opening/closing.
+                    # When the Banking upload already named the account, allow ready so
+                    # materialise can import lines; otherwise keep needs_review for linking.
+                    if (
+                        doc_type == "gateway_statement"
+                        and acct_lines
+                        and linked_account_id
+                        and not link.get("force_needs_review")
+                        and not attribution_ambiguous
+                    ):
+                        stmt_flags.append("gateway_no_printed_balances")
+                        stmt_status = "ready"
                 else:
                     opening_val = int(opening)
                     closing_val = int(closing)

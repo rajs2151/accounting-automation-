@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
 import { FxRatesSection } from "@/components/books/fx-rates-section";
+import { CtSettingsSection } from "@/components/books/ct-settings-section";
 import { VatSettingsSection } from "@/components/books/vat-settings-section";
 import { Button } from "@/components/ui/button";
 import {
@@ -53,10 +54,13 @@ type CoaNode = {
   children: CoaNode[];
 };
 
-/** Lock refusal text, listing failing close gates (waive or fix them on the Close page). */
-function lockErrorMessage(data: { error?: string; failingGates?: Array<{ key: string }> }) {
+/** Lock refusal text, listing failing checklist items (waive or fix them on the Close page). */
+function lockErrorMessage(data: {
+  error?: string;
+  failingGates?: Array<{ key: string; label?: string }>;
+}) {
   const failList = Array.isArray(data.failingGates)
-    ? data.failingGates.map((g) => g.key).join(", ")
+    ? data.failingGates.map((g) => g.label || g.key).join(", ")
     : "";
   return (apiErrorMessage(data) || data.error || "lock_failed") + (failList ? ` (${failList})` : "");
 }
@@ -387,6 +391,7 @@ type ObRow = { code: string; debitAed: string; creditAed: string; partyId: strin
 type PartyOpt = { id: string; name: string; partyType: string };
 
 function OpeningBalancesSection({ periods }: { periods: Period[] }) {
+  const { reloadPeriods } = useBooksShell();
   const [rows, setRows] = useState<ObRow[]>([
     { code: "1120", debitAed: "1000.00", creditAed: "", partyId: "" },
     { code: "3900", debitAed: "", creditAed: "1000.00", partyId: "" },
@@ -447,6 +452,7 @@ function OpeningBalancesSection({ periods }: { periods: Period[] }) {
       return;
     }
     setMessage(`Unlocked ${apr.label} — reason audited. Map TB, then relock after post.`);
+    await reloadPeriods();
   }
 
   async function mapImport() {
@@ -527,6 +533,7 @@ function OpeningBalancesSection({ periods }: { periods: Period[] }) {
       return;
     }
     setMessage(`Relocked ${apr.label} (audited).`);
+    await reloadPeriods();
   }
 
   return (
@@ -701,7 +708,7 @@ function OpeningBalancesSection({ periods }: { periods: Period[] }) {
 }
 
 export default function BooksSettingsPage() {
-  const { periodId } = useBooksShell();
+  const { periodId, reloadPeriods } = useBooksShell();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -784,10 +791,12 @@ export default function BooksSettingsPage() {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       await reload();
+      await reloadPeriods();
       setError(lockErrorMessage(data));
       return;
     }
     await reload();
+    await reloadPeriods();
   }
 
   async function unlockPeriod(id: string) {
@@ -799,10 +808,12 @@ export default function BooksSettingsPage() {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       await reload();
+      await reloadPeriods();
       setError(apiErrorMessage(data) || data.error || "unlock_failed");
       return;
     }
     await reload();
+    await reloadPeriods();
   }
 
   return (
@@ -863,6 +874,7 @@ export default function BooksSettingsPage() {
       </section>
 
       <VatSettingsSection />
+      <CtSettingsSection />
 
       <FxRatesSection />
 

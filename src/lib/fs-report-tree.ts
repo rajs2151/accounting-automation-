@@ -125,37 +125,49 @@ export function pnlToReportTree(columns: PnlColumnLike[]): {
     return sec?.totalMinor ?? 0;
   };
 
+  const defaultSectionLabels: Record<string, string> = {
+    PL_revenue: "Revenue",
+    PL_cogs: "Cost of sales",
+    PL_opex: "Operating expenses",
+    PL_depr: "Depreciation & amortisation",
+    PL_other: "Other income / finance",
+    PL_tax: "Corporate tax",
+  };
+
   const rows: ReportRow[] = [];
   for (const key of sectionOrder) {
     const meta = sectionMeta.get(key);
-    if (!meta || meta.accounts.size === 0) continue;
-    const children: ReportRow[] = [...meta.accounts.entries()].map(([accountId, a]) => {
-      const values: Record<string, number> = {};
-      for (const c of cols) values[c.key] = amountAt(key, accountId, c.key);
-      const synthetic = isSyntheticAccountId(accountId);
-      return {
-        id: `${key}:${accountId}`,
-        code: synthetic ? undefined : a.code,
-        label: a.name,
-        values,
-        drill: synthetic ? undefined : { kind: "account", accountId, code: a.code, name: a.name },
-        testId: `fs-acct-${a.code}`,
-      };
-    });
+    const label = meta?.label || defaultSectionLabels[key] || key;
+    const children: ReportRow[] = meta
+      ? [...meta.accounts.entries()].map(([accountId, a]) => {
+          const values: Record<string, number> = {};
+          for (const c of cols) values[c.key] = amountAt(key, accountId, c.key);
+          const synthetic = isSyntheticAccountId(accountId);
+          return {
+            id: `${key}:${accountId}`,
+            code: synthetic ? undefined : a.code,
+            label: a.name,
+            values,
+            drill: synthetic ? undefined : { kind: "account", accountId, code: a.code, name: a.name },
+            testId: `fs-acct-${a.code}`,
+          };
+        })
+      : [];
     const values: Record<string, number> = {};
     for (const c of cols) {
       const col = columns.find((x) => x.column.key === c.key)!;
       values[c.key] = sectionTotal(col, key);
     }
+    // Always emit section headers (even with zero accounts) so Revenue / Opex / … never disappear.
     rows.push({
       id: key,
-      label: meta.label,
+      label,
       values,
       children,
       testId: `fs-section-${key}`,
     });
 
-    // Insert subtotals after the section they follow.
+    // Insert subtotals after the section they follow (always, even if section empty).
     if (key === "PL_cogs") {
       const v: Record<string, number> = {};
       for (const c of cols) {
@@ -225,35 +237,67 @@ export function bsToReportTree(columns: BsColumnLike[]): {
         }
       }
     }
-    const sectionRows: ReportRow[] = [...sectionKeys.entries()].map(([sKey, sLabel]) => {
-      const children: ReportRow[] = [...accounts.entries()]
-        .filter(([, v]) => v.sectionKey === sKey)
-        .map(([id, v]) => {
-          const accountId = id.slice(sKey.length + 1);
-          const values: Record<string, number> = {};
-          for (const c of cols) {
-            const col = columns.find((x) => x.column.key === c.key)!;
-            const sec = g.pick(col).find((s) => s.key === sKey);
-            values[c.key] = sec?.accounts.find((a) => a.accountId === accountId)?.amountMinor ?? 0;
-          }
-          // Synthetic equity lines (prior years' / current year profit) are computed, not posted.
-          const synthetic = isSyntheticAccountId(accountId) || v.code === "CYE";
-          return {
-            id: id,
-            code: synthetic ? undefined : v.code,
-            label: v.name,
-            values,
-            drill: synthetic ? undefined : { kind: "account", accountId, code: v.code, name: v.name },
-            testId: `fs-acct-${v.code}`,
-          };
-        });
-      const values: Record<string, number> = {};
-      for (const c of cols) {
-        const col = columns.find((x) => x.column.key === c.key)!;
-        values[c.key] = g.pick(col).find((s) => s.key === sKey)?.totalMinor ?? 0;
-      }
-      return { id: sKey, label: sLabel, values, children, testId: `fs-section-${sKey}` };
-    });
+    // Equity: flatten nested "Equity → Equity" — accounts (incl. Current year profit) hang under the group.
+    const flattenEquity = g.key === "equity" && sectionKeys.size === 1;
+    let children: ReportRow[];
+    if (flattenEquity) {
+      children = [...accounts.entries()].map(([id, v]) => {
+        const sKey = v.sectionKey;
+        const accountId = id.slice(sKey.length + 1);
+        const values: Record<string, number> = {};
+        for (const c of cols) {
+          const col = columns.find((x) => x.column.key === c.key)!;
+          const sec = g.pick(col).find((s) => s.key === sKey);
+          values[c.key] = sec?.accounts.find((a) => a.accountId === accountId)?.amountMinor ?? 0;
+        }
+        const synthetic = isSyntheticAccountId(accountId) || v.code === "CYE" || v.code === "PYE";
+        return {
+          id,
+          code: synthetic ? undefined : v.code,
+          label: v.name,
+          values,
+          drill: synthetic ? undefined : { kind: "account", accountId, code: v.code, name: v.name },
+          testId: `fs-acct-${v.code}`,
+        };
+      });
+    } else {
+      children = [...sectionKeys.entries()].map(([sKey, sLabel]) => {
+        const sectionChildrenRows: ReportRow[] = [...accounts.entries()]
+          .filter(([, v]) => v.sectionKey === sKey)
+          .map(([id, v]) => {
+            const accountId = id.slice(sKey.length + 1);
+            const values: Record<string, number> = {};
+            for (const c of cols) {
+              const col = columns.find((x) => x.column.key === c.key)!;
+              const sec = g.pick(col).find((s) => s.key === sKey);
+              values[c.key] = sec?.accounts.find((a) => a.accountId === accountId)?.amountMinor ?? 0;
+            }
+            const synthetic = isSyntheticAccountId(accountId) || v.code === "CYE" || v.code === "PYE";
+            return {
+              id,
+              code: synthetic ? undefined : v.code,
+              label: v.name,
+              values,
+              drill: synthetic
+                ? undefined
+                : { kind: "account", accountId, code: v.code, name: v.name },
+              testId: `fs-acct-${v.code}`,
+            };
+          });
+        const values: Record<string, number> = {};
+        for (const c of cols) {
+          const col = columns.find((x) => x.column.key === c.key)!;
+          values[c.key] = g.pick(col).find((s) => s.key === sKey)?.totalMinor ?? 0;
+        }
+        return {
+          id: sKey,
+          label: sLabel,
+          values,
+          children: sectionChildrenRows,
+          testId: `fs-section-${sKey}`,
+        };
+      });
+    }
     const gValues: Record<string, number> = {};
     for (const c of cols) {
       const col = columns.find((x) => x.column.key === c.key)!;
@@ -263,16 +307,20 @@ export function bsToReportTree(columns: BsColumnLike[]): {
       id: g.key,
       label: g.label,
       values: gValues,
-      children: sectionRows,
+      children,
       testId: `fs-group-${g.key}`,
     });
   }
 
   const aVals: Record<string, number> = {};
+  const lVals: Record<string, number> = {};
+  const eVals: Record<string, number> = {};
   const leVals: Record<string, number> = {};
   for (const c of cols) {
     const col = columns.find((x) => x.column.key === c.key)!;
     aVals[c.key] = col.totalAssetsMinor;
+    lVals[c.key] = col.totalLiabilitiesMinor;
+    eVals[c.key] = col.totalEquityMinor;
     leVals[c.key] = col.totalLiabilitiesMinor + col.totalEquityMinor;
   }
   return {
@@ -280,6 +328,8 @@ export function bsToReportTree(columns: BsColumnLike[]): {
     rows,
     footer: [
       { id: "ta", label: "Total assets", values: aVals, testId: "fs-total-assets" },
+      { id: "tl", label: "Total liabilities", values: lVals, testId: "fs-total-liabilities" },
+      { id: "te", label: "Total equity", values: eVals, testId: "fs-total-equity" },
       { id: "tle", label: "Total liabilities + equity", values: leVals, testId: "fs-total-le" },
     ],
   };

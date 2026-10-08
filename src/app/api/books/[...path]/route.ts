@@ -190,9 +190,13 @@ import {
   setDocumentPlaceOfSupply,
 } from "@/server/books/place-of-supply";
 import { getBankReconciliation, listBankReconciliations } from "@/server/books/bank-recon";
+import { getCompanyCtSettings, setCompanyCtSettings } from "@/server/books/company-ct-settings";
 import { getCompanyVatSettings, setCompanyVatSettings } from "@/server/books/company-vat-settings";
 import { booksAgeing } from "@/server/books/ageing";
-import { getBooksMonthChecklist, listBooksIssues } from "@/server/books/dashboard";
+import {
+  getBooksMonthChecklist,
+  listBooksIssuesMerged,
+} from "@/server/books/dashboard";
 import { booksDayBook } from "@/server/books/day-book";
 import {
   booksAccountLinesInRange,
@@ -451,6 +455,9 @@ export async function GET(request: Request, ctx: Ctx) {
     if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
       return NextResponse.json(await getCompanyVatSettings(session.userId, session.clientId));
     }
+    if (path[0] === "company" && path[1] === "ct-settings" && path.length === 2) {
+      return NextResponse.json(await getCompanyCtSettings(session.userId, session.clientId));
+    }
     if (path[0] === "vat201" && path[1] === "draft" && path.length === 2) {
       try {
         return NextResponse.json(
@@ -616,10 +623,9 @@ export async function GET(request: Request, ctx: Ctx) {
       return NextResponse.json(await booksFirmHealthBoard(session.userId));
     }
     if (path[0] === "dashboard" && path[1] === "issues" && path.length === 2) {
+      const periodId = url.searchParams.get("periodId") || null;
       return NextResponse.json(
-        await listBooksIssues(session.userId, session.clientId, {
-          periodId: url.searchParams.get("periodId") || null,
-        }),
+        await listBooksIssuesMerged(session.userId, session.clientId, { periodId }),
       );
     }
     if (path[0] === "bank-recon" && (path.length === 1 || path.length === 2)) {
@@ -958,6 +964,10 @@ export async function POST(request: Request, ctx: Ctx) {
           String(body.periodId || ""),
           String(body.gateKey || ""),
           String(body.reason || ""),
+          {
+            accountId: body.accountId ? String(body.accountId) : null,
+            action: body.action === "confirm" ? "confirm" : "request",
+          },
         ),
       );
     }
@@ -1463,6 +1473,7 @@ export async function POST(request: Request, ctx: Ctx) {
       });
     }
     if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
+      const reg = body.vatRegistrationStatus;
       return NextResponse.json(
         await setCompanyVatSettings(session.userId, session.clientId, {
           establishmentEmirate:
@@ -1479,6 +1490,24 @@ export async function POST(request: Request, ctx: Ctx) {
               : body.vatPeriodEndMonth == null
                 ? null
                 : Number(body.vatPeriodEndMonth),
+          vatRegistrationStatus:
+            reg === undefined
+              ? undefined
+              : reg === null || reg === "registered" || reg === "not_registered" || reg === "voluntary"
+                ? reg
+                : null,
+          designatedZone:
+            body.designatedZone === undefined ? undefined : Boolean(body.designatedZone),
+        }),
+      );
+    }
+    if (path[0] === "company" && path[1] === "ct-settings" && path.length === 2) {
+      return NextResponse.json(
+        await setCompanyCtSettings(session.userId, session.clientId, {
+          sbrElected: body.sbrElected === undefined ? undefined : (body.sbrElected as boolean | null),
+          isQfzp: body.isQfzp === undefined ? undefined : (body.isQfzp as boolean | null),
+          requireDualControl:
+            body.requireDualControl === undefined ? undefined : Boolean(body.requireDualControl),
         }),
       );
     }
