@@ -4,6 +4,11 @@
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
 - Current task: **ING-4** extraction accuracy (real-docs eval) — in progress
 - 2026-10-08: **ING-4 Gate 0** worker pytest with S3 stand-in: **120 passed**, 0 failed (6 warnings)
+- 2026-10-08: **ING-4b** invoice/bill pipeline (no new db migration; no RLS)
+  - DONE: OCR word boxes merged into extract path (PDF points); auto-rotate 0/90/180/270 before deskew
+  - DONE: `layout.py` lines/two-column/KV; `candidates.py` scored TRN/date/amount/currency; CN/DN/proforma flags
+  - DONE: Arabic-Indic → ASCII in textnorm / money / fields; pytest `test_ing4b_invoice_pipeline.py`
+  - Owner: re-run `npm run extraction:eval -- --real-docs --compare`; STATUS may cite layout_tag rates only
 - 2026-10-08: **ING-4a** real-docs eval harness (no new db migration; no RLS)
   - DONE: `daftar.extraction.eval_metrics` + pytest; `scripts/extraction-eval.py --real-docs` → `/lab-out/`
   - DONE: label templates (fake values) under `fixtures/extraction/label-template*.example.json`
@@ -115,7 +120,7 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. **ING-4b–4d** invoice/statement pipeline + checks (after 4a)
+1. **ING-4c–4d** bank/card pipeline + checks (after 4b)
 2. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)

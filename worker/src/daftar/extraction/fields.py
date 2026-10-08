@@ -106,9 +106,11 @@ VAT_CODE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 def normalize_trn(raw: str | None) -> str | None:
     """Strip spaces/dashes; accept only 15 digits starting with 1 (length-only)."""
+    from daftar.textnorm import arabic_indic_to_ascii
+
     if not raw:
         return None
-    digits = re.sub(r"\D", "", str(raw))
+    digits = re.sub(r"\D", "", arabic_indic_to_ascii(str(raw)))
     if len(digits) == 15 and digits.startswith("1"):
         return digits
     return None
@@ -116,9 +118,11 @@ def normalize_trn(raw: str | None) -> str | None:
 
 def find_trns(text: str) -> list[str]:
     """Return unique normalised TRNs in document order."""
+    from daftar.textnorm import arabic_indic_to_ascii
+
     found: list[str] = []
     seen: set[str] = set()
-    for m in TRN_FLEX_RE.finditer(text or ""):
+    for m in TRN_FLEX_RE.finditer(arabic_indic_to_ascii(text or "")):
         trn = normalize_trn(m.group(1))
         if trn and trn not in seen:
             seen.add(trn)
@@ -127,7 +131,9 @@ def find_trns(text: str) -> list[str]:
 
 
 def parse_amount_fils(raw: str) -> int:
-    cleaned = raw.replace(",", "").strip()
+    from daftar.textnorm import arabic_indic_to_ascii
+
+    cleaned = arabic_indic_to_ascii(raw).replace(",", "").strip()
     neg = cleaned.startswith("(") and cleaned.endswith(")")
     cleaned = cleaned.strip("()")
     whole, _, frac = cleaned.partition(".")
@@ -1152,13 +1158,21 @@ def extract_invoice_fields(
     Missing VAT stays null with status \"missing\" — never assume 5%.
     Line vat_code comes only from document evidence (SR/ZR/EX/OOS); else null + flag.
     """
+    from daftar.extraction.candidates import (
+        document_kind_flags,
+        pick_best,
+        score_currency_candidates,
+        score_date_candidates,
+    )
+    from daftar.textnorm import arabic_indic_to_ascii
+
     base_conf = 0.99 if route == "text" else 0.96
-    pages = page_texts if page_texts is not None else [text or ""]
+    pages = [arabic_indic_to_ascii(p or "") for p in (page_texts if page_texts is not None else [text or ""])]
     boxes = word_boxes or []
-    blob = "\n".join(pages) if pages else (text or "")
+    blob = "\n".join(pages) if pages else arabic_indic_to_ascii(text or "")
     prefer_first = list(range(1, len(pages) + 1))
     prefer_last = list(range(len(pages), 0, -1))
-    flags: list[str] = []
+    flags: list[str] = list(document_kind_flags(blob))
 
     out: dict[str, Any] = {"route": route, "fields": {}, "flags": flags}
 
@@ -1172,18 +1186,32 @@ def extract_invoice_fields(
         out["fields"]["invoice_no"] = _missing(0.2)
         out["fields"]["document_number"] = _missing(0.2)
 
-    date_m = DATE_LABEL_RE.search(blob) or DATE_ANY_RE.search(blob)
-    if date_m:
-        raw = date_m.group(1)
-        iso, scale, ambiguous = parse_invoice_date(raw)
+    # Prefer scored date near a Date label; fall back to first regex hit.
+    date_raw = None
+    date_src = None
+    best_date = pick_best(score_date_candidates(blob, boxes))
+    if best_date and best_date.score >= 0.55:
+        date_raw = best_date.value
+        if best_date.page is not None and best_date.bbox is not None:
+            date_src = {"page": best_date.page, "bbox": best_date.bbox}
+    else:
+        date_m = DATE_LABEL_RE.search(blob) or DATE_ANY_RE.search(blob)
+        if date_m:
+            date_raw = date_m.group(1)
+    if date_raw:
+        iso, scale, ambiguous = parse_invoice_date(date_raw)
         if iso:
             conf = base_conf * scale
+            if best_date:
+                conf = min(conf, max(0.5, best_date.score))
             if ambiguous:
                 flags.append("date_ambiguous_dd_mm")
-            src = find_source(boxes, raw, prefer_pages=prefer_first) if boxes else None
+            src = date_src
+            if not src and boxes:
+                src = find_source(boxes, date_raw, prefer_pages=prefer_first)
             if not src and boxes:
                 # Date may be split across words ("28" "Jan" "2026")
-                src = find_source(boxes, raw.split()[0], prefer_pages=prefer_first)
+                src = find_source(boxes, date_raw.split()[0], prefer_pages=prefer_first)
             out["invoice_date"] = iso
             out["document_date"] = iso
             out["fields"]["invoice_date"] = _located(iso, conf, src)
@@ -1237,10 +1265,10 @@ def extract_invoice_fields(
     else:
         out["fields"]["customer_trn"] = _missing()
 
-    cur = CURRENCY_RE.search(blob)
-    if cur:
-        val = cur.group(1).upper()
-        src = find_source(boxes, cur.group(1), prefer_pages=prefer_last) if boxes else None
+    best_cur = pick_best(score_currency_candidates(blob))
+    if best_cur:
+        val = best_cur.value
+        src = find_source(boxes, val, prefer_pages=prefer_last) if boxes else None
         out["currency"] = val
         out["fields"]["currency"] = _located(val, base_conf, src)
     else:

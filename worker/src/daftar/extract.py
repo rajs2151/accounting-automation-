@@ -64,6 +64,8 @@ class Extraction:
     kind: str = "csv"
     # Per-page text used by field extraction (text layer and/or OCR). Never drop OCR here.
     raw_pages: list[str] = field(default_factory=list)
+    # Word boxes for review highlights (PDF points or image pixels).
+    word_boxes: list[dict] = field(default_factory=list)
 
 
 OPENING_RE = re.compile(r"opening(?:\s+balance)?\s*[:|,]?\s*([-(]?\d[\d.,]*\)?)", re.I)
@@ -221,6 +223,11 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
         next_row = 1
         for index, page in enumerate(document, start=1):
             text = page.get_text("text") or ""
+            from daftar.textnorm import arabic_indic_to_ascii
+
+            extraction.word_boxes.append(
+                {"page": index, "width": float(page.rect.width), "height": float(page.rect.height)}
+            )
             if _page_has_text(text):
                 words = page.get_text("words") or []
                 zoom = 1400 / max(page.rect.width, 1)
@@ -239,13 +246,30 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 extraction.rows.extend(rows)
                 extraction.pages.append(PageImage(index, pixmap.tobytes("png"), pixmap.width, pixmap.height))
                 extraction.methods.append((index, "pdf_text"))
-                extraction.raw_pages.append(text)
-                meta_text.append(text)
+                cleaned = arabic_indic_to_ascii(text)
+                extraction.raw_pages.append(cleaned)
+                meta_text.append(cleaned)
+                for word in words:
+                    extraction.word_boxes.append(
+                        {
+                            "page": index,
+                            "x0": float(word[0]),
+                            "y0": float(word[1]),
+                            "x1": float(word[2]),
+                            "y1": float(word[3]),
+                            "text": arabic_indic_to_ascii(str(word[4])),
+                            "conf": 1.0,
+                        }
+                    )
             else:
+                from daftar.extraction.pdf_words import ocr_tokens_to_word_boxes
+
                 zoom = 2
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
                 image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
-                headers, rows, png, width, height, ocr_text = _ocr_image(image, index)
+                headers, rows, png, width, height, ocr_text, ocr_tokens, processed = _ocr_image(
+                    image, index
+                )
                 for row in rows:
                     row.row_no = next_row
                     next_row += 1
@@ -257,6 +281,17 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 extraction.methods.append((index, engine))
                 extraction.raw_pages.append(ocr_text)
                 meta_text.append(ocr_text)
+                extraction.word_boxes.extend(
+                    ocr_tokens_to_word_boxes(
+                        ocr_tokens,
+                        page=index,
+                        page_width=float(page.rect.width),
+                        page_height=float(page.rect.height),
+                        image_width=float(processed.size[0]),
+                        image_height=float(processed.size[1]),
+                        engine=str(engine),
+                    )
+                )
         meta = _metadata_from_free_text("\n".join(meta_text))
         _apply_meta(extraction, meta)
         return extraction
@@ -265,9 +300,11 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
 
 
 def _extract_image(content: bytes) -> Extraction:
+    from daftar.extraction.pdf_words import image_tokens_to_word_boxes
+
     image = Image.open(io.BytesIO(content))
     image = ImageOps.exif_transpose(image).convert("RGB")
-    headers, rows, png, width, height, ocr_text = _ocr_image(image, 1)
+    headers, rows, png, width, height, ocr_text, ocr_tokens, _processed = _ocr_image(image, 1)
     for number, row in enumerate(rows, start=1):
         row.row_no = number
     engine = getattr(recognize, "last_engine", "ocr")
@@ -279,19 +316,24 @@ def _extract_image(content: bytes) -> Extraction:
         methods=[(1, engine)],
         kind="image",
         raw_pages=[ocr_text],
+        word_boxes=image_tokens_to_word_boxes(
+            ocr_tokens, page=1, width=width, height=height, engine=str(engine)
+        ),
     )
     _apply_meta(extraction, _metadata_from_free_text(ocr_text))
     return extraction
 
 
 def _ocr_image(image: Image.Image, page_no: int):
+    from daftar.textnorm import arabic_indic_to_ascii
+
     processed, tokens = recognize(image)
     width, height = processed.size
     buffer = io.BytesIO()
     processed.save(buffer, format="PNG")
     headers, rows = _rows_from_tokens(tokens, page_no, width, height)
-    ocr_text = " ".join(token.text for token in tokens)
-    return headers, rows, buffer.getvalue(), width, height, ocr_text
+    ocr_text = arabic_indic_to_ascii(" ".join(token.text for token in tokens))
+    return headers, rows, buffer.getvalue(), width, height, ocr_text, tokens, processed
 
 
 def recognize(image: Image.Image) -> tuple[Image.Image, list[Token]]:
@@ -320,6 +362,7 @@ recognize.last_models = []  # type: ignore[attr-defined]
 
 def _preprocess(image: Image.Image) -> Image.Image:
     gray = ImageOps.autocontrast(image.convert("L"))
+    gray = _auto_rotate_cardinal(gray)
     gray = _deskew(gray)
     if gray.width < 1400:
         scale = 1400 / gray.width
@@ -327,16 +370,37 @@ def _preprocess(image: Image.Image) -> Image.Image:
     return gray.convert("RGB")
 
 
+def _ink_row_variance(image: Image.Image) -> float:
+    import numpy as np
+
+    ink = np.asarray(image) < 180
+    if ink.size == 0:
+        return -1.0
+    return float(ink.sum(axis=1).var())
+
+
+def _auto_rotate_cardinal(image: Image.Image) -> Image.Image:
+    """Try 0/90/180/270 — phone photos of bills are often sideways."""
+    best = image
+    best_score = _ink_row_variance(image)
+    for angle in (90, 180, 270):
+        rotated = image.rotate(angle, expand=True, fillcolor=255)
+        score = _ink_row_variance(rotated)
+        # Prefer landscape-ish text lines (higher row variance) and avoid tiny pathological scores.
+        if score > best_score * 1.05:
+            best_score = score
+            best = rotated
+    return best
+
+
 def _deskew(image: Image.Image) -> Image.Image:
     import numpy as np
 
-    gray = np.asarray(image)
     best_angle = 0.0
     best_score = -1.0
     for angle in np.linspace(-6, 6, 25):
         rotated = image.rotate(float(angle), expand=False, fillcolor=255)
-        ink = np.asarray(rotated) < 180
-        score = float(ink.sum(axis=1).var())
+        score = float((np.asarray(rotated) < 180).sum(axis=1).var())
         if score > best_score:
             best_score = score
             best_angle = float(angle)

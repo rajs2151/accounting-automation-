@@ -16,9 +16,10 @@ from daftar.parsers.invoice_generic import InvoiceGenericParser
 
 
 def _fake_ocr_image(image, page_no: int):
-    # Mimic _ocr_image return: headers, rows, png, width, height, ocr_text
+    # Mimic _ocr_image return: headers, rows, png, width, height, ocr_text, tokens, processed
     text = "TAX INVOICE\nInvoice No INV-MOCK-1\nDate 2026-05-12\nTotal 105.00 AED"
-    return [], [], b"", 100, 100, text
+    processed = SimpleNamespace(size=(100, 100))
+    return [], [], b"", 100, 100, text, [], processed
 
 
 def test_png_bill_goes_through_ocr_mocked():

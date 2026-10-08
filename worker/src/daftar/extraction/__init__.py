@@ -325,6 +325,12 @@ def process_extract_document(conn, store: ObjectStore, payload: dict[str, Any]) 
                     " ".join(str(c) for c in (r.cells if hasattr(r, "cells") else []))
                     for r in extraction.rows
                 )[:20000]
+            # Merge OCR / extract word boxes so scanned pages are highlightable in review.
+            extra_boxes = list(getattr(extraction, "word_boxes", None) or [])
+            if extra_boxes:
+                from daftar.extraction.pdf_words import merge_word_boxes
+
+                word_boxes = merge_word_boxes(word_boxes, extra_boxes)
         except Exception as exc:  # noqa: BLE001
             logger.warning("extract_file_route_failed kind=%s: %s", kind, exc)
 
