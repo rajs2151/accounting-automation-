@@ -56,14 +56,26 @@ NET_LABEL_RE = re.compile(
     r"(?:\s+AED)?\s+([\d,]+\.\d{2})\s*$"
 )
 # VAT total amount labels only — "Tax Exempt" is a line VAT code, not a totals amount.
+# Allow "Vat (5%)", optional AED, amount same-line (stacked handled separately).
 VAT_LABEL_RE = re.compile(
-    r"(?im)^(?:VAT(?:\s*\d+\s*%?)?|Tax(?:\s+Amount)|Total\s+No\s+Tax(?:\s*0\s*%?)?|"
+    r"(?im)^(?:VAT(?:\s*\(?\s*\d+\s*%?\s*\)?)?|Tax(?:\s+Amount)|Total\s+No\s+Tax(?:\s*0\s*%?)?|"
     r"VAT\s*0\s*%?)"
     r"(?:\s+AED)?\s+([\d,]+\.\d{2})\s*$"
+)
+# Label-only line for stacked totals (amount on the next non-empty line).
+VAT_LABEL_ONLY_RE = re.compile(
+    r"(?im)^(?:VAT(?:\s*\(?\s*\d+\s*%?\s*\)?)?|Tax\s+Amount|Total\s+No\s+Tax(?:\s*0\s*%?)?|"
+    r"VAT\s*0\s*%?)(?:\s+AED)?\s*$"
+)
+NET_LABEL_ONLY_RE = re.compile(
+    r"(?im)^(?:Subtotal|Sub\s*Total|Net(?:\s+Amount)?|Taxable(?:\s+Amount)?)(?:\s+AED)?\s*$"
 )
 GROSS_LABEL_RE = re.compile(
     r"(?im)^(?:Grand\s*Total|Invoice\s*Total|Amount\s*Due|Total(?:\s+Due)?)"
     r"(?:\s+AED)?\s+([\d,]+\.\d{2})\s*$"
+)
+GROSS_LABEL_ONLY_RE = re.compile(
+    r"(?im)^(?:Grand\s*Total|Invoice\s*Total|Amount\s*Due|Total(?:\s+Due)?|Total)(?:\s+AED)?\s*$"
 )
 # Line-item amount used as net when no Subtotal label (synthetic layouts).
 LINE_AMOUNT_RE = re.compile(
@@ -80,6 +92,10 @@ DATE_RE = re.compile(
 
 CUSTOMER_LABEL_RE = re.compile(
     r"(?im)^(?:Bill\s*To|Sold\s*To|Customer|Client|To)\s*[:\-]\s*(.+)$"
+)
+# Zoho / purchase bills: supplier is "Bill From" (often label on its own line).
+SUPPLIER_LABEL_RE = re.compile(
+    r"(?im)^(?:Bill\s*From|Supplier(?:\s*Name)?|Vendor)\s*[:\-]?\s*(.*)$"
 )
 PAYMENT_FAVOUR_RE = re.compile(
     r"(?is)(?:payment\s+(?:to\s+be\s+)?made\s+in\s+favou?r\s+of|"
@@ -360,6 +376,24 @@ def _search_pages_last_first(
     return None
 
 
+def _stacked_amount_after_label(
+    page_texts: list[str], label_only: re.Pattern[str]
+) -> tuple[str, int] | None:
+    """Find label-only line then amount on a following line (Zoho / Arnifi totals)."""
+    for idx in range(len(page_texts) - 1, -1, -1):
+        lines = (page_texts[idx] or "").splitlines()
+        for li, raw_line in enumerate(lines):
+            if not label_only.match(raw_line.strip()):
+                continue
+            for nxt in lines[li + 1 : li + 4]:
+                am = re.match(r"^\s*([\d,]+\.\d{2})\s*$", nxt)
+                if am:
+                    return am.group(1), idx + 1
+                if nxt.strip():
+                    break
+    return None
+
+
 def _norm_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).casefold()
 
@@ -465,6 +499,34 @@ def _customer_from_labels(text: str) -> str | None:
     return name or None
 
 
+def _supplier_from_labels(text: str) -> str | None:
+    """Bill From / Supplier / Vendor — name on same line or the next non-empty line."""
+    lines = (text or "").splitlines()
+    for i, raw in enumerate(lines):
+        m = SUPPLIER_LABEL_RE.match(raw.strip())
+        if not m:
+            continue
+        name = (m.group(1) or "").strip()
+        name = re.sub(r"\s+TRN.*$", "", name, flags=re.I).strip()
+        if name and not re.match(r"(?i)^(trn|tax|invoice|bill|date)\b", name):
+            return name
+        for nxt in lines[i + 1 : i + 4]:
+            cand = nxt.strip()
+            if not cand:
+                continue
+            if re.match(
+                r"(?i)^(trn|tax|invoice|bill|date|item|#|qty|rate|amount|description)\b",
+                cand,
+            ):
+                break
+            if normalize_trn(cand):
+                continue
+            if re.search(r"[A-Za-z]{3,}", cand):
+                return re.sub(r"\s+[\d,]+\.\d{2}\s*$", "", cand).strip()
+            break
+    return None
+
+
 def _header_blocks_from_words(
     word_boxes: list[dict[str, Any]], page: int = 1
 ) -> list[dict[str, Any]]:
@@ -557,6 +619,11 @@ def _issuer_customer(
 
     favour = _payment_favour_name(text)
     labelled_customer = _customer_from_labels(text)
+    labelled_supplier = _supplier_from_labels(text)
+    # Purchase/Zoho: Bill From is the issuer; prefer over header letterhead.
+    if labelled_supplier:
+        issuer_name = labelled_supplier
+        role_conf = max(role_conf, 0.96)
 
     # Header cut: before first customer label or invoice meta
     bill_pos = re.search(
@@ -608,7 +675,9 @@ def _issuer_customer(
 
         trn, name = chosen
         issuer_trn = trn
-        issuer_name = name or issuer_name_from_favour
+        # Keep Bill From / Supplier when already set; otherwise TRN-near name / favour.
+        if not labelled_supplier:
+            issuer_name = name or issuer_name_from_favour or issuer_name
         # Other labelled TRN → customer candidate
         for other_trn, other_name in labelled_trns:
             if other_trn != issuer_trn:
@@ -617,22 +686,26 @@ def _issuer_customer(
                 if other_name and not customer_name and not labelled_customer:
                     customer_name = other_name
                 break
-        if favour and name and not _names_match(name, favour) and issuer_name_from_favour:
-            # Labelled name near chosen TRN disagrees with payment favour
-            if not any(n and _names_match(n, favour) for _, n in labelled_trns):
-                flags.append("party_roles_uncertain")
-                role_conf = min(role_conf, 0.45)
-            else:
+        if not labelled_supplier:
+            if favour and name and not _names_match(name, favour) and issuer_name_from_favour:
+                # Labelled name near chosen TRN disagrees with payment favour
+                if not any(n and _names_match(n, favour) for _, n in labelled_trns):
+                    flags.append("party_roles_uncertain")
+                    role_conf = min(role_conf, 0.45)
+                else:
+                    issuer_name = favour
+            elif favour and not name:
                 issuer_name = favour
-        elif favour and not name:
-            issuer_name = favour
-        elif not name:
-            # TAX INVOICE classic: line after title
-            m_iss = re.search(r"(?i)TAX\s+INVOICE\s*\n([^\n]+)", text)
-            if m_iss:
-                candidate = m_iss.group(1).strip()
-                if not re.match(r"(?i)^(trn|bill\s*to|invoice|date|فاتورة)\b", candidate):
-                    issuer_name = candidate
+            elif not name and not issuer_name:
+                # TAX INVOICE classic: line after title — only if not already a Bill-To party
+                m_iss = re.search(r"(?i)TAX\s+INVOICE\s*\n([^\n]+)", text)
+                if m_iss:
+                    candidate = m_iss.group(1).strip()
+                    if not re.match(r"(?i)^(trn|bill\s*to|invoice|date|فاتورة)\b", candidate):
+                        if not (
+                            labelled_customer and _names_match(candidate, labelled_customer)
+                        ):
+                            issuer_name = candidate
 
     # Geometry header blocks (left/right) refine unlabelled layouts
     blocks = _header_blocks_from_words(word_boxes or [], 1) if word_boxes else []
@@ -686,12 +759,15 @@ def _issuer_customer(
             customer_name = labelled_customer
 
     # Classic text fallbacks when geometry empty
+    if not issuer_name and favour:
+        issuer_name = favour
     if not issuer_name:
         m_iss = re.search(r"(?i)TAX\s+INVOICE\s*\n([^\n]+)", text)
         if m_iss:
             candidate = m_iss.group(1).strip()
             if not re.match(r"(?i)^(trn|bill\s*to|invoice|date|فاتورة)\b", candidate):
-                issuer_name = candidate
+                if not (labelled_customer and _names_match(candidate, labelled_customer)):
+                    issuer_name = candidate
 
     if not customer_name and not labelled_customer:
         # Unlabelled: first name candidate that isn't the issuer
@@ -1278,6 +1354,8 @@ def extract_invoice_fields(
     # Page-aware totals: last page first. Never invent VAT.
     net_hit = _search_pages_last_first(pages, NET_LABEL_RE)
     if not net_hit:
+        net_hit = _stacked_amount_after_label(pages, NET_LABEL_ONLY_RE)
+    if not net_hit:
         # Synthetic layout: service line amount before VAT/Total counts as net.
         for idx in range(len(pages) - 1, -1, -1):
             page = pages[idx] or ""
@@ -1290,29 +1368,39 @@ def extract_invoice_fields(
                 break
 
     vat_hit = _search_pages_last_first(pages, VAT_LABEL_RE)
-    # Explicit zero-tax totals when label/value are stacked on separate lines.
+    # Stacked VAT / zero-tax: label on one line, amount on the next.
     if not vat_hit:
         for idx in range(len(pages) - 1, -1, -1):
+            page = pages[idx] or ""
             m = re.search(
-                r"(?im)^(?:Total\s+No\s+Tax(?:\s*0\s*%?)?|VAT\s*0\s*%?)"
-                r"(?:\s+AED)?\s*\n\s*([\d,]+\.\d{2})\s*$",
-                pages[idx] or "",
+                r"(?im)^(?:VAT(?:\s*\(?\s*\d+\s*%?\s*\)?)?|Tax\s+Amount|Total\s+No\s+Tax(?:\s*0\s*%?)?|"
+                r"VAT\s*0\s*%?)(?:\s+AED)?\s*\n\s*([\d,]+\.\d{2})\s*$",
+                page,
             )
             if m:
                 vat_hit = (m.group(1), idx + 1)
                 break
-            m = re.search(
-                r"(?im)^(?:Total\s+No\s+Tax(?:\s*0\s*%?)?|VAT\s*0\s*%?)"
-                r"(?:\s+AED)?\s+([\d,]+\.\d{2})\s*$",
-                pages[idx] or "",
-            )
-            if m:
-                vat_hit = (m.group(1), idx + 1)
+            lines = page.splitlines()
+            for li, raw_line in enumerate(lines):
+                if not VAT_LABEL_ONLY_RE.match(raw_line.strip()):
+                    continue
+                for nxt in lines[li + 1 : li + 4]:
+                    am = re.match(r"^\s*([\d,]+\.\d{2})\s*$", nxt)
+                    if am:
+                        vat_hit = (am.group(1), idx + 1)
+                        break
+                    if nxt.strip():
+                        break
+                if vat_hit:
+                    break
+            if vat_hit:
                 break
 
     gross_hit = _search_pages_last_first(pages, GROSS_LABEL_RE)
     if not gross_hit:
         gross_hit = _search_pages_last_first(pages, TOTAL_RE)
+    if not gross_hit:
+        gross_hit = _stacked_amount_after_label(pages, GROSS_LABEL_ONLY_RE)
 
     if net_hit:
         raw, page = net_hit
@@ -1341,6 +1429,15 @@ def extract_invoice_fields(
     else:
         out["fields"]["grand_total"] = _missing(0.2)
         out["fields"]["gross"] = _missing(0.2)
+
+    # Never invent 5%. Only fill VAT from gross−net when both totals were located
+    # and the difference is a positive amount (net==gross stays missing, not 0).
+    if out.get("vat") is None and out.get("net") is not None and out.get("gross") is not None:
+        derived = int(out["gross"]) - int(out["net"])
+        if derived > 0:
+            out["vat"] = derived
+            out["fields"]["vat"] = _located(derived, min(base_conf, 0.85), None)
+            flags.append("vat_derived_from_totals")
 
     # Line items (table via word_boxes, else Invoice total fallback)
     line_items, line_flags = _parse_line_items_from_words(

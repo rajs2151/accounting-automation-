@@ -2,7 +2,15 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **Real-docs eval + A→B→C** closed
+- Current task: **ING-4e weak layout_tags** shipped; next = deferred polish (snippet / knowledge / email-in)
+- 2026-10-08: **ING-4e** weak real-docs fields (no migration; no RLS)
+  - DONE: stacked VAT / Subtotal / Total; Bill From issuer; payment-favour fallback; vat=gross−net only when >0
+  - DONE: bank FROM–TO / Statement Period / letterhead bank_name; stacked opening/closing (incl. integer amounts)
+  - DONE: gateway Nomod path uses `extract_file` OCR; eval prefers account with balances + gateway/card doc types
+  - DONE: unit `test_ing4e_weak_fields.py` + Wio/RAK header cases in `test_ing4c_statements.py`
+  - Eval vs prior baseline (rates only): overall acc **0.61→~0.65**; vat **0.24→0.47**; issuer_name **0.12→0.29**;
+    bank_name/period **0→0.33**; closing_minor **0→0.5**; supplier_name **0.4→1.0**; wio **0.33→0.58**
+  - Still weak: Nomod OCR empty (acc 0); opening_minor; due_date; RAK opening window
 - 2026-10-08: **Slice C polish** (db/62 review_later; no RLS change)
   - DONE: non-UAE purchase VAT → cost (never 1430); unit `non-uae-vat.test.ts`
   - DONE: inbox `review_later` status + `POST …/inbox/:id/review-later`
@@ -172,8 +180,8 @@
   backup C:\Users\Raj\arnibooks-backups\pre-e2-20261005.dump). Demo build still tagged demo-ceo-2026-10-05.
 
 ## Queue (next tasks, in order - reviewer may refine)
-1. Improve weak layout_tags from real-docs eval (vat, bank periods, issuer_name, Nomod OCR / scanned)
-2. Knowledge cards / email-in / multi-receipt snippet split (deferred; larger)
+1. Multi-receipt snippet split (thin slice); then knowledge cards; then email-in
+2. Further Nomod/RAK/opening_minor extraction if still weak after 4e
 3. Company A month-1 hand golden (owner); brand hex + font
 4. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
 
@@ -188,6 +196,7 @@
 - E1d closed (confirm never invents SR).
 
 ## Log
+- 2026-10-08 | ING-4e | PASS | weak-field extract + bank headers; eval acc ~0.65; unit green
 - 2026-10-08 | Real-docs+A+B+C | PASS | eval rates in STATUS; local PASS override; B5/B6; polish db/62
 - 2026-10-08 | ING-1c | PASS | AR/AP control drift on Health scorecard + insights; unit 354p e2e 11/11
 - 2026-10-08 | ING-5c | PASS | owner how-to test-your-own-documents.md; ING-5 closed

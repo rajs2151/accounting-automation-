@@ -98,22 +98,37 @@ def _pred_from_file(path: Path, company_trn: str = "", company_name: str = "") -
         "methods": methods,
     }
 
-    doc_type_s = str(getattr(parsed, "doc_type", "") or "") if parsed else ""
-    if parsed and (doc_type_s.startswith("bank") or "statement" in doc_type_s):
-        # Statement-shaped extras
+    doc_type_s = str(getattr(parsed, "doc_type", "") or "").lower() if parsed else ""
+    if parsed and (
+        doc_type_s.startswith("bank")
+        or "statement" in doc_type_s
+        or doc_type_s.startswith("gateway")
+        or doc_type_s.startswith("card")
+    ):
+        # Statement-shaped extras — prefer an account that actually has balances
         accounts = extras.get("accounts") or []
+        acc = None
         if accounts and isinstance(accounts[0], dict):
-            acc = accounts[0]
+            acc = next((a for a in accounts if a.get("balances_found")), None) or accounts[0]
+        if acc and isinstance(acc, dict):
             flat.update(
                 {
-                    "bank_name": acc.get("bank_name"),
+                    "bank_name": acc.get("bank_name") or extras.get("bank_name"),
                     "iban": acc.get("iban"),
-                    "currency": acc.get("currency"),
-                    "period_from": acc.get("period_from"),
-                    "period_to": acc.get("period_to"),
+                    "currency": acc.get("currency") or extras.get("currency"),
+                    "period_from": acc.get("period_from") or extras.get("period_from"),
+                    "period_to": acc.get("period_to") or extras.get("period_to"),
                     "opening_minor": acc.get("opening_minor"),
                     "closing_minor": acc.get("closing_minor"),
                     "lines": acc.get("lines") or [],
+                }
+            )
+        elif extras.get("period_from") or extras.get("period_to"):
+            flat.update(
+                {
+                    "period_from": extras.get("period_from"),
+                    "period_to": extras.get("period_to"),
+                    "currency": extras.get("currency") or flat.get("currency"),
                 }
             )
         elif extras.get("lines") is not None:

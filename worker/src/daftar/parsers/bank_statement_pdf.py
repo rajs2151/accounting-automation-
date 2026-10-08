@@ -34,11 +34,37 @@ LINE_SIGNED_RE = re.compile(
     r"(?:\s+([\d,]+\.\d{2}))?\s*$",
     re.I,
 )
-OPENING_RE = re.compile(r"opening\s+balance\s*[:：]?\s*([\d,]+\.\d{2})", re.I)
-CLOSING_RE = re.compile(r"closing\s+balance\s*[:：]?\s*([\d,]+\.\d{2})", re.I)
-BANK_RE = re.compile(r"Bank\s*:\s*([^\n]+)", re.I)
+# Same-line balances (legacy fixtures): "Opening balance: 100.00"
+OPENING_RE = re.compile(
+    r"opening\s+balance\s*[:：]?\s*([\d,]+\.\d{2}|\d+)\b",
+    re.I,
+)
+CLOSING_RE = re.compile(
+    r"closing\s+balance\s*[:：]?\s*([\d,]+\.\d{2}|\d+)\b",
+    re.I,
+)
+# Stacked Wio / RAK: label then amount on a following line (optional AED / Cr.).
+BALANCE_AMOUNT_RE = re.compile(
+    r"^\s*(?:AED\s*)?([\d,]+\.\d{2}|\d+)\s*(?:Cr\.?|Dr\.?)?\s*",
+    re.I,
+)
+BANK_RE = re.compile(r"(?:Bank\s*(?:Name)?\s*[:：]\s*|Bank\s*:\s*)([^\n]+)", re.I)
+BANK_LETTERHEAD_RE = re.compile(
+    r"\b(Wio\s+Bank|RAKBANK|Rak\s*Bank|"
+    r"The\s+National\s+Bank\s+of\s+Ras\s+Al\s+Khaimah|"
+    r"Emirates\s+NBD|ENBD|FAB|First\s+Abu\s+Dhabi\s+Bank|"
+    r"Mashreq|ADCB|HSBC)\b",
+    re.I,
+)
+# Period: "Period: d/m/y to d/m/y" | "FROM … TO …" | "Statement Period: … TO …"
+_DATE_TOKEN = (
+    r"\d{1,2}/\d{1,2}/\d{4}"
+    r"|\d{1,2}-\d{1,2}-\d{4}"
+    r"|\d{1,2}[- ][A-Za-z]{3,9}[- ]\d{4}"
+)
 PERIOD_RE = re.compile(
-    r"Period\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s+to\s+(\d{1,2}/\d{1,2}/\d{4})",
+    rf"(?:Statement\s+Period|Period)\s*[:：]?\s*({_DATE_TOKEN})\s+to\s+({_DATE_TOKEN})"
+    rf"|FROM\s+({_DATE_TOKEN})\s+TO\s+({_DATE_TOKEN})",
     re.I,
 )
 CURRENCY_RE = re.compile(r"\b(AED|USD|EUR|GBP|SAR)\b", re.I)
@@ -65,12 +91,20 @@ def _pdf_pages(content: bytes) -> tuple[str, list[dict[str, Any]], list[tuple[in
 
 
 def _iso_date(raw: str) -> str | None:
-    parts = raw.strip().split("/")
+    from daftar.extraction.fields import parse_invoice_date
+
+    iso, _, _ = parse_invoice_date((raw or "").strip())
+    if iso:
+        return iso
+    # dd-mm-yyyy fallback
+    parts = re.split(r"[/\-.]", (raw or "").strip())
     if len(parts) != 3:
         return None
-    d, m, y = parts
     try:
-        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+        d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+        if y < 100:
+            y += 2000
+        return f"{y:04d}-{m:02d}-{d:02d}"
     except ValueError:
         return None
 
@@ -79,6 +113,77 @@ def _minor(raw: str | None) -> int | None:
     if raw is None or str(raw).strip() == "":
         return None
     return parse_amount_fils(str(raw))
+
+
+def _balance_after_label(text: str, label: str) -> int | None:
+    """Find opening/closing when amount is on the same or following lines."""
+    same = OPENING_RE if label == "opening" else CLOSING_RE
+    m = same.search(text or "")
+    if m:
+        return _minor(m.group(1))
+    word = "opening" if label == "opening" else "closing"
+    # Window search: label then amount within ~120 chars (RAK bilingual lines).
+    win = re.search(
+        rf"(?is){word}\s+balance\b.{{0,120}}?(?:AED|USD|EUR|GBP|SAR)?\s*"
+        rf"([\d,]+\.\d{{2}}|\d+)\s*(?:Cr\.?|Dr\.?)?",
+        text or "",
+    )
+    if win:
+        return _minor(win.group(1))
+    # Stacked: LABEL\n[AED]\n123.45 [Cr.]
+    pat = re.compile(rf"(?im)^(?:{word}\s+balance)\b.*$")
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines):
+        if not pat.match(line.strip()):
+            continue
+        # Amount may share the label line after bilingual glue
+        am_same = BALANCE_AMOUNT_RE.search(line)
+        if am_same and not re.search(rf"(?i){word}\s+balance\s*$", line.strip()):
+            # Only if digits appear after the label token
+            after = re.split(rf"(?i){word}\s+balance", line, maxsplit=1)
+            if len(after) > 1 and re.search(r"\d", after[1]):
+                return _minor(am_same.group(1))
+        for nxt in lines[i + 1 : i + 6]:
+            am = BALANCE_AMOUNT_RE.search(nxt)
+            if am:
+                return _minor(am.group(1))
+            # Skip pure currency / Arabic gloss lines
+            if re.match(r"(?i)^\s*(AED|USD|EUR|GBP|SAR)?\s*$", nxt):
+                continue
+            if nxt.strip() and not re.search(r"[\d]", nxt):
+                continue
+            if nxt.strip():
+                break
+    return None
+
+
+def _period_bits(text: str) -> tuple[str | None, str | None]:
+    m = PERIOD_RE.search(text or "")
+    if not m:
+        return None, None
+    if m.group(1) and m.group(2):
+        return _iso_date(m.group(1)), _iso_date(m.group(2))
+    return _iso_date(m.group(3)), _iso_date(m.group(4))
+
+
+def _bank_name_bits(text: str) -> str | None:
+    bank = BANK_RE.search(text or "")
+    if bank:
+        name = bank.group(1).strip()
+        # "Bank Name : RAK Bank" style — take after colon already in group
+        if name and len(name) < 80:
+            return re.sub(r"\s+", " ", name)
+    letter = BANK_LETTERHEAD_RE.search(text or "")
+    if letter:
+        raw = letter.group(1)
+        # Normalize common letterheads
+        key = raw.casefold()
+        if "wio" in key:
+            return "Wio Bank"
+        if "ras al khaimah" in key or "rak" in key:
+            return "RAK Bank"
+        return re.sub(r"\s+", " ", raw.strip())
+    return None
 
 
 def _match_txn_line(raw: str) -> dict[str, Any] | None:
@@ -248,19 +353,21 @@ def _parse_lines(
 
 
 def _slice_has_activity(slice_text: str) -> bool:
-    if OPENING_RE.search(slice_text or "") or CLOSING_RE.search(slice_text or ""):
+    if (
+        _balance_after_label(slice_text, "opening") is not None
+        or _balance_after_label(slice_text, "closing") is not None
+    ):
         return True
     return any(_match_txn_line(raw) for raw in (slice_text or "").splitlines())
 
 
 def _header_bits(text: str) -> dict[str, Any]:
-    bank = BANK_RE.search(text)
-    period = PERIOD_RE.search(text)
+    period_from, period_to = _period_bits(text)
     currency = CURRENCY_RE.search(text)
     return {
-        "bank_name": bank.group(1).strip() if bank else None,
-        "period_from": _iso_date(period.group(1)) if period else None,
-        "period_to": _iso_date(period.group(2)) if period else None,
+        "bank_name": _bank_name_bits(text),
+        "period_from": period_from,
+        "period_to": period_to,
         "currency": currency.group(1).upper() if currency else "AED",
     }
 
@@ -327,10 +434,8 @@ def parse_bank_statement_text(
             first_end[iban] = m.end()
             unique.append(iban)
 
-    opening_m = OPENING_RE.search(text)
-    closing_m = CLOSING_RE.search(text)
-    opening = _minor(opening_m.group(1)) if opening_m else None
-    closing = _minor(closing_m.group(1)) if closing_m else None
+    opening = _balance_after_label(text, "opening")
+    closing = _balance_after_label(text, "closing")
     shared_lines, shared_flags = _parse_lines(text, word_boxes)
     shared_flags = list(dict.fromkeys([*iban_flags, *shared_flags]))
     shared_balances_found = opening is not None and closing is not None
@@ -379,10 +484,8 @@ def parse_bank_statement_text(
     for iban in unique:
         section = sections.get(iban, "")
         if per_iban and iban in with_own:
-            o_m = OPENING_RE.search(section)
-            c_m = CLOSING_RE.search(section)
-            o = _minor(o_m.group(1)) if o_m else None
-            c = _minor(c_m.group(1)) if c_m else None
+            o = _balance_after_label(section, "opening")
+            c = _balance_after_label(section, "closing")
             balances_found = o is not None and c is not None
             sec_lines, sec_flags = _parse_lines(section, word_boxes)
             out.append(
@@ -401,10 +504,12 @@ def parse_bank_statement_text(
             )
         elif iban == shared_owner:
             # Prefer balances/lines from the owning section; fall back to whole-doc.
-            o_m = OPENING_RE.search(section) or opening_m
-            c_m = CLOSING_RE.search(section) or closing_m
-            o = _minor(o_m.group(1)) if o_m else None
-            c = _minor(c_m.group(1)) if c_m else None
+            o = _balance_after_label(section, "opening")
+            c = _balance_after_label(section, "closing")
+            if o is None:
+                o = opening
+            if c is None:
+                c = closing
             sec_lines, sec_flags = _parse_lines(section, word_boxes)
             # Single-IBAN: whole-doc lines so parse_flags use document line numbers.
             if len(unique) == 1:
