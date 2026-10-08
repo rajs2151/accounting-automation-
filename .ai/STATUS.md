@@ -146,7 +146,6 @@
 ## Queue (next tasks, in order - reviewer may refine)
 1. Owner: real-docs eval rates into STATUS (ING-4 measuring stick); how-to at `docs/how-to/test-your-own-documents.md`
 2. ING-1 follow-up: surface AR/AP control drift on Health
-3. ING-1 follow-up: surface AR/AP control drift on Health
 3. Phase 2 Stream B deferred: B5/B6 goldens, Stripe charge paths
 4. Polish backlog (Review later, paid/unpaid types, non-UAE VAT→cost, …)
 
