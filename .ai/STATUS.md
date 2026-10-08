@@ -173,8 +173,9 @@
 
 ## Queue (next tasks, in order - reviewer may refine)
 1. Improve weak layout_tags from real-docs eval (vat, bank periods, issuer_name, Nomod OCR / scanned)
-2. Knowledge cards / email-in / snippet split (deferred polish)
+2. Knowledge cards / email-in / multi-receipt snippet split (deferred; larger)
 3. Company A month-1 hand golden (owner); brand hex + font
+4. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
 
 ## Known issues / open decisions
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
@@ -183,10 +184,8 @@
 - Expense receipt threshold: NULL until owner sets (do not invent default).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
 - Pending inputs: brand hex + font; B/C opening balances.
-- UI polish backlog (not in UI-1..4): Review later status, paid/unpaid types, non-UAE VAT->cost, knowledge cards,
-  stale extraction, snippet split, settings CSV, firm overview, email-in, E1b worker confidence.
-- E1c report: SR default is in src/server/books/inbox.ts confirmInboxAsDocument and review UI normalizeLines
-  (not the worker) — tracked as E1d.
+- Polish shipped in Real-docs+A+B+C: Review later, paid/unpaid Outstanding, non-UAE VAT→cost, settings CSV templates, firm docs-to-review. Still deferred: knowledge cards, email-in, snippet split, stale extraction, E1b worker confidence.
+- E1d closed (confirm never invents SR).
 
 ## Log
 - 2026-10-08 | Real-docs+A+B+C | PASS | eval rates in STATUS; local PASS override; B5/B6; polish db/62
