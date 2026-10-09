@@ -399,7 +399,16 @@ export function CreateEntrySheet({
   }, [recurring, recurringOccurrences, recurringStart, recurringFreq]);
 
   const policyWarning = useMemo(() => {
-    if (template === "accrual" || template === "payroll") return null;
+    if (
+      template === "accrual" ||
+      template === "income_accrual" ||
+      template === "payroll" ||
+      template === "eosb_accrual" ||
+      template === "staff_advance" ||
+      template === "staff_advance_recovery"
+    ) {
+      return null;
+    }
     return warnPrepaymentBookedAsAccrual(
       lines.filter((l) => !l.isAutoVatCompanion),
       accounts,
@@ -455,6 +464,58 @@ export function CreateEntrySheet({
             `After posting the return, create payment: ${data.paymentEntry.memo} (${formatMinor(Number(data.payableMinor || 0))} AED).`,
           );
         }
+        return;
+      }
+
+      if (key === "ct_accrual") {
+        const meta = buildJournalTemplate(key);
+        setAutoReverse(meta.autoReverseNextPeriod);
+        setTemplateHint(meta.hint || "");
+        setTemplateWarning(meta.warning || "");
+        setVatPaymentHint("");
+        if (!periodId) {
+          setError("Select a period for CT accrual.");
+          return;
+        }
+        const res = await fetch(`/api/books/ct-accrual?periodId=${periodId}`);
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Could not load CT estimate");
+          return;
+        }
+        setDescription(String(data.memo || meta.description));
+        setVoucherType("Journal");
+        setEntryTags(["ct"]);
+        const rl = Array.isArray(data.lines) ? data.lines : [];
+        if (rl.length === 0) {
+          setLines([emptyLine(), emptyLine()]);
+          setVatPaymentHint(
+            data.noTaxDueRecorded
+              ? "No CT due recorded (SBR/QFZP) — 2230 already matches."
+              : `2230 already matches the estimate (${formatMinor(Number(data.estimateMinor || 0))} AED).`,
+          );
+          return;
+        }
+        setLines(
+          rl.map(
+            (l: {
+              accountId: string;
+              debitMinor: number;
+              creditMinor: number;
+              lineMemo: string;
+            }) => ({
+              ...emptyLine(),
+              accountId: l.accountId,
+              debitMinor: l.debitMinor,
+              creditMinor: l.creditMinor,
+              lineMemo: l.lineMemo,
+              lineTags: ["ct"],
+            }),
+          ),
+        );
+        setVatPaymentHint(
+          `Estimate ${formatMinor(Number(data.estimateMinor || 0))} AED · booked ${formatMinor(Number(data.bookedPayableMinor || 0))} · delta ${formatMinor(Number(data.deltaMinor || 0))} (${data.disclaimer || "estimate"}).`,
+        );
         return;
       }
 
@@ -688,11 +749,18 @@ export function CreateEntrySheet({
               [
                 ["blank", "Blank"],
                 ["accrual", "Accrual"],
+                ["income_accrual", "Income accrual"],
                 ["prepayment", "Prepayment"],
                 ["depreciation", "Depreciation"],
                 ["payroll", "Payroll"],
+                ["eosb_accrual", "EOSB accrual"],
+                ["loan_interest", "Loan interest"],
+                ["staff_advance", "Staff advance"],
+                ["staff_advance_recovery", "Advance recovery"],
                 ["reclassification", "Reclassification"],
                 ["vat_settlement", "VAT settlement"],
+                ["ct_accrual", "CT accrual"],
+                ["bad_debt", "Bad debt"],
               ] as const
             ).map(([key, label]) => (
               <Button

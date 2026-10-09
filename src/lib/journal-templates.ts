@@ -6,11 +6,18 @@
 export type JournalTemplateKey =
   | "blank"
   | "accrual"
+  | "income_accrual"
   | "prepayment"
   | "depreciation"
   | "reclassification"
   | "payroll"
-  | "vat_settlement";
+  | "vat_settlement"
+  | "ct_accrual"
+  | "bad_debt"
+  | "eosb_accrual"
+  | "loan_interest"
+  | "staff_advance"
+  | "staff_advance_recovery";
 
 export type TemplateAccountRef = { id: string; code: string; accountType?: string };
 
@@ -42,6 +49,16 @@ export function buildJournalTemplate(key: JournalTemplateKey): TemplateApplyResu
         lines: [
           { accountCode: "6200", side: "debit", lineMemo: "Expense (accrued)" },
           { accountCode: ACCRUED_CODE, side: "credit", lineMemo: "Accrued expense" },
+        ],
+        hint: "Auto-reverse is on — reverses on the 1st of the next open period after post.",
+      };
+    case "income_accrual":
+      return {
+        description: "Month-end revenue accrual",
+        autoReverseNextPeriod: true,
+        lines: [
+          { accountCode: "1210", side: "debit", lineMemo: "Trade receivable (accrued revenue)" },
+          { accountCode: "4100", side: "credit", lineMemo: "Revenue (accrued)" },
         ],
         hint: "Auto-reverse is on — reverses on the 1st of the next open period after post.",
       };
@@ -81,8 +98,9 @@ export function buildJournalTemplate(key: JournalTemplateKey): TemplateApplyResu
         autoReverseNextPeriod: false,
         lines: [
           { accountCode: "6100", side: "debit", lineMemo: "Salaries & wages" },
-          { accountCode: "2120", side: "credit", lineMemo: "Payroll payable / accrued" },
+          { accountCode: "2330", side: "credit", lineMemo: "Salaries payable" },
         ],
+        hint: "Credits 2330 Salaries payable (not 2120 accrued expenses). Clear 2330 when wages are paid from bank.",
       };
     case "vat_settlement":
       return {
@@ -90,6 +108,70 @@ export function buildJournalTemplate(key: JournalTemplateKey): TemplateApplyResu
         autoReverseNextPeriod: false,
         lines: [],
         hint: "Balances load from the period VAT controls when applied in the UI.",
+      };
+    case "ct_accrual":
+      return {
+        description: "CT accrual (estimate)",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "8100", side: "debit", lineMemo: "Corporate tax expense (estimate accrual)" },
+          { accountCode: "2230", side: "credit", lineMemo: "Corporate tax payable (estimate accrual)" },
+        ],
+        hint: "Amounts load from the CT estimate vs 2230 when applied in the UI (top-up or reverse).",
+        warning: "Estimate only — not a tax computation. Confirm SBR / QFZP in Settings before year-end.",
+      };
+    case "bad_debt":
+      return {
+        description: "Bad debt write-off",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "4900", side: "debit", lineMemo: "Bad debt / write-off" },
+          { accountCode: "1210", side: "credit", lineMemo: "Clear trade receivable" },
+        ],
+        warning:
+          "Manual template only seeds accounts. Prefer Receivables ageing → Write off so the open item is closed (keeps 1210 vs open items tied).",
+        hint: "Dr 4900 / Cr 1210 — amounts must match the invoice you are writing off.",
+      };
+    case "eosb_accrual":
+      return {
+        description: "EOSB monthly accrual",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "6110", side: "debit", lineMemo: "Employee benefits & EOSB" },
+          { accountCode: "2410", side: "credit", lineMemo: "EOSB provision" },
+        ],
+        hint: "Enter this month's EOSB accrual (manual). Close warns if 2410 has had no movement this period.",
+      };
+    case "loan_interest":
+      return {
+        description: "Loan interest accrual",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "7400", side: "debit", lineMemo: "Interest expense" },
+          { accountCode: "2420", side: "credit", lineMemo: "Accrue loan interest" },
+        ],
+        hint: "Prefer Loans → Run interest so the register tracks the period. Manual fill when needed.",
+      };
+    case "staff_advance":
+      return {
+        description: "Staff advance payment",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "1230", side: "debit", lineMemo: "Employee advance" },
+          { accountCode: "1120", side: "credit", lineMemo: "Bank payment" },
+        ],
+        hint: "Pays cash to an employee as an advance (asset 1230). Recover later via Staff advance recovery.",
+      };
+    case "staff_advance_recovery":
+      return {
+        description: "Staff advance recovery",
+        autoReverseNextPeriod: false,
+        lines: [
+          { accountCode: "6100", side: "debit", lineMemo: "Salaries & wages (gross)" },
+          { accountCode: "1230", side: "credit", lineMemo: "Recover employee advance" },
+          { accountCode: "2330", side: "credit", lineMemo: "Net salaries payable" },
+        ],
+        hint: "Typical recovery on payroll: Dr gross wages, Cr 1230 for the recovery, Cr 2330 for net pay. Adjust amounts so the entry balances.",
       };
     default:
       return { description: "", autoReverseNextPeriod: false, lines: [] };

@@ -3,7 +3,6 @@ import test from "node:test";
 import pg from "pg";
 
 import { assertBooksBalanced, createBooksJournal, postBooksJournal, reverseBooksJournal } from "./journals";
-import { lockBooksPeriod } from "./periods";
 import { BooksError } from "./errors";
 import { createTestCompany } from "./test-company";
 
@@ -140,7 +139,8 @@ test("period lock blocks posting; reverse links a new posted entry", async (t) =
       (error: unknown) => error instanceof BooksError && error.message.includes("not_posted"),
     );
 
-    await lockBooksPeriod(LAYLA, clientId, periodId);
+    // Direct status flip — this test covers post-into-locked, not sequential lock order.
+    await admin.query(`UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`, [periodId]);
     await assert.rejects(
       () =>
         createBooksJournal(OMAR, clientId, {

@@ -17,9 +17,15 @@ import { requireApproverOrAdmin } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { missingPostedDepreciation } from "@/server/books/fixed-assets";
 import { fxRevaluationGateState } from "@/server/books/fx-revaluation";
-import { lockBooksPeriod, reopenBooksPeriod } from "@/server/books/periods";
+import { lockBooksPeriod, priorPeriodLockState, reopenBooksPeriod } from "@/server/books/periods";
 import { queryPlaceOfSupplyGaps } from "@/server/books/place-of-supply";
 import { booksTrialBalance } from "@/server/books/trial-balance";
+import { booksAdvancesPanel } from "@/server/books/advances-panel";
+import {
+  booksCtAccrualPreview,
+  ctAccrualGateFromAmounts,
+} from "@/server/books/ct-accrual";
+import { loanInterestGateState } from "@/server/books/loans";
 import { generateVat201Draft } from "@/server/books/vat201";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
@@ -38,6 +44,14 @@ export const CLOSE_GATE_KEYS = [
   "missing_documents",
   "depreciation",
   "fx_revaluation",
+  "prepaid_release",
+  "ct_accrual",
+  "salaries_payable",
+  "advances_drift",
+  "eosb_provision",
+  "loan_interest",
+  "staff_advances",
+  "prior_period_locked",
 ] as const;
 
 export type CloseGateKey = (typeof CLOSE_GATE_KEYS)[number];
@@ -241,6 +255,18 @@ export async function getBooksCloseChecklist(
     const end = iso(periodRow.rows[0].period_end);
     const waivers = await loadWaivers(db, clientId, periodId);
 
+    // D2: prior month in the same fiscal year must be LOCKED (or this is books-start / FY first).
+    const priorLock = await priorPeriodLockState(db, clientId, periodId);
+    const priorPeriodLockedGate: CloseGate = {
+      key: "prior_period_locked",
+      label: "Prior period locked (sequential)",
+      status: priorLock.ok ? "pass" : "fail",
+      blocking: true,
+      count: priorLock.ok ? 0 : 1,
+      href: "/books/close",
+      detail: priorLock.detail,
+    };
+
     // 1. Statements — only accounts that require coverage (set up + activity/balance).
     const requiredStmt = month.statements.accounts.filter((a) => a.requiresStatement);
     const uncovered = requiredStmt.filter(
@@ -401,6 +427,27 @@ export async function getBooksCloseChecklist(
       detail: dueN === 0 ? "Nothing due in this period" : `${dueN} still unposted`,
     };
 
+    const prepaidPending = await db.query(
+      `SELECT COUNT(*)::int AS n FROM books_prepaid_schedules
+       WHERE client_id = $1
+         AND status IN ('pending', 'blocked')
+         AND release_date BETWEEN $2::date AND $3::date`,
+      [clientId, start, end],
+    );
+    const prepaidN = Number(prepaidPending.rows[0].n);
+    const prepaidReleaseGate: CloseGate = {
+      key: "prepaid_release",
+      label: "Prepaid expense amortisation posted",
+      status: prepaidN === 0 ? "pass" : "fail",
+      blocking: true,
+      count: prepaidN,
+      href: "/books/purchases",
+      detail:
+        prepaidN === 0
+          ? "No pending prepaid releases in this period"
+          : `${prepaidN} prepaid release(s) still pending or blocked`,
+    };
+
     // 6b. Unposted drafts — draft / scheduled journals dated inside the period that the scheduled
     // gate above does not already count (a draft dated 25/05 must not slip past a May lock).
     // The year-end closing draft is excluded: its two-step post (year-end.ts) needs this checklist
@@ -484,7 +531,7 @@ export async function getBooksCloseChecklist(
           status: "pass",
           blocking: true,
           count: 0,
-          href: "/books/reports/trial-balance",
+          href: "/books/reports/vat201",
           detail: "Not a VAT period end",
         };
       } else {
@@ -524,7 +571,7 @@ export async function getBooksCloseChecklist(
           status: fail ? "fail" : "pass",
           blocking: true,
           count: gaps.length + (draftOk ? 0 : 1),
-          href: "/books/settings",
+          href: "/books/reports/vat201",
           detail: [
             gaps.length ? `${gaps.length} place-of-supply gap(s)` : null,
             detail || null,
@@ -622,7 +669,149 @@ export async function getBooksCloseChecklist(
       detail: fxState.detail,
     };
 
+    let ctAccrualGate: CloseGate;
+    try {
+      // Leave nested withUser via preview (same pattern as VAT draft inside this checklist).
+      const ctPrev = await booksCtAccrualPreview(userId, clientId, periodId);
+      const ctState = ctAccrualGateFromAmounts({
+        estimateMinor: ctPrev.estimateMinor,
+        bookedPayableMinor: ctPrev.bookedPayableMinor,
+        isFiscalYearEnd: ctPrev.isFiscalYearEnd,
+        noTaxDueRecorded: ctPrev.noTaxDueRecorded,
+      });
+      ctAccrualGate = {
+        key: "ct_accrual",
+        label: "Corporate tax accrual (estimate vs 2230)",
+        status: ctState.status,
+        blocking: ctState.blocking,
+        count: ctState.count,
+        href: ctState.href,
+        detail: ctState.detail,
+      };
+    } catch (err) {
+      ctAccrualGate = {
+        key: "ct_accrual",
+        label: "Corporate tax accrual (estimate vs 2230)",
+        status: "fail",
+        blocking: true,
+        count: 1,
+        href: "/books/journals",
+        detail: err instanceof Error ? err.message : "ct_accrual_failed",
+      };
+    }
+
+    // Info only: unpaid salaries sitting on 2330 (payroll accrued, not yet paid).
+    const salariesNet = closingNetMinor(tb, "2330");
+    const salariesPayableMinor = Math.max(0, -salariesNet);
+    const salariesPayableGate: CloseGate = {
+      key: "salaries_payable",
+      label: "Unpaid salaries (2330)",
+      status: salariesPayableMinor === 0 ? "pass" : "info",
+      blocking: false,
+      count: salariesPayableMinor === 0 ? 0 : 1,
+      href: "/books/journals",
+      detail:
+        salariesPayableMinor === 0
+          ? "No salaries payable balance"
+          : balanceText(tb, "2330", salariesNet),
+      balanceMinor: salariesPayableMinor || undefined,
+    };
+
+    let advancesDriftGate: CloseGate;
+    try {
+      const adv = await booksAdvancesPanel(userId, clientId);
+      advancesDriftGate = {
+        key: "advances_drift",
+        label: "Customer advances 2320 vs subledger",
+        status: adv.drift ? "info" : "pass",
+        blocking: false,
+        count: adv.drift ? 1 : 0,
+        href: "/books/advances",
+        detail: adv.drift
+          ? `GL ${formatMoneyAmount({ amountMinor: adv.gl2320CreditMinor })} vs subledger ${formatMoneyAmount({ amountMinor: adv.subledgerAedMinor })} (gap ${formatMoneyAmount({ amountMinor: adv.driftMinor })})`
+          : "2320 matches party advances",
+        balanceMinor: adv.drift ? Math.abs(adv.driftMinor) : undefined,
+      };
+    } catch {
+      advancesDriftGate = {
+        key: "advances_drift",
+        label: "Customer advances 2320 vs subledger",
+        status: "info",
+        blocking: false,
+        count: 1,
+        href: "/books/advances",
+        detail: "Could not compute advances tie-out",
+      };
+    }
+
+    // Info: EOSB provision (2410) had no posted movement this period while salaries expense did.
+    const eosbMove = await db.query(
+      `SELECT COALESCE(SUM(ABS(l.debit_minor) + ABS(l.credit_minor)), 0)::bigint AS n
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_accounts a ON a.id = l.account_id
+       WHERE e.client_id = $1 AND e.status IN ('posted','reversed') AND e.deleted_at IS NULL
+         AND e.entry_date BETWEEN $2::date AND $3::date
+         AND a.client_id = $1 AND a.code = '2410'`,
+      [clientId, start, end],
+    );
+    const payrollExp = await db.query(
+      `SELECT COALESCE(SUM(l.debit_minor), 0)::bigint AS n
+       FROM books_journal_lines l
+       JOIN books_journal_entries e ON e.id = l.entry_id
+       JOIN books_accounts a ON a.id = l.account_id
+       WHERE e.client_id = $1 AND e.status IN ('posted','reversed') AND e.deleted_at IS NULL
+         AND e.entry_date BETWEEN $2::date AND $3::date
+         AND a.client_id = $1 AND a.code IN ('6100','6110')`,
+      [clientId, start, end],
+    );
+    const eosbMoved = Number(eosbMove.rows[0].n) > 0;
+    const hadPayroll = Number(payrollExp.rows[0].n) > 0;
+    const eosbStale = hadPayroll && !eosbMoved;
+    const eosbProvisionGate: CloseGate = {
+      key: "eosb_provision",
+      label: "EOSB provision (2410)",
+      status: eosbStale ? "info" : "pass",
+      blocking: false,
+      count: eosbStale ? 1 : 0,
+      href: "/books/journals",
+      detail: eosbStale
+        ? "Salaries posted this period but 2410 had no movement — consider Create Entry → EOSB accrual"
+        : eosbMoved
+          ? "2410 moved this period"
+          : "No payroll expense this period",
+    };
+
+    const loanState = await loanInterestGateState(db, clientId, periodId, start, end);
+    const loanInterestGate: CloseGate = {
+      key: "loan_interest",
+      label: "Loan interest accrual",
+      status: loanState.status,
+      blocking: true,
+      count: loanState.count,
+      href: "/books/loans",
+      detail: loanState.detail,
+    };
+
+    // Info: outstanding employee advances on 1230.
+    const staffNet = closingNetMinor(tb, "1230");
+    const staffAdvanceMinor = Math.max(0, staffNet);
+    const staffAdvancesGate: CloseGate = {
+      key: "staff_advances",
+      label: "Employee advances (1230)",
+      status: staffAdvanceMinor === 0 ? "pass" : "info",
+      blocking: false,
+      count: staffAdvanceMinor === 0 ? 0 : 1,
+      href: "/books/journals",
+      detail:
+        staffAdvanceMinor === 0
+          ? "No employee advances outstanding"
+          : balanceText(tb, "1230", staffNet),
+      balanceMinor: staffAdvanceMinor || undefined,
+    };
+
     const gates = [
+      priorPeriodLockedGate,
       statements,
       bankLines,
       bankRecon,
@@ -630,6 +819,7 @@ export async function getBooksCloseChecklist(
       clearingGateway,
       clearingInfo,
       scheduledGate,
+      prepaidReleaseGate,
       unpostedDrafts,
       inboxUnreviewed,
       vatGate,
@@ -637,6 +827,12 @@ export async function getBooksCloseChecklist(
       missingDocuments,
       depreciation,
       fx,
+      ctAccrualGate,
+      salariesPayableGate,
+      advancesDriftGate,
+      eosbProvisionGate,
+      loanInterestGate,
+      staffAdvancesGate,
     ].map((g) => applyWaiver(g, waivers));
 
     const failing = gates

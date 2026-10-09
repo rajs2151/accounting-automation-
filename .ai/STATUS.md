@@ -2,8 +2,22 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **2nd-review Phase 3** (coverage audit) closed — report only; waiting owner pick of ranked slices + D1–D3
-- 2026-10-09: **2nd-review Phase 3** (report only; no code/migration for matrix)
+- Current task: **Phase 3** — ranks **1–10** + **D1/D2/D3** built; ranks 11–16 deferred
+- 2026-10-09: **D3** VAT 201 settlement JV — Prepare draft from `/books/reports/vat201` (Dr 2210 / Cr 1430 → 2220); `db/69-books-vat201-settlements.sql`; idempotent per tax window
+  - **Migration:** `db/69-books-vat201-settlements.sql` (apply local/dev)
+- 2026-10-09: **D1** VAT on customer advances — taxable split net 2320 + VAT 2210; apply reverses VAT; `db/68-books-advance-vat.sql`
+- 2026-10-09: **D2** Sequential period lock — `prior_period_locked` gate + lock refuses unless prior FY month LOCKED
+- 2026-10-09: **Phase 3 rank 10** — Staff advance templates (1230 pay + recovery); close info gate `staff_advances`
+- 2026-10-09: **Phase 3 rank 9** — `books_loans` (`db/67`), `/books/loans`, run interest (Dr 7400 / Cr 2420 drafts); close gate `loan_interest`
+  - **Migration:** `db/67-books-loans.sql` (apply local/dev)
+- 2026-10-09: **Phase 3 rank 8** — EOSB accrual template (Dr 6110 / Cr 2410); close info gate `eosb_provision`
+- 2026-10-09: **Phase 3 rank 7** — Bad debt write-off: prepare/post (Dr 4900 / Cr 1210 + open item); ageing AR panel; template `bad_debt`
+- 2026-10-09: **Phase 3 rank 6** — `/books/advances` panel (2320 + deferred schedules) + info gate `advances_drift`
+- 2026-10-09: **Phase 3 rank 5** — Payroll template Cr **2330** (was 2120); close info gate `salaries_payable`
+- 2026-10-09: **Phase 3 rank 4** — CT accrual draft: Create Entry `ct_accrual` + `GET /api/books/ct-accrual` (Dr 8100 / Cr 2230 top-up from estimate); close gate `ct_accrual` (blocking at FY end)
+- 2026-10-09: **Phase 3 rank 1** — `books_prepaid_schedules`, job `prepaid_release`, purchase service-period → 1410 + monthly release, close gate `prepaid_release`
+  - **Migration:** `db/66-books-prepaid-schedules.sql` (apply local/dev; tests pick up all `db/*.sql`)
+- 2026-10-09: **2nd-review Phase 3** (coverage audit report)
   - DONE: COA groups + Exists/Partial/Missing matrix + ranked minimal designs for UAE service SME
   - DONE: written proposals D1 VAT advances, D2 sequential period lock, D3 VAT201 settlement generator
   - DONE: inbox retry UX — extracting shell keeps PDF + spinner (no blank page)
@@ -13,8 +27,21 @@
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 13 | COA + coverage matrix | done (report) | See doc §A–B |
-| 14 | Minimal designs + rank | done (report) | See doc §C — wait for approval before build |
-| — | D1/D2/D3 proposals | needs decision | Advances VAT; sequential lock; VAT201 post JV |
+| 14 | Minimal designs + rank | ranks 1–10 done | Ranks 11–16 deferred for service SME |
+| 14a | Rank 1 prepaid amortisation | done | `66-books-prepaid-schedules.sql`; Dr opex / Cr 1410 job |
+| 14b | Rank 2 income accrual template | done | Journals Create Entry — Dr 1210 / Cr 4100 + auto-reverse |
+| 14c | Rank 3 VAT 201 report page | done | `/books/reports/vat201` draft UI; close gate links there |
+| 14d | Rank 4 CT accrual draft | done | `ct-accrual` preview + template + close gate vs 2230 |
+| 14e | Rank 5 payroll Cr 2330 | done | Template + info gate `salaries_payable` |
+| 14f | Rank 6 advances panel | done | `/books/advances` + `advances_drift` info gate |
+| 14g | Rank 7 bad debt write-off | done | prepare/post + ageing panel; closes open item |
+| 14h | Rank 8 EOSB accrual | done | Template + info gate `eosb_provision` |
+| 14i | Rank 9 loan interest | done | `67-books-loans.sql` + `/books/loans` + gate |
+| 14j | Rank 10 staff advances | done | Templates + info gate `staff_advances` |
+| — | FA Add asset dialog | done | Select labels via items map; responsive grid (overlap fix) |
+| — | D1 VAT on advances | done | `68-books-advance-vat.sql`; split + apply reverse |
+| — | D2 sequential lock | done | Gate `prior_period_locked` + lock API check |
+| — | D3 VAT201 settlement JV | done | `69-books-vat201-settlements.sql`; prepare draft + dual-control post |
 
 - 2026-10-08: **2nd-review Phase 2** (no migration; no RLS)
   - DONE: dashboard documents-to-review SoT + filtered hrefs (`inbox-classify`); Inbox confidence/type/dupes/tooltips
@@ -305,12 +332,12 @@
 5. Optional: 1440/1920 screenshot harness; Textract/external OCR-LLM (blocked until signed production security PASS)
 
 ## Known issues / open decisions
-- **VAT on customer advances (2nd-review item 5):** propose — on unmatched receipt Cr 2320 net + Cr 2210 VAT (gross÷1.05) when party taxable; store VAT on advance; reverse into invoice apply without double-count. **Do not build until approved.** Today: gross → 2320 only + memo flag.
-- **Period lock order (2nd-review item 4):** propose — require prior month LOCKED before locking month N (same fiscal year); unlock of N invalidates readiness of N+1 until re-locked. **Not enforced yet.**
-- **VAT return posting generator** (Phase 2 item 9): pending owner review — seed JV + draft VAT201 + warn on manual settlement only; do not auto-post from return until approved.
+- **VAT on customer advances (D1):** built — taxable UAE customers split net/VAT; apply reverses 2210.
+- **Period lock order (D2):** built — sequential lock within FY + `prior_period_locked` close gate.
+- **VAT return posting generator (D3):** pending owner review — seed JV + draft VAT201 + warn on manual settlement only; do not auto-post from return until approved.
 - Test (VERIFY-S1-FIX1 review): approver least-privilege test does not first prove Layla can SELECT the rows before showing DELETE/UPDATE change 0 rows - add a row-count check in a later task.
 - Company A month-1 golden is PROVISIONAL - owner to supply hand-computed values (Claude offered to prepare).
-- VAT on customer advances: policy TBD (not implemented).
+- VAT on customer advances: D1 built (taxable split + apply reverse).
 - Expense receipt threshold: NULL until owner sets (do not invent default).
 - Real reference file docs/reference/outputs/*.xlsx is gitignored; only anonymised copies may be committed.
 - Pending inputs: brand hex + font; B/C opening balances.

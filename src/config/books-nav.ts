@@ -29,6 +29,7 @@ export const BOOKS_NAV_GROUPS: BooksNavGroupDef[] = [
       { href: "/books/purchases", label: "Purchases" },
       { href: "/books/expenses", label: "Expenses" },
       { href: "/books/receipts", label: "Receipts & payments" },
+      { href: "/books/advances", label: "Advances & deferred" },
       { href: "/books/parties", label: "Customers & suppliers" },
     ],
   },
@@ -44,6 +45,7 @@ export const BOOKS_NAV_GROUPS: BooksNavGroupDef[] = [
     items: [
       { href: "/books/journals", label: "Journals" },
       { href: "/books/fixed-assets", label: "Fixed assets" },
+      { href: "/books/loans", label: "Loans" },
       { href: "/books/close", label: "Close" },
       { href: "/books/reports/trial-balance", label: "Reports", also: ["/books/reports"] },
       // Phase 7 product; keep route but mark Soon so it is not mistaken for finished scope.
@@ -61,6 +63,7 @@ export const REPORT_TABS = [
   { href: "/books/reports/day-book", label: "Day book", key: "daybook" },
   { href: "/books/reports/ageing?side=ar", label: "Receivables ageing", key: "ar" },
   { href: "/books/reports/ageing?side=ap", label: "Payables ageing", key: "ap" },
+  { href: "/books/reports/vat201", label: "VAT 201", key: "vat201" },
 ] as const;
 
 export type ReportTabKey = (typeof REPORT_TABS)[number]["key"];

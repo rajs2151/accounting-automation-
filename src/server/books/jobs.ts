@@ -10,7 +10,8 @@ export type BooksJobKind =
   | "auto_reverse"
   | "extract_document"
   | "classify_document"
-  | "deferred_release";
+  | "deferred_release"
+  | "prepaid_release";
 
 export async function enqueueBooksJob(
   db: PoolClient,

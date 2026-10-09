@@ -107,6 +107,8 @@ def run_books_job(conn, job: dict) -> None:
                 _auto_reverse(conn, job)
             elif kind == "deferred_release":
                 _deferred_release(conn, job)
+            elif kind == "prepaid_release":
+                _prepaid_release(conn, job)
             else:
                 raise ValueError(f"unknown_books_job:{kind}")
         conn.execute(
@@ -584,6 +586,101 @@ def _deferred_release(conn, job: dict) -> None:
     conn.execute(
         """
         UPDATE books_deferred_schedules
+        SET status = 'posted', journal_entry_id = %s WHERE id = %s
+        """,
+        (entry_id, schedule_id),
+    )
+
+
+def _prepaid_release(conn, job: dict) -> None:
+    """Amortise prepaid expense: Dr expense / Cr 1410 for a schedule row."""
+    p = _payload(job)
+    schedule_id = p.get("scheduleId") or p.get("schedule_id")
+    if not schedule_id:
+        raise ValueError("scheduleId_required")
+    sched = conn.execute(
+        """
+        SELECT s.*, p.status AS period_status
+        FROM books_prepaid_schedules s
+        LEFT JOIN books_periods p ON p.id = s.period_id
+        WHERE s.id = %s
+        """,
+        (schedule_id,),
+    ).fetchone()
+    if not sched:
+        raise ValueError("schedule_not_found")
+    if sched["status"] != "pending":
+        return
+    if sched.get("period_status") == "LOCKED":
+        conn.execute(
+            "UPDATE books_prepaid_schedules SET status = 'blocked' WHERE id = %s",
+            (schedule_id,),
+        )
+        return
+    prepaid = conn.execute(
+        "SELECT id FROM books_accounts WHERE client_id = %s AND code = '1410'",
+        (sched["client_id"],),
+    ).fetchone()
+    if not prepaid:
+        raise ValueError("prepaid_account_missing")
+    amount = int(sched["amount_aed_minor"])
+    entry_id = str(uuid4())
+    period_id = sched["period_id"]
+    actor = _actor_from_job(conn, job)
+    conn.execute(
+        """
+        INSERT INTO books_journal_entries (
+          id, client_id, period_id, memo, entry_date, status, content_hash,
+          created_by, voucher_type
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,%s,'Journal')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            period_id,
+            "Prepaid expense amortisation",
+            sched["release_date"],
+            "prepaid-release",
+            actor,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_journal_lines (
+          entry_id, client_id, account_id, debit_minor, credit_minor, currency, aed_minor, line_memo
+        ) VALUES
+          (%s,%s,%s,%s,0,'AED',%s,'Amortise prepaid'),
+          (%s,%s,%s,0,%s,'AED',%s,'Release prepaid asset')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            sched["expense_account_id"],
+            amount,
+            amount,
+            entry_id,
+            sched["client_id"],
+            prepaid["id"],
+            amount,
+            amount,
+        ),
+    )
+    year = int(str(sched["release_date"])[:4])
+    entry_no = conn.execute(
+        "SELECT books_next_voucher_no(%s::uuid, 'Journal', %s::int) AS n",
+        (sched["client_id"], year),
+    ).fetchone()["n"]
+    conn.execute(
+        """
+        UPDATE books_journal_entries
+        SET status = 'posted', posted_at = now(), entry_no = %s
+        WHERE id = %s
+        """,
+        (entry_no, entry_id),
+    )
+    conn.execute(
+        """
+        UPDATE books_prepaid_schedules
         SET status = 'posted', journal_entry_id = %s WHERE id = %s
         """,
         (entry_id, schedule_id),

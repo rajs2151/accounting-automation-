@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import type { PoolClient } from "pg";
 
+import {
+  netFromGrossAdvanceMinor,
+  partyIsUaeTaxableForAdvance,
+  splitAdvanceApply,
+  vatFromGrossAdvanceMinor,
+} from "@/lib/advance-vat";
 import { withUser } from "@/lib/db";
 import { aedFromOriginal } from "@/lib/fx";
 import { writeBooksAudit } from "@/server/books/audit";
@@ -157,10 +163,15 @@ async function prepareSettlementInTx(db: PoolClient, clientId: string, body: Rec
   }
   {
     const party = await db.query(
-      `SELECT id FROM books_parties WHERE id = $1 AND client_id = $2`,
+      `SELECT id, trn, country, zone FROM books_parties WHERE id = $1 AND client_id = $2`,
       [body.partyId, clientId],
     );
     if (!party.rowCount) throw new BooksError("party_not_found", "not_found");
+    const partyTaxable = partyIsUaeTaxableForAdvance({
+      trn: party.rows[0].trn as string | null,
+      country: party.rows[0].country as string | null,
+      zone: party.rows[0].zone as string | null,
+    });
     await accountCode(db, clientId, body.bankAccountId);
 
     let allocOrigSum = 0;
@@ -259,6 +270,11 @@ async function prepareSettlementInTx(db: PoolClient, clientId: string, body: Rec
         clientId,
       ])
     ).rows[0].id as string;
+    const vatOut = (
+      await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '2210'`, [
+        clientId,
+      ])
+    ).rows[0].id as string;
     const prepaid = (
       await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1410'`, [
         clientId,
@@ -280,6 +296,10 @@ async function prepareSettlementInTx(db: PoolClient, clientId: string, body: Rec
       aedMinor?: number;
       lineMemo?: string;
     }> = [];
+
+    // D1: set on taxable customer receipt advances (net → 2320, VAT → 2210).
+    let advanceNetOrig = 0;
+    let advanceVatOrig = 0;
 
     if (body.docType === "receipt") {
       lines.push({
@@ -318,21 +338,43 @@ async function prepareSettlementInTx(db: PoolClient, clientId: string, body: Rec
           lineMemo: "Settle AR",
         });
       }
+      // D1: taxable UAE customer → split gross advance into net (2320) + VAT (2210).
+      advanceNetOrig = unallocatedOrig;
+      advanceVatOrig = 0;
       if (unallocatedOrig > 0) {
-        const advAed = aedFromOriginal(unallocatedOrig, fxRateScaled);
-        // Owner decision open: VAT on customer advances — never invent VAT here.
-        lines.push({
-          accountId: advances,
-          creditMinor: advAed,
-          currency,
-          originalMinor: unallocatedOrig,
-          fxRateScaled,
-          aedMinor: advAed,
-          lineMemo:
-            remainderKind === "on_account"
-              ? "On account (VAT on advances TBD — owner)"
-              : "Customer advance (VAT on advances TBD — owner)",
-        });
+        if (partyTaxable) {
+          advanceVatOrig = vatFromGrossAdvanceMinor(unallocatedOrig);
+          advanceNetOrig = netFromGrossAdvanceMinor(unallocatedOrig);
+        }
+        const netAed = aedFromOriginal(advanceNetOrig, fxRateScaled);
+        const vatAed = aedFromOriginal(advanceVatOrig, fxRateScaled);
+        if (advanceNetOrig > 0) {
+          lines.push({
+            accountId: advances,
+            creditMinor: netAed,
+            currency,
+            originalMinor: advanceNetOrig,
+            fxRateScaled,
+            aedMinor: netAed,
+            lineMemo:
+              remainderKind === "on_account"
+                ? "On account (net)"
+                : advanceVatOrig > 0
+                  ? "Customer advance (net)"
+                  : "Customer advance",
+          });
+        }
+        if (advanceVatOrig > 0) {
+          lines.push({
+            accountId: vatOut,
+            creditMinor: vatAed,
+            currency,
+            originalMinor: advanceVatOrig,
+            fxRateScaled,
+            aedMinor: vatAed,
+            lineMemo: "VAT on customer advance",
+          });
+        }
       }
       if (fxGainLoss !== 0) {
         if (fxGainLoss > 0) {
@@ -435,6 +477,8 @@ async function prepareSettlementInTx(db: PoolClient, clientId: string, body: Rec
       lines,
       allocDetails,
       unallocatedOrig,
+      advanceNetOrig,
+      advanceVatOrig,
       remainderKind: remainderKind || (legacyUnallocated > 0 ? "advance" : null),
       trackPartyAdvance: body.docType === "receipt" && unallocatedOrig > 0,
       aedTotal,
@@ -552,15 +596,23 @@ export async function createReceiptOrPayment(
     }
 
     if (prepared.trackPartyAdvance && prepared.unallocatedOrig > 0) {
-      const advAed = aedFromOriginal(prepared.unallocatedOrig, prepared.fxRateScaled);
+      const netOrig = prepared.advanceNetOrig;
+      const vatOrig = prepared.advanceVatOrig;
+      const netAed = aedFromOriginal(netOrig, prepared.fxRateScaled);
+      const vatAed = aedFromOriginal(vatOrig, prepared.fxRateScaled);
       await db.query(
-        `INSERT INTO books_party_advances (client_id, party_id, currency, balance_original_minor, balance_aed_minor)
-         VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO books_party_advances (
+           client_id, party_id, currency,
+           balance_original_minor, balance_aed_minor,
+           vat_original_minor, vat_aed_minor
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (client_id, party_id, currency) DO UPDATE SET
            balance_original_minor = books_party_advances.balance_original_minor + EXCLUDED.balance_original_minor,
            balance_aed_minor = books_party_advances.balance_aed_minor + EXCLUDED.balance_aed_minor,
+           vat_original_minor = books_party_advances.vat_original_minor + EXCLUDED.vat_original_minor,
+           vat_aed_minor = books_party_advances.vat_aed_minor + EXCLUDED.vat_aed_minor,
            updated_at = now()`,
-        [clientId, body.partyId, prepared.currency, prepared.unallocatedOrig, advAed],
+        [clientId, body.partyId, prepared.currency, netOrig, netAed, vatOrig, vatAed],
       );
     }
 
@@ -588,8 +640,11 @@ export async function getPartyAdvanceBalance(
     await assertSyntheticTenant(db, clientId);
     const cur = currency.toUpperCase();
     const row = await db.query(
-      `SELECT balance_original_minor AS "balanceOriginalMinor",
-              balance_aed_minor AS "balanceAedMinor", currency
+      `SELECT balance_original_minor AS "balanceNetOriginalMinor",
+              balance_aed_minor AS "balanceNetAedMinor",
+              COALESCE(vat_original_minor, 0) AS "vatOriginalMinor",
+              COALESCE(vat_aed_minor, 0) AS "vatAedMinor",
+              currency
        FROM books_party_advances
        WHERE client_id = $1 AND party_id = $2 AND currency = $3`,
       [clientId, partyId, cur],
@@ -598,22 +653,35 @@ export async function getPartyAdvanceBalance(
       return {
         partyId,
         currency: cur,
+        /** Gross available to apply (net + VAT) — keeps apply-advance UI compatible. */
         balanceOriginalMinor: 0,
         balanceAedMinor: 0,
+        balanceNetOriginalMinor: 0,
+        balanceNetAedMinor: 0,
+        vatOriginalMinor: 0,
+        vatAedMinor: 0,
       };
     }
+    const netOrig = Number(row.rows[0].balanceNetOriginalMinor);
+    const netAed = Number(row.rows[0].balanceNetAedMinor);
+    const vatOrig = Number(row.rows[0].vatOriginalMinor);
+    const vatAed = Number(row.rows[0].vatAedMinor);
     return {
       partyId,
       currency: cur,
-      balanceOriginalMinor: Number(row.rows[0].balanceOriginalMinor),
-      balanceAedMinor: Number(row.rows[0].balanceAedMinor),
+      balanceOriginalMinor: netOrig + vatOrig,
+      balanceAedMinor: netAed + vatAed,
+      balanceNetOriginalMinor: netOrig,
+      balanceNetAedMinor: netAed,
+      vatOriginalMinor: vatOrig,
+      vatAedMinor: vatAed,
     };
   });
 }
 
 /**
- * Apply an existing 2320 customer advance to an open AR invoice later
- * (Dr 2320 / Cr 1210; reduce books_party_advances; allocate open item).
+ * Apply an existing customer advance to an open AR invoice later.
+ * D1: Dr 2320 net + Dr 2210 VAT (if any) / Cr 1210 gross — reverses advance VAT so output is not double-counted.
  */
 export async function allocatePartyAdvance(
   preparerId: string,
@@ -624,6 +692,7 @@ export async function allocatePartyAdvance(
     openItemId: string;
     periodId: string;
     issueDate: string;
+    /** Gross amount to apply (net + VAT), fils. */
     amountOriginalMinor: number;
     currency?: string;
   },
@@ -636,15 +705,25 @@ export async function allocatePartyAdvance(
   const prepared = await withUser(preparerId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const adv = await db.query(
-      `SELECT balance_original_minor, balance_aed_minor
+      `SELECT balance_original_minor, balance_aed_minor,
+              COALESCE(vat_original_minor, 0) AS vat_original_minor,
+              COALESCE(vat_aed_minor, 0) AS vat_aed_minor
        FROM books_party_advances
        WHERE client_id = $1 AND party_id = $2 AND currency = $3`,
       [clientId, body.partyId, currency],
     );
     if (!adv.rowCount) throw new BooksError("advance_not_found", "not_found");
-    if (body.amountOriginalMinor > Number(adv.rows[0].balance_original_minor)) {
+    const remNet = Number(adv.rows[0].balance_original_minor);
+    const remVat = Number(adv.rows[0].vat_original_minor);
+    const remGross = remNet + remVat;
+    if (body.amountOriginalMinor > remGross) {
       throw new BooksError("advance_insufficient", "invalid");
     }
+    const split = splitAdvanceApply({
+      applyGrossOriginalMinor: body.amountOriginalMinor,
+      remainingNetOriginalMinor: remNet,
+      remainingVatOriginalMinor: remVat,
+    });
     const oi = await db.query(
       `SELECT id, open_original_minor, open_aed_minor, fx_rate_scaled, side, party_id
        FROM books_open_items WHERE id = $1 AND client_id = $2`,
@@ -659,7 +738,9 @@ export async function allocatePartyAdvance(
       throw new BooksError("allocation_exceeds_open", "invalid");
     }
     const invoiceFx = Number(oi.rows[0].fx_rate_scaled);
-    const aed = aedFromOriginal(body.amountOriginalMinor, invoiceFx);
+    const grossAed = aedFromOriginal(body.amountOriginalMinor, invoiceFx);
+    const netAed = aedFromOriginal(split.netOriginalMinor, invoiceFx);
+    const vatAed = aedFromOriginal(split.vatOriginalMinor, invoiceFx);
     const ar = (
       await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '1210'`, [
         clientId,
@@ -670,7 +751,64 @@ export async function allocatePartyAdvance(
         clientId,
       ])
     ).rows[0].id as string;
-    return { aed, ar, advances, invoiceFx };
+    const vatOut = (
+      await db.query(`SELECT id FROM books_accounts WHERE client_id = $1 AND code = '2210'`, [
+        clientId,
+      ])
+    ).rows[0].id as string;
+    return {
+      grossAed,
+      netAed,
+      vatAed,
+      netOrig: split.netOriginalMinor,
+      vatOrig: split.vatOriginalMinor,
+      ar,
+      advances,
+      vatOut,
+      invoiceFx,
+    };
+  });
+
+  const lines: Array<{
+    accountId: string;
+    debitMinor?: number;
+    creditMinor?: number;
+    currency?: string;
+    originalMinor?: number;
+    fxRateScaled?: number;
+    aedMinor?: number;
+    lineMemo?: string;
+  }> = [];
+  if (prepared.netOrig > 0) {
+    lines.push({
+      accountId: prepared.advances,
+      debitMinor: prepared.netAed,
+      currency,
+      originalMinor: prepared.netOrig,
+      fxRateScaled: prepared.invoiceFx,
+      aedMinor: prepared.netAed,
+      lineMemo: "Apply advance (net)",
+    });
+  }
+  if (prepared.vatOrig > 0) {
+    lines.push({
+      accountId: prepared.vatOut,
+      debitMinor: prepared.vatAed,
+      currency,
+      originalMinor: prepared.vatOrig,
+      fxRateScaled: prepared.invoiceFx,
+      aedMinor: prepared.vatAed,
+      lineMemo: "Reverse VAT on advance",
+    });
+  }
+  lines.push({
+    accountId: prepared.ar,
+    creditMinor: prepared.grossAed,
+    currency,
+    originalMinor: body.amountOriginalMinor,
+    fxRateScaled: prepared.invoiceFx,
+    aedMinor: prepared.grossAed,
+    lineMemo: "Settle AR from advance",
   });
 
   const journal = {
@@ -678,26 +816,7 @@ export async function allocatePartyAdvance(
     entryDate: body.issueDate,
     memo: "Allocate customer advance",
     voucherType: "Journal",
-    lines: [
-      {
-        accountId: prepared.advances,
-        debitMinor: prepared.aed,
-        currency,
-        originalMinor: body.amountOriginalMinor,
-        fxRateScaled: prepared.invoiceFx,
-        aedMinor: prepared.aed,
-        lineMemo: "Apply advance",
-      },
-      {
-        accountId: prepared.ar,
-        creditMinor: prepared.aed,
-        currency,
-        originalMinor: body.amountOriginalMinor,
-        fxRateScaled: prepared.invoiceFx,
-        aedMinor: prepared.aed,
-        lineMemo: "Settle AR from advance",
-      },
-    ],
+    lines,
   };
 
   return postSettlementJournal(preparerId, approverId, clientId, journal, async (db, journalEntryId) => {
@@ -710,7 +829,7 @@ export async function allocatePartyAdvance(
          original_total_minor, aed_total_minor, net_minor, vat_minor, gross_minor,
          memo, journal_entry_id, voucher_type, created_by, approved_by
        ) VALUES (
-         $1,$2,'receipt','posted',$3,$4,$5,$6,$7,$8,$7,0,$7,'Advance allocation',$9,'Journal',$10,$11
+         $1,$2,'receipt','posted',$3,$4,$5,$6,$7,$8,$9,$10,$7,'Advance allocation',$11,'Journal',$12,$13
        )`,
       [
         documentId,
@@ -720,7 +839,9 @@ export async function allocatePartyAdvance(
         currency,
         prepared.invoiceFx,
         body.amountOriginalMinor,
-        prepared.aed,
+        prepared.grossAed,
+        prepared.netOrig,
+        prepared.vatOrig,
         created.id,
         preparerId,
         approverId,
@@ -737,7 +858,7 @@ export async function allocatePartyAdvance(
         created.id,
         body.openItemId,
         body.amountOriginalMinor,
-        prepared.aed,
+        prepared.grossAed,
       ],
     );
     await applyAllocationToOpenItem(
@@ -745,17 +866,28 @@ export async function allocatePartyAdvance(
       body.openItemId,
       clientId,
       body.amountOriginalMinor,
-      prepared.aed,
+      prepared.grossAed,
     );
     // Guarded: two allocations racing on one advance must not drive the balance negative.
     const reduced = await db.query(
       `UPDATE books_party_advances
        SET balance_original_minor = balance_original_minor - $4,
            balance_aed_minor = balance_aed_minor - $5,
+           vat_original_minor = vat_original_minor - $6,
+           vat_aed_minor = vat_aed_minor - $7,
            updated_at = now()
        WHERE client_id = $1 AND party_id = $2 AND currency = $3
-         AND balance_original_minor >= $4`,
-      [clientId, body.partyId, currency, body.amountOriginalMinor, prepared.aed],
+         AND balance_original_minor >= $4
+         AND vat_original_minor >= $6`,
+      [
+        clientId,
+        body.partyId,
+        currency,
+        prepared.netOrig,
+        prepared.netAed,
+        prepared.vatOrig,
+        prepared.vatAed,
+      ],
     );
     if (!reduced.rowCount) throw new BooksError("advance_insufficient", "invalid");
     await writeBooksAudit(db, {
@@ -764,7 +896,13 @@ export async function allocatePartyAdvance(
       action: "allocate_advance",
       entity: "books_document",
       entityId: documentId,
-      after: { entryNo: posted.entryNo, openItemId: body.openItemId, preparedBy: preparerId },
+      after: {
+        entryNo: posted.entryNo,
+        openItemId: body.openItemId,
+        preparedBy: preparerId,
+        netOriginalMinor: prepared.netOrig,
+        vatOriginalMinor: prepared.vatOrig,
+      },
     });
 
     return { documentId, journalEntryId: created.id, entryNo: posted.entryNo };

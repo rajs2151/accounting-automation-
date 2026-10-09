@@ -393,6 +393,80 @@ test("unallocated receipt → 2320 advance", async (t) => {
   }
 });
 
+test("D1: taxable customer advance splits net 2320 + VAT 2210", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const vatCol = await admin.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'books_party_advances' AND column_name = 'vat_original_minor'`,
+    );
+    if (!vatCol.rowCount) {
+      t.skip("db/68 advance VAT columns not migrated");
+      return;
+    }
+    const company = await createTestCompany(admin, "d1-adv-vat");
+    const clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const trn = `100${String(Date.now()).slice(-10)}01`;
+    const party = await createBooksParty(OMAR, clientId, {
+      partyType: "customer",
+      name: `Taxable Adv ${Date.now()}`,
+      trn,
+      country: "AE",
+      zone: "mainland",
+      force: true,
+    });
+    const bank = accountId(company, "1120");
+    const result = await createReceiptOrPayment(OMAR, LAYLA, clientId, {
+      docType: "receipt",
+      partyId: party.id,
+      issueDate: "2026-05-16",
+      periodId,
+      bankAccountId: bank,
+      originalAmountMinor: 105_000,
+      allocations: [],
+    });
+    const lines = await admin.query(
+      `SELECT a.code, l.credit_minor FROM books_journal_lines l
+       JOIN books_accounts a ON a.id = l.account_id WHERE l.entry_id = $1`,
+      [result.journalEntryId],
+    );
+    const by = Object.fromEntries(lines.rows.map((r) => [String(r.code), Number(r.credit_minor)]));
+    assert.equal(by["2320"], 100_000);
+    assert.equal(by["2210"], 5_000);
+    const adv = await admin.query(
+      `SELECT balance_aed_minor, vat_aed_minor FROM books_party_advances
+       WHERE client_id = $1 AND party_id = $2`,
+      [clientId, party.id],
+    );
+    assert.equal(Number(adv.rows[0].balance_aed_minor), 100_000);
+    assert.equal(Number(adv.rows[0].vat_aed_minor), 5_000);
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
+test("D2: sequential period lock — June needs May locked", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  try {
+    const company = await createTestCompany(admin, "d2-seq-lock");
+    const may = company.periods["May 2026"];
+    const jun = company.periods["Jun 2026"];
+    assert.ok(may && jun);
+    await assert.rejects(
+      () => lockBooksPeriod(LAYLA, company.clientId, jun),
+      (e: unknown) => e instanceof BooksError && e.message === "prior_period_not_locked",
+    );
+    await lockBooksPeriod(LAYLA, company.clientId, may);
+    const locked = await lockBooksPeriod(LAYLA, company.clientId, jun);
+    assert.equal(locked.status, "LOCKED");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+});
+
 test("opening import rejected when first period locked", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
@@ -527,6 +601,54 @@ test("CN cannot exceed original remaining balance", async (t) => {
   }
 });
 
+test("prepaid amortisation schedule + blocked when target period locked", async (t) => {
+  const admin = await withAdmin(t);
+  if (!admin) return;
+  let junId = "";
+  let clientId = "";
+  try {
+    const company = await createTestCompany(admin, "phase1-prepaid");
+    clientId = company.clientId;
+    const periodId = mayPeriod(company);
+    const supplierId = await makeSupplier(clientId, `pre-${Date.now()}`);
+    junId = company.periods["Jun 2026"];
+    if (!junId) {
+      t.skip("Jun 2026 period missing");
+      return;
+    }
+    // Bypass sequential-lock API: this test only needs June locked for schedule blocking.
+    await admin.query(`UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`, [junId]);
+
+    const doc = await createBooksDocument(OMAR, clientId, {
+      docType: "purchase_bill",
+      partyId: supplierId,
+      issueDate: "2026-05-19",
+      periodId,
+      documentNumber: `PRE-${Date.now()}`,
+      serviceStart: "2026-05-01",
+      serviceEnd: "2026-06-30",
+      amortisePrepaid: true,
+      lines: [{ description: "Annual software", lineKind: "expense", vatCode: "SR", netMinor: 20000, vatMinor: 1000 }],
+    });
+    await approveAndPostBooksDocument(LAYLA, clientId, String(doc.id));
+    const sched = await admin.query(
+      `SELECT status, amount_aed_minor FROM books_prepaid_schedules
+       WHERE document_id = $1 ORDER BY release_date`,
+      [doc.id],
+    );
+    assert.ok(sched.rowCount && sched.rowCount >= 2);
+    assert.ok(sched.rows.some((r) => r.status === "pending" || r.status === "posted"));
+    assert.ok(sched.rows.some((r) => r.status === "blocked"));
+  } finally {
+    if (junId && clientId) {
+      await admin
+        .query(`UPDATE books_periods SET status = 'OPEN' WHERE id = $1`, [junId])
+        .catch(() => undefined);
+    }
+    await admin.end().catch(() => undefined);
+  }
+});
+
 test("deferred release schedule + blocked when target period locked", async (t) => {
   const admin = await withAdmin(t);
   if (!admin) return;
@@ -543,7 +665,8 @@ test("deferred release schedule + blocked when target period locked", async (t) 
       t.skip("Jun 2026 period missing");
       return;
     }
-    await lockBooksPeriod(LAYLA, clientId, String(junId));
+    // Bypass sequential-lock API: this test only needs June locked for schedule blocking.
+    await admin.query(`UPDATE books_periods SET status = 'LOCKED' WHERE id = $1`, [junId]);
 
     const doc = await createBooksDocument(OMAR, clientId, {
       docType: "sales_invoice",

@@ -342,6 +342,12 @@ test("5 audit one assertion per action", async (t) => {
     await reverseBooksJournal(LAYLA, clientId, draft.id, "2026-09-07", "phase0 reverse");
 
     const periodAuditId = periodId;
+    // D2: Sep is after seed Apr–Jun; lock priors via admin so this test stays about audit events.
+    await admin.query(
+      `UPDATE books_periods SET status = 'LOCKED'
+       WHERE client_id = $1 AND period_end < '2026-09-01' AND status <> 'LOCKED'`,
+      [clientId],
+    );
     await lockBooksPeriod(LAYLA, clientId, periodAuditId);
     await reopenBooksPeriod(LAYLA, clientId, periodAuditId, "audit unlock");
 

@@ -15,6 +15,8 @@ const MESSAGES: Record<string, string> = {
   waiver_dual_control: "Someone else must confirm this waiver — you requested it.",
   reopen_reason_required: "Give a reason when unlocking a period.",
   period_already_locked: "That period is already locked.",
+  prior_period_not_locked:
+    "Lock the previous month in this fiscal year first (periods must be locked in order).",
   not_draft: "Only draft documents can be changed or approved.",
   printed_totals_mismatch: "The totals do not match the printed totals on the document.",
   vat_exceeds_rate: "VAT is more than 5% of the taxable amount. Check the VAT lines.",
@@ -93,6 +95,14 @@ const MESSAGES: Record<string, string> = {
     "Set the company's establishment emirate in Settings before generating a VAT return.",
   invalid_vat_registration_status: "Choose a valid VAT registration status.",
   ct_settings_require_admin: "Only an admin can change corporate tax settings.",
+  ct_accounts_missing: "Corporate tax accounts 8100 and 2230 are missing from the chart of accounts.",
+  bad_debt_ar_only: "Bad debt write-off is only for customer (AR) open items.",
+  bad_debt_open_item_missing: "That journal is not a bad-debt write-off draft (missing open item link).",
+  loans_not_migrated: "Loan register is not set up yet — apply database migration 67.",
+  bad_loan_principal: "Enter a loan principal greater than zero.",
+  bad_loan_rate: "Enter a valid annual interest rate.",
+  open_item_not_open: "That open item is already closed.",
+  open_item_zero: "That open item has nothing left to write off.",
   manual_vat_control_journal:
     "This journal moves VAT control accounts (2210/1430/2220/1440). Prefer the VAT return flow when available — check the period and amounts carefully.",
   vat_return_range_required: "Choose a VAT period or a date range.",

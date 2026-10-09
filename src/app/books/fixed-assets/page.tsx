@@ -62,8 +62,6 @@ const COST_STATUS: Record<string, { label: string; tone: "success" | "warning" |
   unlinked: { label: "Cost not linked", tone: "danger" },
 };
 
-const optLabel = (o: Opt | undefined) => (o ? `${o.code} · ${o.name}` : "");
-
 type ScheduleLine = {
   monthIndex: number;
   periodLabelHint: string;
@@ -326,7 +324,7 @@ export default function BooksFixedAssetsPage() {
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Register fixed asset</DialogTitle>
           </DialogHeader>
@@ -335,7 +333,7 @@ export default function BooksFixedAssetsPage() {
               <Label htmlFor="fa-name">Name</Label>
               <Input id="fa-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label htmlFor="fa-cost">Cost (AED)</Label>
                 <Input
@@ -354,7 +352,7 @@ export default function BooksFixedAssetsPage() {
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label htmlFor="fa-svc">In service</Label>
                 <BooksDateInput
@@ -377,12 +375,8 @@ export default function BooksFixedAssetsPage() {
             <div className="grid gap-1">
               <Label>Asset account</Label>
               <Select value={assetAccountId || undefined} onValueChange={(v) => chooseAssetAccount(String(v ?? ""))}>
-                <SelectTrigger className="w-full" data-testid="fa-asset-account">
-                  <SelectValue placeholder="Choose asset account">
-                    {(v: string | null) =>
-                      optLabel(options?.assetAccounts.find((a) => a.id === v)) || "Choose asset account"
-                    }
-                  </SelectValue>
+                <SelectTrigger className="w-full min-w-0 max-w-full" data-testid="fa-asset-account">
+                  <SelectValue placeholder="Choose asset account" />
                 </SelectTrigger>
                 <SelectContent>
                   {(options?.assetAccounts || []).map((a) => (
@@ -393,16 +387,12 @@ export default function BooksFixedAssetsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid min-w-0 gap-1">
                 <Label>{chosenAsset?.subType === "ia" ? "Accum. amortisation" : "Accum. depreciation"}</Label>
                 <Select value={accumAccountId || undefined} onValueChange={(v) => setAccumAccountId(String(v ?? ""))}>
-                  <SelectTrigger className="w-full" data-testid="fa-accum-account">
-                    <SelectValue placeholder="Account">
-                      {(v: string | null) =>
-                        optLabel(options?.accumulatedAccounts.find((a) => a.id === v)) || "Account"
-                      }
-                    </SelectValue>
+                  <SelectTrigger className="w-full min-w-0 max-w-full" data-testid="fa-accum-account">
+                    <SelectValue placeholder="Account" />
                   </SelectTrigger>
                   <SelectContent>
                     {(options?.accumulatedAccounts || [])
@@ -418,12 +408,8 @@ export default function BooksFixedAssetsPage() {
               <div className="grid min-w-0 gap-1">
                 <Label>{chosenAsset?.subType === "ia" ? "Amortisation expense" : "Depreciation expense"}</Label>
                 <Select value={expenseAccountId || undefined} onValueChange={(v) => setExpenseAccountId(String(v ?? ""))}>
-                  <SelectTrigger className="w-full" data-testid="fa-expense-account">
-                    <SelectValue placeholder="Account">
-                      {(v: string | null) =>
-                        optLabel(options?.expenseAccounts.find((a) => a.id === v)) || "Account"
-                      }
-                    </SelectValue>
+                  <SelectTrigger className="w-full min-w-0 max-w-full" data-testid="fa-expense-account">
+                    <SelectValue placeholder="Account" />
                   </SelectTrigger>
                   <SelectContent>
                     {(options?.expenseAccounts || []).map((a) => (
@@ -452,12 +438,8 @@ export default function BooksFixedAssetsPage() {
               </label>
               {costSource === "draft" ? (
                 <Select value={creditAccountId || undefined} onValueChange={(v) => setCreditAccountId(String(v ?? ""))}>
-                  <SelectTrigger className="w-full" data-testid="fa-credit-account">
-                    <SelectValue placeholder="Paid from">
-                      {(v: string | null) =>
-                        optLabel(options?.creditAccounts.find((a) => a.id === v)) || "Paid from"
-                      }
-                    </SelectValue>
+                  <SelectTrigger className="w-full min-w-0 max-w-full" data-testid="fa-credit-account">
+                    <SelectValue placeholder="Paid from" />
                   </SelectTrigger>
                   <SelectContent>
                     {(options?.creditAccounts || []).map((a) => (
@@ -480,13 +462,8 @@ export default function BooksFixedAssetsPage() {
               </label>
               {costSource === "bill" ? (
                 <Select value={billId || undefined} onValueChange={(v) => setBillId(String(v ?? ""))}>
-                  <SelectTrigger className="w-full" data-testid="fa-source-bill">
-                    <SelectValue placeholder="Choose the bill">
-                      {(v: string | null) => {
-                        const b = bills.find((x) => x.id === v);
-                        return b ? `${b.documentNumber || "Bill"} · ${b.partyName || ""}` : "Choose the bill";
-                      }}
-                    </SelectValue>
+                  <SelectTrigger className="w-full min-w-0 max-w-full" data-testid="fa-source-bill">
+                    <SelectValue placeholder="Choose the bill" />
                   </SelectTrigger>
                   <SelectContent>
                     {bills.map((b) => (

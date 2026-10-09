@@ -43,6 +43,8 @@ export type DocumentInput = {
   serviceStart?: string | null;
   serviceEnd?: string | null;
   deferRevenue?: boolean | null;
+  /** Purchase bills: amortise prepaid asset (1410) over service period. */
+  amortisePrepaid?: boolean | null;
   currency?: string;
   fxRateScaled?: number;
   documentNumber?: string | null;
@@ -178,6 +180,7 @@ export async function listBooksDocuments(
               d.due_date AS "dueDate", d.currency, d.gross_minor AS "grossMinor",
               d.aed_total_minor AS "aedTotalMinor", d.vat_minor AS "vatMinor",
               d.journal_entry_id AS "journalEntryId", d.defer_revenue AS "deferRevenue",
+              d.amortise_prepaid AS "amortisePrepaid",
               p.name AS "partyName", p.id AS "partyId",
               oi.open_aed_minor AS "outstandingMinor"
        FROM books_documents d
@@ -384,6 +387,20 @@ export async function createBooksDocument(userId: string, clientId: string, body
     }
     defer = Boolean(defer);
 
+    let amortise = body.amortisePrepaid;
+    if (
+      body.docType === "purchase_bill" &&
+      body.serviceStart &&
+      body.serviceEnd &&
+      amortise == null
+    ) {
+      amortise = monthsSpan(body.serviceStart, body.serviceEnd) > 1;
+    }
+    amortise = Boolean(amortise);
+    if (amortise && body.docType !== "purchase_bill") {
+      throw new BooksError("amortise_prepaid_purchase_only", "invalid");
+    }
+
     const printedNet = optionalMinor(body.printedNetMinor);
     const printedVat = optionalMinor(body.printedVatMinor);
     const printedGross = optionalMinor(body.printedGrossMinor);
@@ -409,15 +426,15 @@ export async function createBooksDocument(userId: string, clientId: string, body
     await db.query(
       `INSERT INTO books_documents (
          id, client_id, doc_type, doc_kind, status, document_number, party_id,
-         issue_date, due_date, service_start, service_end, defer_revenue,
+         issue_date, due_date, service_start, service_end, defer_revenue, amortise_prepaid,
          currency, fx_rate_scaled, original_total_minor, aed_total_minor,
          net_minor, vat_minor, gross_minor, memo, original_document_id, created_by,
          printed_net_minor, printed_vat_minor, printed_gross_minor,
          printed_paid_minor, printed_balance_due_minor, extraction_id, file_id,
          check_vat_reason, page_start, page_end
        ) VALUES (
-         $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-         $22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+         $1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+         $23,$24,$25,$26,$27,$28,$29,$30,$31,$32
        )`,
       [
         id,
@@ -431,6 +448,7 @@ export async function createBooksDocument(userId: string, clientId: string, body
         body.serviceStart || null,
         body.serviceEnd || null,
         defer,
+        amortise,
         currency,
         fxRateScaled,
         originalTotal,
@@ -607,6 +625,7 @@ async function buildPostingLines(
     doc_type: string;
     party_id: string;
     defer_revenue: boolean;
+    amortise_prepaid?: boolean;
     currency: string;
     fx_rate_scaled: number;
     aed_total_minor?: number | null;
@@ -633,6 +652,7 @@ async function buildPostingLines(
   const deferred = await accountIdByCode(db, clientId, "2310");
   const revenueDefault = await accountIdByCode(db, clientId, "4100");
   const expenseDefault = await accountIdByCode(db, clientId, "6600");
+  const prepaidAsset = await accountIdByCode(db, clientId, "1410");
   const depositDefault = await accountIdByCode(db, clientId, "1420");
   const inventoryDefault = await accountIdByCode(db, clientId, "1510");
 
@@ -731,6 +751,12 @@ async function buildPostingLines(
         const expAcct =
           line.account_id ||
           (isAsset ? depositDefault : isInventory ? inventoryDefault : expenseDefault);
+        const amortisePrepaid =
+          Boolean(doc.amortise_prepaid) &&
+          !isAsset &&
+          !isInventory &&
+          line.line_kind !== "disbursement";
+        const debitAcct = amortisePrepaid ? prepaidAsset : expAcct;
         const vatCode = line.vat_code;
         const vatMeta = vatCode ? await vatRateBp(db, vatCode) : { rateBp: 0, recoverable: false };
         const canRecover =
@@ -749,10 +775,10 @@ async function buildPostingLines(
           // Foreign services: expense net; RC_OUT + RC_IN net zero on VAT controls
           arApTotal += netAed * sign;
           out.push({
-            accountId: expAcct,
+            accountId: debitAcct,
             debitMinor: sign > 0 ? netAed : 0,
             creditMinor: sign > 0 ? 0 : netAed,
-            lineMemo: line.description || memoDefault,
+            lineMemo: line.description || (amortisePrepaid ? "Prepaid expense" : memoDefault),
             vatCode,
             tags: line.tags,
             ...fx,
@@ -781,10 +807,10 @@ async function buildPostingLines(
         } else if (canRecover) {
           arApTotal += grossAed * sign;
           out.push({
-            accountId: expAcct,
+            accountId: debitAcct,
             debitMinor: sign > 0 ? netAed : 0,
             creditMinor: sign > 0 ? 0 : netAed,
-            lineMemo: line.description || memoDefault,
+            lineMemo: line.description || (amortisePrepaid ? "Prepaid expense" : memoDefault),
             vatCode,
             tags: line.tags,
             ...fx,
@@ -804,7 +830,7 @@ async function buildPostingLines(
           const cost = netAed + vatAed;
           arApTotal += cost * sign;
           out.push({
-            accountId: expAcct,
+            accountId: debitAcct,
             debitMinor: sign > 0 ? cost : 0,
             creditMinor: sign > 0 ? 0 : cost,
             lineMemo: line.description || `${memoDefault}${vatAed > 0 ? " (VAT in cost)" : ""}`,
@@ -1078,6 +1104,9 @@ export async function approveAndPostBooksDocument(
       if (prepared.doc.defer_revenue && prepared.doc.doc_type === "sales_invoice") {
         await scheduleDeferredReleases(db, clientId, prepared.doc);
       }
+      if (prepared.doc.amortise_prepaid && prepared.doc.doc_type === "purchase_bill") {
+        await schedulePrepaidReleases(db, clientId, prepared.doc, documentId);
+      }
 
       await writeBooksAudit(db, {
         clientId,
@@ -1261,6 +1290,12 @@ export async function voidBooksDocument(
         [documentId, clientId],
       );
       if (released.rowCount) throw new BooksError("void_has_posted_releases", "conflict");
+      const prepaidReleased = await db.query(
+        `SELECT 1 FROM books_prepaid_schedules
+         WHERE document_id = $1 AND client_id = $2 AND status = 'posted' LIMIT 1`,
+        [documentId, clientId],
+      );
+      if (prepaidReleased.rowCount) throw new BooksError("void_has_posted_releases", "conflict");
     }
     return d;
   });
@@ -1291,6 +1326,11 @@ export async function voidBooksDocument(
       );
       await db.query(
         `UPDATE books_deferred_schedules SET status = 'cancelled'
+         WHERE document_id = $1 AND client_id = $2 AND status IN ('pending', 'blocked')`,
+        [documentId, clientId],
+      );
+      await db.query(
+        `UPDATE books_prepaid_schedules SET status = 'cancelled'
          WHERE document_id = $1 AND client_id = $2 AND status IN ('pending', 'blocked')`,
         [documentId, clientId],
       );
@@ -1622,6 +1662,86 @@ async function scheduleDeferredReleases(
         db,
         clientId,
         "deferred_release",
+        { scheduleId: String(sched.rows[0].id), documentId: doc.id },
+        new Date(`${releaseDate}T00:00:00Z`),
+      );
+    }
+  }
+}
+
+async function primaryExpenseAccountId(
+  db: PoolClient,
+  clientId: string,
+  documentId: string,
+): Promise<string> {
+  const lines = await db.query(
+    `SELECT line_kind, account_id FROM books_document_lines
+     WHERE document_id = $1 ORDER BY line_no`,
+    [documentId],
+  );
+  for (const line of lines.rows) {
+    const kind = String(line.line_kind);
+    if (kind === "disbursement" || kind === "asset" || kind === "inventory") continue;
+    if (line.account_id) return String(line.account_id);
+  }
+  return accountIdByCode(db, clientId, "6600");
+}
+
+async function schedulePrepaidReleases(
+  db: PoolClient,
+  clientId: string,
+  doc: {
+    id: string;
+    service_start: string | null;
+    service_end: string | null;
+    net_minor: number;
+    aed_total_minor: number;
+    vat_minor: number;
+  },
+  documentId: string,
+) {
+  if (!doc.service_start || !doc.service_end) return;
+  const months = monthsSpan(String(doc.service_start), String(doc.service_end));
+  if (months <= 1) return;
+  const expense = await primaryExpenseAccountId(db, clientId, documentId);
+  const netAed = Number(doc.aed_total_minor) - Number(doc.vat_minor);
+  const each = Math.floor(netAed / months);
+  let allocated = 0;
+  const start = new Date(`${doc.service_start}T12:00:00Z`);
+
+  for (let i = 0; i < months; i++) {
+    const d = new Date(start);
+    d.setUTCMonth(d.getUTCMonth() + i);
+    const releaseDate = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+    const amount = i === months - 1 ? netAed - allocated : each;
+    allocated += amount;
+    const period = await db.query(
+      `SELECT id, status FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date`,
+      [clientId, releaseDate],
+    );
+    const periodId = period.rowCount ? String(period.rows[0].id) : null;
+    const blocked = period.rowCount && String(period.rows[0].status) === "LOCKED";
+    const sched = await db.query(
+      `INSERT INTO books_prepaid_schedules (
+         client_id, document_id, release_date, period_id, amount_aed_minor,
+         expense_account_id, status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [
+        clientId,
+        doc.id,
+        releaseDate,
+        periodId,
+        amount,
+        expense,
+        blocked ? "blocked" : "pending",
+      ],
+    );
+    if (!blocked && periodId) {
+      await enqueueBooksJob(
+        db,
+        clientId,
+        "prepaid_release",
         { scheduleId: String(sched.rows[0].id), documentId: doc.id },
         new Date(`${releaseDate}T00:00:00Z`),
       );

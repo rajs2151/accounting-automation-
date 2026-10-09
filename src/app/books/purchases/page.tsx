@@ -109,6 +109,8 @@ export default function PurchasesPage() {
     netAed: "200.00",
     lineKind: "expense" as "expense" | "disbursement",
     vatCode: "SR",
+    serviceStart: "",
+    serviceEnd: "",
   });
 
   useEffect(() => {
@@ -224,6 +226,8 @@ export default function PurchasesPage() {
         issueDate: form.issueDate,
         periodId,
         documentNumber: form.documentNumber || undefined,
+        serviceStart: form.serviceStart || null,
+        serviceEnd: form.serviceEnd || null,
         lines: [
           {
             description:
@@ -580,6 +584,24 @@ export default function PurchasesPage() {
                   <option value="expense">expense</option>
                   <option value="disbursement">disbursement (no VAT) → 1220</option>
                 </select>
+              </div>
+              <div className="md:col-span-2">
+                <Label>Service start / end (prepaid amortisation)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="date"
+                    value={form.serviceStart}
+                    onChange={(e) => setForm({ ...form, serviceStart: e.target.value })}
+                  />
+                  <Input
+                    type="date"
+                    value={form.serviceEnd}
+                    onChange={(e) => setForm({ ...form, serviceEnd: e.target.value })}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Span over 1 month books net to 1410 and schedules monthly expense release.
+                </p>
               </div>
               <div className="flex items-end">
                 <Button onClick={() => void createBill()}>Save draft</Button>

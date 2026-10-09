@@ -238,7 +238,22 @@ import {
 } from "@/server/books/health";
 import { booksAccountLedger, booksTrialBalance } from "@/server/books/trial-balance";
 import { listBooksVatCodes } from "@/server/books/vat-codes";
-import { booksVatSettlementPreview } from "@/server/books/vat-settlement";
+import { booksAdvancesPanel } from "@/server/books/advances-panel";
+import {
+  postBadDebtWriteOff,
+  prepareBadDebtWriteOff,
+} from "@/server/books/bad-debt";
+import { booksCtAccrualPreview } from "@/server/books/ct-accrual";
+import {
+  createBooksLoan,
+  listBooksLoans,
+  runBooksLoanInterest,
+} from "@/server/books/loans";
+import {
+  booksVatSettlementPreview,
+  getVat201Settlement,
+  prepareVat201Settlement,
+} from "@/server/books/vat-settlement";
 import { listBooksVoucherSequences, updateBooksVoucherSequence } from "@/server/books/vouchers";
 import { LedgerError } from "@/server/errors";
 import { assertDownloadMfa, assertSessionTenantAllowed, MFA_COOKIE } from "@/server/security-gate";
@@ -379,6 +394,19 @@ export async function GET(request: Request, ctx: Ctx) {
         await booksVatSettlementPreview(session.userId, session.clientId, periodId),
       );
     }
+    if (path[0] === "ct-accrual" && path.length === 1) {
+      const periodId = url.searchParams.get("periodId");
+      if (!periodId) return NextResponse.json({ error: "periodId_required" }, { status: 400 });
+      return NextResponse.json(
+        await booksCtAccrualPreview(session.userId, session.clientId, periodId),
+      );
+    }
+    if (path[0] === "advances-panel" && path.length === 1) {
+      return NextResponse.json(await booksAdvancesPanel(session.userId, session.clientId));
+    }
+    if (path[0] === "loans" && path.length === 1) {
+      return NextResponse.json(await listBooksLoans(session.userId, session.clientId));
+    }
     if (path[0] === "tags" && path.length === 1) {
       return NextResponse.json(await listBooksTags(session.userId, session.clientId));
     }
@@ -467,6 +495,24 @@ export async function GET(request: Request, ctx: Ctx) {
             monthEnd: url.searchParams.get("monthEnd") || undefined,
           }),
         );
+      } catch (error) {
+        if (error instanceof VatReturnBlockedError) {
+          return NextResponse.json(
+            { error: error.message, code: error.code, gaps: error.gaps },
+            { status: 409 },
+          );
+        }
+        throw error;
+      }
+    }
+    if (path[0] === "vat201" && path[1] === "settlement" && path.length === 2) {
+      try {
+        const status = await getVat201Settlement(session.userId, session.clientId, {
+          from: url.searchParams.get("from") || undefined,
+          to: url.searchParams.get("to") || undefined,
+          monthEnd: url.searchParams.get("monthEnd") || undefined,
+        });
+        return NextResponse.json(status);
       } catch (error) {
         if (error instanceof VatReturnBlockedError) {
           return NextResponse.json(
@@ -1472,6 +1518,25 @@ export async function POST(request: Request, ctx: Ctx) {
         },
       });
     }
+    if (path[0] === "vat201" && path[1] === "settlement" && path.length === 2) {
+      try {
+        return NextResponse.json(
+          await prepareVat201Settlement(session.userId, session.clientId, {
+            from: body.from ? String(body.from) : undefined,
+            to: body.to ? String(body.to) : undefined,
+            monthEnd: body.monthEnd ? String(body.monthEnd) : undefined,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof VatReturnBlockedError) {
+          return NextResponse.json(
+            { error: error.message, code: error.code, gaps: error.gaps },
+            { status: 409 },
+          );
+        }
+        throw error;
+      }
+    }
     if (path[0] === "company" && path[1] === "vat-settings" && path.length === 2) {
       const reg = body.vatRegistrationStatus;
       return NextResponse.json(
@@ -1584,6 +1649,50 @@ export async function POST(request: Request, ctx: Ctx) {
       // Step 2: approver = session user; preparer = the draft's creator (must differ).
       return NextResponse.json(
         await postSettlementDraft(session.userId, session.clientId, path[1]),
+      );
+    }
+    if (path[0] === "loans" && path.length === 1) {
+      return NextResponse.json(
+        await createBooksLoan(session.userId, session.clientId, {
+          name: String(body.name || ""),
+          lender: body.lender != null ? String(body.lender) : undefined,
+          principalMinor: Number(body.principalMinor || 0),
+          annualRateBps: Number(body.annualRateBps || 0),
+          startDate: String(body.startDate || ""),
+          endDate: body.endDate != null ? String(body.endDate) : null,
+          liabilityAccountId: body.liabilityAccountId
+            ? String(body.liabilityAccountId)
+            : undefined,
+          interestExpenseAccountId: body.interestExpenseAccountId
+            ? String(body.interestExpenseAccountId)
+            : undefined,
+        }),
+      );
+    }
+    if (path[0] === "loans" && path[1] === "run-interest" && path.length === 2) {
+      return NextResponse.json(
+        await runBooksLoanInterest(
+          session.userId,
+          session.clientId,
+          String(body.periodId || ""),
+        ),
+      );
+    }
+    if (path[0] === "bad-debt-write-off" && path.length === 1) {
+      return NextResponse.json(
+        await prepareBadDebtWriteOff(session.userId, session.clientId, {
+          openItemId: String(body.openItemId || ""),
+          periodId: String(body.periodId || ""),
+          entryDate: String(body.entryDate || ""),
+          amountOriginalMinor:
+            body.amountOriginalMinor == null ? undefined : Number(body.amountOriginalMinor),
+          memo: body.memo ? String(body.memo) : undefined,
+        }),
+      );
+    }
+    if (path[0] === "bad-debt-write-off" && path[2] === "post" && path.length === 3) {
+      return NextResponse.json(
+        await postBadDebtWriteOff(session.userId, session.clientId, path[1]),
       );
     }
     if (path[0] === "settlements" && path[1] === "allocate-advance" && path.length === 2) {

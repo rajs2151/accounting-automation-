@@ -1,8 +1,10 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
+import { useBooksShell } from "@/components/books/books-shell-context";
 import {
   ReportsNav,
   ReportTable,
@@ -10,10 +12,22 @@ import {
   useReportMeta,
   type ReportColumn,
 } from "@/components/books/report-table";
+import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
+import { formatMinor } from "@/lib/money";
 import { describeReportBasis } from "@/lib/report-basis";
 import type { ReportRow } from "@/lib/report-table";
+
+type OpenItem = {
+  id: string;
+  partyName: string;
+  documentNumber: string | null;
+  openOriginalMinor: number;
+  openAedMinor: number;
+  currency: string;
+  status: string;
+};
 
 const BUCKETS = ["not_due", "0-30", "31-60", "61-90", "90+"] as const;
 const BUCKET_LABEL: Record<(typeof BUCKETS)[number], string> = {
@@ -60,11 +74,47 @@ function AgeingInner() {
   const router = useRouter();
   const params = useSearchParams();
   const meta = useReportMeta();
+  const { periodId, periods } = useBooksShell();
   const side = (params.get("side") || "ar").toLowerCase() === "ap" ? "ap" : "ar";
   const [asOf, setAsOf] = useState(params.get("asOf") || todayIso());
   const [byParty, setByParty] = useState(params.get("byParty") !== "0");
   const [data, setData] = useState<Ageing | null>(null);
   const [error, setError] = useState("");
+  const [openItems, setOpenItems] = useState<OpenItem[]>([]);
+  const [writeOffId, setWriteOffId] = useState("");
+  const [writeOffBusy, setWriteOffBusy] = useState(false);
+  const [pendingDraftId, setPendingDraftId] = useState<string | null>(null);
+
+  const periodEnd = useMemo(() => {
+    const p = periods.find((x) => x.id === periodId);
+    return p?.periodEnd ? String(p.periodEnd).slice(0, 10) : asOf;
+  }, [periods, periodId, asOf]);
+
+  const loadOpenItems = useCallback(() => {
+    if (side !== "ar") {
+      setOpenItems([]);
+      return;
+    }
+    void fetch("/api/books/open-items?side=AR")
+      .then(async (r) => [r.ok, await r.json()] as const)
+      .then(([ok, json]) => {
+        if (!ok) return;
+        const rows = Array.isArray(json) ? json : Array.isArray(json?.items) ? json.items : [];
+        setOpenItems(
+          rows
+            .filter((r: OpenItem) => Number(r.openOriginalMinor) > 0)
+            .map((r: OpenItem) => ({
+              id: String(r.id),
+              partyName: String(r.partyName || ""),
+              documentNumber: r.documentNumber == null ? null : String(r.documentNumber),
+              openOriginalMinor: Number(r.openOriginalMinor),
+              openAedMinor: Number(r.openAedMinor),
+              currency: String(r.currency || "AED"),
+              status: String(r.status || ""),
+            })),
+        );
+      });
+  }, [side]);
 
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return;
@@ -80,7 +130,54 @@ function AgeingInner() {
           setData(json as Ageing);
         }
       });
-  }, [side, asOf, byParty, router]);
+    loadOpenItems();
+  }, [side, asOf, byParty, router, loadOpenItems]);
+
+  async function prepareWriteOff() {
+    if (!writeOffId || !periodId) return;
+    setWriteOffBusy(true);
+    try {
+      const res = await fetch("/api/books/bad-debt-write-off", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          openItemId: writeOffId,
+          periodId,
+          entryDate: periodEnd,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiErrorMessage(json) || json.error || "prepare_failed");
+      setPendingDraftId(String(json.journalEntryId));
+      toast.success("Write-off draft ready — a different approver must post it");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "prepare_failed");
+    } finally {
+      setWriteOffBusy(false);
+    }
+  }
+
+  async function postWriteOff() {
+    if (!pendingDraftId) return;
+    setWriteOffBusy(true);
+    try {
+      const res = await fetch(`/api/books/bad-debt-write-off/${pendingDraftId}/post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiErrorMessage(json) || json.error || "post_failed");
+      toast.success(`Wrote off — ${json.entryNo || "posted"}`);
+      setPendingDraftId(null);
+      setWriteOffId("");
+      loadOpenItems();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "post_failed");
+    } finally {
+      setWriteOffBusy(false);
+    }
+  }
 
   const columns: ReportColumn[] = [
     { key: "date", label: "Date", kind: "text" },
@@ -176,6 +273,62 @@ function AgeingInner() {
           router.push(`/books/reports/entry?id=${d.entryId}&trail=${trailParam([{ label: title, href: here }])}`);
         }}
       />
+
+      {side === "ar" ? (
+        <section
+          className="space-y-3 rounded-md border border-border p-4 print:hidden"
+          data-testid="bad-debt-write-off"
+        >
+          <div>
+            <h2 className="text-lg font-medium">Bad debt write-off</h2>
+            <p className="text-sm text-muted-foreground">
+              Dr 4900 / Cr 1210 and close the open item. Prepare as accountant, then post as a different
+              approver (dual control).
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs text-muted-foreground">
+              Open invoice
+              <select
+                className="mt-1 block h-9 min-w-[16rem] rounded-md border border-input bg-background px-2 text-sm"
+                value={writeOffId}
+                onChange={(e) => setWriteOffId(e.target.value)}
+                data-testid="bad-debt-open-item"
+              >
+                <option value="">Select…</option>
+                {openItems.map((oi) => (
+                  <option key={oi.id} value={oi.id}>
+                    {oi.partyName}
+                    {oi.documentNumber ? ` · ${oi.documentNumber}` : ""} — {formatMinor(oi.openAedMinor)}{" "}
+                    {oi.currency}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!writeOffId || !periodId || writeOffBusy}
+              onClick={() => void prepareWriteOff()}
+              data-testid="bad-debt-prepare"
+            >
+              Prepare draft
+            </Button>
+            {pendingDraftId ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={writeOffBusy}
+                onClick={() => void postWriteOff()}
+                data-testid="bad-debt-post"
+              >
+                Post write-off
+              </Button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

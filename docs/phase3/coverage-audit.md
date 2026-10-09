@@ -55,15 +55,15 @@ COA source: `db/20-books-coa-v2.sql` (template + Desert Falcon / Gulf Crest / Pa
 |---|------|--------|--------------|----------------|
 | 1 | Accruals + auto-reversal | **Partial** | Expense accrual template → 2120 + `auto_reverse_next_period` (`journal-templates`, worker `auto_reverse`) | Income accrual template / workflow |
 | 2 | Prepayments + amortisation | **Partial** | 1410 + prepayment template (asset warning) | Monthly release schedule / job |
-| 3 | Deposits / staff advances / owner CA | **Partial** | 1220, 1420, 2130, 1240/2340 (manual/JV) | 1230 staff-advance flow; registers |
+| 3 | Deposits / staff advances / owner CA | **Partial** | 1220, 1420, 2130, 1240/2340; **1230 staff advance templates** + info gate | Owner CA register |
 | 4 | Investments | **Missing** | — | No COA / posting / UI |
 | 5 | Inventory | **Partial** | 1510/1520 + purchase `inventory` line | Qty / valuation / COGS (low value for service SME) |
-| 6 | Loans + interest | **Partial** | 2420, 7400 (manual) | Loan register + interest accrual |
-| 7 | Payroll / WPS + EOSB | **Partial** | 6100–6120, 2330, 2410; payroll template (Cr 2120 today) | WPS import; EOSB schedule; Cr 2330 |
-| 8 | Unearned / advances | **Partial** | 2310 deferred schedules; **2320** + `books_party_advances` | Advances/deferred dashboard UI |
-| 9 | Credit notes / bad debt / ECL | **Partial** | Credit notes + 4900 | Bad-debt write-off / ECL |
-| 10 | VAT (RC, import, advance, ZR/EX, VAT201) | **Partial** | Codes + draft `generateVat201Draft` + close gate + RC on bills | Books VAT201 **page**; import boxes 6–7; advance VAT |
-| 11 | CT / deferred tax / dividends / YE | **Partial** | CT estimate banner; YE → 3200; 8100/2230 accounts | CT accrual post; deferred tax; dividend voucher |
+| 6 | Loans + interest | **Partial** | 2420, 7400; **`books_loans`** + run interest + close gate | Amortising schedules / repayments UI |
+| 7 | Payroll / WPS + EOSB | **Partial** | 6100–6120, 2330, 2410; payroll Cr 2330; **EOSB accrual** template + stale-2410 info gate | WPS import; full EOSB schedule |
+| 8 | Unearned / advances | **Partial** | 2310 deferred schedules; **2320** + `books_party_advances`; **/books/advances** panel | Apply/release UX polish |
+| 9 | Credit notes / bad debt / ECL | **Partial** | Credit notes + 4900; **bad-debt write-off** (Dr 4900 / Cr 1210 + open item) | ECL provision |
+| 10 | VAT (RC, import, advance, ZR/EX, VAT201) | **Partial** | Codes + VAT201 draft + **D1** advance VAT + **D3** settlement prepare | Import boxes 6–7; FTA file |
+| 11 | CT / deferred tax / dividends / YE | **Partial** | CT estimate banner; YE → 3200; 8100/2230; **CT accrual draft + close gate** | Deferred tax; dividend voucher |
 | 12 | Intangibles / IFRS 16 | **Partial** / **Missing** | IA via fixed-assets register (1710/1790/6810) | IFRS 16 ROU / lease liability |
 | 13 | FX revaluation + multi-currency | **Partial** (core Exists) | Preview + draft JV + close gate + Close UI button | Auto rates; full monetary BS scope |
 | 14 | Opening import / intercompany | **Partial** / **Missing** | Opening import in Settings (3900) | Intercompany (1340 ≠ IC) |
@@ -77,48 +77,38 @@ Approve a rank before any build.
 
 | Rank | Slice | Minimal design | Close / report |
 |------|--------|----------------|----------------|
-| 1 | Prepayment amortisation | `books_prepaid_schedules` + job `prepaid_release` (Dr opex / Cr 1410) | Gate: pending release in period |
-| 2 | Income accrual template | Dr 1210 / Cr 4100 + auto-reverse (same pattern as expense accrual) | Reuses scheduled-draft checks |
-| 3 | Books VAT 201 page | `/books/reports/vat201` on existing draft API; no auto-post | Existing VAT control gate |
-| 4 | CT accrual draft | Optional Dr 8100 / Cr 2230 from estimate | Gate estimate vs 2230 |
-| 5 | Payroll payable template | Cr **2330**; optional WPS CSV later | Unpaid salaries info gate |
-| 6 | Advances / deferred panel | Read-only 2320 + deferred schedules | Optional 2320 vs subledger drift |
-| 7 | Bad debt write-off v1 | Dr expense/4900 / Cr 1210; link open item | Optional AR review |
-| 8 | EOSB monthly accrual | Manual/table → Dr 6110 / Cr 2410 | Warn if 2410 stale |
-| 9 | Loan interest | `books_loans` + monthly Dr 7400 / Cr 2420 | Interest not posted |
-| 10 | Staff advances 1230 | Payment + recovery on expenses | Info if 1230 ≠ 0 |
+| 1 | Prepayment amortisation | **Built** — `books_prepaid_schedules` + job `prepaid_release` (Dr opex / Cr 1410) | Gate: `prepaid_release` on close |
+| 2 | Income accrual template | **Built** — Create Entry template `income_accrual` (Dr 1210 / Cr 4100 + auto-reverse) | Reuses scheduled-draft checks |
+| 3 | Books VAT 201 page | **Built** — `/books/reports/vat201` on `GET /api/books/vat201/draft`; no auto-post | Close gate href → VAT 201 |
+| 4 | CT accrual draft | **Built** — Create Entry `ct_accrual` + `GET /api/books/ct-accrual` (Dr 8100 / Cr 2230 top-up) | Gate `ct_accrual`: estimate vs 2230 (blocking at FY end) |
+| 5 | Payroll payable template | **Built** — Create Entry payroll Cr **2330** (was 2120); optional WPS CSV later | Info gate `salaries_payable` |
+| 6 | Advances / deferred panel | **Built** — `/books/advances` read-only 2320 + deferred; `GET /api/books/advances-panel` | Info gate `advances_drift` |
+| 7 | Bad debt write-off v1 | **Built** — prepare/post API + ageing AR panel; template `bad_debt` | Dual-control; links open item |
+| 8 | EOSB monthly accrual | **Built** — Create Entry `eosb_accrual` (Dr 6110 / Cr 2410) | Info gate `eosb_provision` |
+| 9 | Loan interest | **Built** — `db/67-books-loans.sql`, `/books/loans`, run interest drafts | Gate `loan_interest` |
+| 10 | Staff advances 1230 | **Built** — templates `staff_advance` / `staff_advance_recovery` | Info gate `staff_advances` |
 | 11–16 | Import VAT, investments, IFRS 16, deferred tax, IC, inventory depth | Defer for service SME | — |
 
 **Highest ROI next:** (1) prepaid release → (2) income accrual → (3) VAT201 page → (4) CT accrual draft → (5) payroll Cr 2330.
 
 ---
 
-## D. Owner decisions still open (do not build)
+## D. Owner decisions
 
-### D1 — VAT on customer advances (item 5)
-**Today:** unmatched receipt remainder → **Cr 2320 gross**; memo “VAT on advances TBD”; no 2210.
+### D1 — VAT on customer advances (item 5) — **BUILT** (approved 2026-10-09)
+1. UAE taxable customer (TRN + UAE, not designated zone): gross advance → **net Cr 2320** + **VAT Cr 2210** (`floor(gross×5/105)`).
+2. `books_party_advances.vat_*` columns (`db/68`) store VAT remaining; net balances match 2320.
+3. Apply advance: **Dr 2320 net + Dr 2210 VAT / Cr 1210 gross** (no double-count).
+4. VAT201 already reads 2210 movement — advance VAT lands in Box output for the receipt period.
 
-**Propose (await OK):**
-1. If customer is UAE taxable (TRN + mainland/FZ taxable supply): split advance as **net → 2320**, **VAT → 2210** (gross × 5/105, integer fils).
-2. Store VAT portion on `books_party_advances` (or linked audit row).
-3. On apply to invoice: Dr 2320 net + Dr 2210 VAT (or reverse VAT into invoice VAT) so output is not double-counted.
-4. Close / VAT201: include advance VAT in Box output for the period received (FTA cash/accrual policy — confirm accrual recognition on receipt).
+### D2 — Sequential period lock (item 4) — **BUILT** (approved 2026-10-09)
+Within a fiscal year, lock month N only if prior FY month is LOCKED (or N is books-start / first FY month). Close gate `prior_period_locked`; unlock of N makes N+1 checklist fail that gate until N is re-locked. Does **not** auto-lock priors.
 
-### D2 — Sequential period lock (item 4)
-**Today:** any OPEN month can be locked independently.
-
-**Propose (await OK):** Within a fiscal year, lock month N only if month N−1 is LOCKED (or N is books-start month). Unlocking N marks N+1 close “not ready” until N is re-locked. Do **not** auto-lock prior months.
-
-**Jul–Sep 2026 status (Desert Falcon seed):** only months generated from books start exist in seed (typically May–Jun OPEN in demo); Jul–Sep are **absent** until periods are generated — not silently open.
-
-### D3 — VAT 201 posting generator (Phase 4 / prior item 9)
-**Today:** `generateVat201Draft` + close gate vs 2210/1430; seed warn on manual pure VAT settlement; no dedicated post-from-return.
-
-**Propose (await OK):**
-1. UI: `/books/reports/vat201` — draft boxes, period, due date (blocked until emirate + return period set — already enforced).
-2. Action **Prepare settlement JV** (draft only): Dr 2210 / Cr 1430 (net) → Cr/Dr **2220** for payable/refund; dual-control post.
-3. Idempotent per tax period; never auto-post; audit `vat201_settlement`.
-4. Import boxes 6–7 and advance VAT = later slices after D1/D3 OK.
+### D3 — VAT 201 posting generator — **BUILT** (approved 2026-10-09)
+1. UI: `/books/reports/vat201` — draft boxes, due date, **Prepare settlement JV**.
+2. `prepareVat201Settlement` → draft only: Dr 2210 / Cr 1430 → Cr/Dr **2220**; dual-control post separately.
+3. Idempotent per tax window via `books_vat201_settlements` (`db/69`); audit action `vat201_settlement`.
+4. Import boxes 6–7 remain later slices.
 
 ---
 
