@@ -519,18 +519,24 @@ export default function InboxReviewPage() {
   }
 
   async function retry() {
+    // Keep the page on an extracting shell immediately — do not flip `loading`
+    // (that blanked the whole review view and felt frozen).
+    setReview((prev) =>
+      prev ? { ...prev, status: "queued", error: null, extractionId: prev.extractionId } : prev,
+    );
     const res = await fetch(`/api/books/inbox/${params.id}/retry`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast.error(apiErrorMessage(data));
+      void load({ quiet: true });
       return;
     }
-    toast.success("Extraction retried");
-    void load();
+    toast.success("Extraction queued — this page will update when it finishes");
+    void load({ quiet: true });
   }
 
   function onFieldChange(key: string, value: string) {
@@ -659,12 +665,12 @@ export default function InboxReviewPage() {
       ? partyMismatchDiffs(extractedParty, selectedParty)
       : [];
 
-  if (loading) {
+  if (loading && !review) {
     return (
       <div className="space-y-4 py-4" data-testid="review-split-view">
         <h1 className="text-2xl font-semibold">Review extraction</h1>
-        <p className="text-sm text-muted-foreground" data-testid="review-extracting">
-          Extracting…
+        <p className="text-sm text-muted-foreground" data-testid="review-loading">
+          Loading document…
         </p>
       </div>
     );
@@ -685,15 +691,69 @@ export default function InboxReviewPage() {
   }
 
   if (review.status === "queued" || review.status === "extracting") {
+    const phaseLabel = review.status === "queued" ? "Queued" : "Extracting";
+    const phaseHint =
+      review.status === "queued"
+        ? "Waiting for the worker to pick up this file."
+        : "Reading the document and filling fields — usually under a minute.";
     return (
-      <div className="space-y-4 py-4" data-testid="review-split-view">
-        <h1 className="text-2xl font-semibold">Review extraction</h1>
-        <p className="text-sm text-muted-foreground" data-testid="review-extracting">
-          Extracting… status={review.status}
-        </p>
-        <Button variant="outline" onClick={() => void load()}>
-          Refresh
-        </Button>
+      <div className="flex h-[calc(100vh-3.5rem)] flex-col" data-testid="review-split-view">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-3 py-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Link
+              href="/books/inbox"
+              className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+            >
+              Inbox
+            </Link>
+            <span className="text-muted-foreground">/</span>
+            <h1 className="truncate text-base font-semibold">Review extraction</h1>
+            <StatusBadge meta={inboxStatusLabel(review.status)} data-testid="review-status-badge" />
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void load({ quiet: true })}>
+            Refresh now
+          </Button>
+        </div>
+        <div
+          className="grid min-h-0 flex-1 gap-0 lg:grid-cols-2"
+          data-testid="review-extracting"
+        >
+          <div className="min-h-0 overflow-auto border-b border-border p-3 lg:border-b-0 lg:border-r">
+            {review.fileUrl ? (
+              <PdfPagePreview
+                className="h-full min-h-[320px]"
+                fileUrl={review.fileUrl}
+                boxes={[]}
+                activeLabel={null}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">Document preview unavailable.</p>
+            )}
+          </div>
+          <div className="flex min-h-0 flex-col items-start justify-center gap-4 p-6">
+            <div
+              className="size-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground"
+              aria-hidden
+            />
+            <div className="space-y-1">
+              <p className="text-lg font-medium">{phaseLabel}</p>
+              <p className="max-w-md text-sm text-muted-foreground">{phaseHint}</p>
+              <p className="text-sm text-muted-foreground">
+                File: <span className="text-foreground">{review.filename}</span>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                This page refreshes automatically every few seconds. You can leave and come back from
+                Inbox.
+              </p>
+            </div>
+            <Link
+              href="/books/inbox"
+              className="text-sm text-primary underline underline-offset-2"
+            >
+              Back to inbox
+            </Link>
+          </div>
+        </div>
       </div>
     );
   }
@@ -703,11 +763,19 @@ export default function InboxReviewPage() {
       <div className="space-y-4 py-4" data-testid="review-split-view">
         <h1 className="text-2xl font-semibold">Review extraction</h1>
         <p className="text-sm text-red-600" data-testid="review-failed">
-          Failed: {review.error || "extraction_failed"}
+          Extraction failed: {review.error || "unknown error"}
         </p>
-        <Button data-testid="review-retry" onClick={() => void retry()}>
-          Retry extract
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button data-testid="review-retry" onClick={() => void retry()}>
+            Retry extract
+          </Button>
+          <Link
+            href="/books/inbox"
+            className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
+          >
+            Back to inbox
+          </Link>
+        </div>
       </div>
     );
   }
@@ -716,10 +784,21 @@ export default function InboxReviewPage() {
     return (
       <div className="space-y-4 py-4" data-testid="review-split-view">
         <h1 className="text-2xl font-semibold">Review extraction</h1>
-        <p className="text-sm text-muted-foreground">No extraction row yet for this inbox item.</p>
-        <Button data-testid="review-retry" onClick={() => void retry()}>
-          Retry extract
-        </Button>
+        <p className="text-sm text-muted-foreground">
+          No extraction yet for <span className="font-medium text-foreground">{review.filename}</span>.
+          Queue it again, or wait if it was just uploaded.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button data-testid="review-retry" onClick={() => void retry()}>
+            Retry extract
+          </Button>
+          <Link
+            href="/books/inbox"
+            className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
+          >
+            Back to inbox
+          </Link>
+        </div>
       </div>
     );
   }

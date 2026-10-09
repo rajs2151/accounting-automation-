@@ -2,7 +2,20 @@
 
 ## Now
 - Phase: **ING (ingestion review)** on feat/books-phase1 — after Phase 7
-- Current task: **2nd-review Phase 2** (page consistency) closed; next = Phase 3 coverage audit (report-only)
+- Current task: **2nd-review Phase 3** (coverage audit) closed — report only; waiting owner pick of ranked slices + D1–D3
+- 2026-10-09: **2nd-review Phase 3** (report only; no code/migration for matrix)
+  - DONE: COA groups + Exists/Partial/Missing matrix + ranked minimal designs for UAE service SME
+  - DONE: written proposals D1 VAT advances, D2 sequential period lock, D3 VAT201 settlement generator
+  - DONE: inbox retry UX — extracting shell keeps PDF + spinner (no blank page)
+  - **Doc:** `docs/phase3/coverage-audit.md`
+  - **Phase 3 results**
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 13 | COA + coverage matrix | done (report) | See doc §A–B |
+| 14 | Minimal designs + rank | done (report) | See doc §C — wait for approval before build |
+| — | D1/D2/D3 proposals | needs decision | Advances VAT; sequential lock; VAT201 post JV |
+
 - 2026-10-08: **2nd-review Phase 2** (no migration; no RLS)
   - DONE: dashboard documents-to-review SoT + filtered hrefs (`inbox-classify`); Inbox confidence/type/dupes/tooltips
   - DONE: Sales/Purchases tab deep-links + Total column + subtitle parity; statements `?status=`
