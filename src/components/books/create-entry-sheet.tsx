@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Plus, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { BooksDateInput } from "@/components/books/date-input";
 import { Button } from "@/components/ui/button";
@@ -10,9 +11,15 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildJournalTemplate,
+  type JournalTemplateKey,
+  warnPrepaymentBookedAsAccrual,
+} from "@/lib/journal-templates";
 import { formatMinor } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { vatAmountForBase, vatCodeLabel } from "@/lib/vat";
+
 const VOUCHER_TYPE_OPTIONS = [
   "Sales",
   "Purchase",
@@ -24,6 +31,7 @@ const VOUCHER_TYPE_OPTIONS = [
   "Debit Note",
   "Opening",
   "Closing",
+  "Expense",
 ] as const;
 
 type Account = { id: string; code: string; name: string; accountType?: string };
@@ -42,14 +50,7 @@ type LineDraft = {
 
 type BooksTag = { id: string; name: string; colour: string };
 
-type TemplateKey =
-  | "blank"
-  | "accrual"
-  | "prepayment"
-  | "depreciation"
-  | "reclassification"
-  | "vat_settlement";
-
+type TemplateKey = JournalTemplateKey;
 export type CreateEntryPrefill = {
   entryDate?: string;
   memo?: string;
@@ -57,6 +58,8 @@ export type CreateEntryPrefill = {
   voucherType?: string;
   tags?: string[];
   correctsEntryId?: string;
+  autoReverseNextPeriod?: boolean;
+  templateKey?: string | null;
   lines?: Array<{
     accountId: string;
     debitMinor?: number;
@@ -288,13 +291,14 @@ export function CreateEntrySheet({
   const [recurringStart, setRecurringStart] = useState(() => new Date().toISOString().slice(0, 10));
   const [recurringOccurrences, setRecurringOccurrences] = useState(12);
   const [autoReverse, setAutoReverse] = useState(false);
+  const [templateHint, setTemplateHint] = useState("");
+  const [templateWarning, setTemplateWarning] = useState("");
   const [pendingFiles, setPendingFiles] = useState<Array<{ fileId: string; name: string }>>([]);
   const [dismissedVatKeys, setDismissedVatKeys] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [vatPaymentHint, setVatPaymentHint] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     if (!open) return;
     fetch("/api/books/tags")
@@ -305,8 +309,40 @@ export function CreateEntrySheet({
       .catch(() => undefined);
   }, [open]);
 
+  // A journal must be dated inside its period: default to today when today is in the selected
+  // period, otherwise to the period's last day (e.g. booking June entries in October).
+  useEffect(() => {
+    if (!open || prefill?.entryDate || !periodId) return;
+    let cancelled = false;
+    fetch("/api/books/periods")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: Array<{ id: string; periodStart?: string; periodEnd?: string }>) => {
+        const p = Array.isArray(rows) ? rows.find((r) => r.id === periodId) : undefined;
+        if (cancelled || !p?.periodStart || !p.periodEnd) return;
+        const start = String(p.periodStart).slice(0, 10);
+        const end = String(p.periodEnd).slice(0, 10);
+        const today = new Date().toISOString().slice(0, 10);
+        const inPeriod = (d: string) => d >= start && d <= end;
+        setEntryDate((cur) => (inPeriod(cur) ? cur : inPeriod(today) ? today : end));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, periodId, prefill?.entryDate]);
+
   useEffect(() => {
     if (!open || !prefill) return;
+    // Prefill (draft edit / correction) always starts from a clean template so
+    // accrual auto-reverse / template hints do not leak into the next entry.
+    setTemplate("blank");
+    setTemplateHint("");
+    setTemplateWarning("");
+    setVatPaymentHint("");
+    setDismissedVatKeys(new Set());
+    setSchedule(false);
+    setRecurring(false);
+    setAutoReverse(Boolean(prefill.autoReverseNextPeriod));
     if (prefill.entryDate) setEntryDate(prefill.entryDate);
     if (prefill.memo) setDescription(prefill.memo);
     if (prefill.reference != null) setReference(prefill.reference);
@@ -362,15 +398,34 @@ export function CreateEntrySheet({
     return Array.from({ length: n }, (_, i) => addMonths(recurringStart, recurringFreq, i));
   }, [recurring, recurringOccurrences, recurringStart, recurringFreq]);
 
+  const policyWarning = useMemo(() => {
+    if (
+      template === "accrual" ||
+      template === "income_accrual" ||
+      template === "payroll" ||
+      template === "eosb_accrual" ||
+      template === "staff_advance" ||
+      template === "staff_advance_recovery"
+    ) {
+      return null;
+    }
+    return warnPrepaymentBookedAsAccrual(
+      lines.filter((l) => !l.isAutoVatCompanion),
+      accounts,
+    );
+  }, [template, lines, accounts]);
+
   const applyTemplate = useCallback(
     async (key: TemplateKey) => {
       setTemplate(key);
       setVatPaymentHint("");
-      if (key === "blank") {
-        setLines([emptyLine(), emptyLine()]);
-        return;
-      }
+      setError("");
+
       if (key === "vat_settlement") {
+        const meta = buildJournalTemplate(key);
+        setAutoReverse(meta.autoReverseNextPeriod);
+        setTemplateHint(meta.hint || "");
+        setTemplateWarning(meta.warning || "");
         if (!periodId) {
           setError("Select a period for VAT settlement.");
           return;
@@ -411,40 +466,79 @@ export function CreateEntrySheet({
         }
         return;
       }
-      const bank = accountByCode(accounts, "1120");
-      const rent = accountByCode(accounts, "6200");
-      const accrued = accountByCode(accounts, "2120");
-      const prepaid = accountByCode(accounts, "1410");
-      const depr = accountByCode(accounts, "6800");
-      const accumDepr = accountByCode(accounts, "1690");
-      const office = accountByCode(accounts, "6600");
-      const rev = accountByCode(accounts, "4100");
 
-      if (key === "accrual") {
-        setDescription("Accrual");
-        setLines([
-          { ...emptyLine(), accountId: rent, debitMinor: 0, creditMinor: 0 },
-          { ...emptyLine(), accountId: accrued, debitMinor: 0, creditMinor: 0 },
-        ]);
-      } else if (key === "prepayment") {
-        setDescription("Prepayment");
-        setLines([
-          { ...emptyLine(), accountId: prepaid, debitMinor: 0 },
-          { ...emptyLine(), accountId: bank, creditMinor: 0 },
-        ]);
-      } else if (key === "depreciation") {
-        setDescription("Depreciation");
-        setLines([
-          { ...emptyLine(), accountId: depr, debitMinor: 0 },
-          { ...emptyLine(), accountId: accumDepr, creditMinor: 0 },
-        ]);
-      } else if (key === "reclassification") {
-        setDescription("Reclassification");
-        setLines([
-          { ...emptyLine(), accountId: office, debitMinor: 0 },
-          { ...emptyLine(), accountId: rev, creditMinor: 0 },
-        ]);
+      if (key === "ct_accrual") {
+        const meta = buildJournalTemplate(key);
+        setAutoReverse(meta.autoReverseNextPeriod);
+        setTemplateHint(meta.hint || "");
+        setTemplateWarning(meta.warning || "");
+        setVatPaymentHint("");
+        if (!periodId) {
+          setError("Select a period for CT accrual.");
+          return;
+        }
+        const res = await fetch(`/api/books/ct-accrual?periodId=${periodId}`);
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Could not load CT estimate");
+          return;
+        }
+        setDescription(String(data.memo || meta.description));
+        setVoucherType("Journal");
+        setEntryTags(["ct"]);
+        const rl = Array.isArray(data.lines) ? data.lines : [];
+        if (rl.length === 0) {
+          setLines([emptyLine(), emptyLine()]);
+          setVatPaymentHint(
+            data.noTaxDueRecorded
+              ? "No CT due recorded (SBR/QFZP) — 2230 already matches."
+              : `2230 already matches the estimate (${formatMinor(Number(data.estimateMinor || 0))} AED).`,
+          );
+          return;
+        }
+        setLines(
+          rl.map(
+            (l: {
+              accountId: string;
+              debitMinor: number;
+              creditMinor: number;
+              lineMemo: string;
+            }) => ({
+              ...emptyLine(),
+              accountId: l.accountId,
+              debitMinor: l.debitMinor,
+              creditMinor: l.creditMinor,
+              lineMemo: l.lineMemo,
+              lineTags: ["ct"],
+            }),
+          ),
+        );
+        setVatPaymentHint(
+          `Estimate ${formatMinor(Number(data.estimateMinor || 0))} AED · booked ${formatMinor(Number(data.bookedPayableMinor || 0))} · delta ${formatMinor(Number(data.deltaMinor || 0))} (${data.disclaimer || "estimate"}).`,
+        );
+        return;
       }
+
+      const meta = buildJournalTemplate(key);
+      setDescription(meta.description);
+      setAutoReverse(meta.autoReverseNextPeriod);
+      setTemplateHint(meta.hint || "");
+      setTemplateWarning(meta.warning || "");
+
+      if (key === "blank" || meta.lines.length === 0) {
+        setLines([emptyLine(), emptyLine()]);
+        return;
+      }
+
+      setLines(
+        meta.lines.map((seed) => ({
+          ...emptyLine(),
+          accountId: accountByCode(accounts, seed.accountCode),
+          debitMinor: 0,
+          creditMinor: 0,
+          lineMemo: seed.lineMemo,
+        })),
+      );
     },
     [accounts, periodId],
   );
@@ -585,7 +679,12 @@ export function CreateEntrySheet({
           });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || payload.message || "create_failed");
-      let entryId = String(payload.id);
+      if (Array.isArray(payload.warnings) && payload.warnings.includes("manual_vat_control_journal")) {
+        toast.warning(
+          "This journal moves VAT control accounts. Prefer the VAT return flow when available — check period and amounts.",
+        );
+      }
+      const entryId = String(payload.id);
       if (post && !schedule && !editEntryId) {
         const postRes = await fetch(`/api/books/journals/${entryId}/post`, { method: "POST" });
         const postPayload = await postRes.json().catch(() => ({}));
@@ -601,6 +700,7 @@ export function CreateEntrySheet({
           return;
         }
       }
+      if (editEntryId) toast.success("Draft saved — an approver who didn't edit it can post it.");
       onCreated(entryId);
       onOpenChange(false);
       setDescription("");
@@ -613,6 +713,11 @@ export function CreateEntrySheet({
       setSchedule(false);
       setRecurring(false);
       setVatPaymentHint("");
+      setTemplate("blank");
+      setAutoReverse(false);
+      setTemplateHint("");
+      setTemplateWarning("");
+      setDismissedVatKeys(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "create_failed");
     } finally {
@@ -644,10 +749,18 @@ export function CreateEntrySheet({
               [
                 ["blank", "Blank"],
                 ["accrual", "Accrual"],
+                ["income_accrual", "Income accrual"],
                 ["prepayment", "Prepayment"],
                 ["depreciation", "Depreciation"],
+                ["payroll", "Payroll"],
+                ["eosb_accrual", "EOSB accrual"],
+                ["loan_interest", "Loan interest"],
+                ["staff_advance", "Staff advance"],
+                ["staff_advance_recovery", "Advance recovery"],
                 ["reclassification", "Reclassification"],
                 ["vat_settlement", "VAT settlement"],
+                ["ct_accrual", "CT accrual"],
+                ["bad_debt", "Bad debt"],
               ] as const
             ).map(([key, label]) => (
               <Button
@@ -656,11 +769,26 @@ export function CreateEntrySheet({
                 size="sm"
                 variant={template === key ? "default" : "outline"}
                 onClick={() => void applyTemplate(key)}
+                data-testid={`create-entry-template-${key}`}
               >
                 {label}
               </Button>
             ))}
           </div>
+          {templateHint ? (
+            <p className="mb-2 text-xs text-muted-foreground" data-testid="create-entry-template-hint">
+              {templateHint}
+            </p>
+          ) : null}
+          {templateWarning || policyWarning ? (
+            <p
+              className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+              data-testid="create-entry-template-warning"
+              role="status"
+            >
+              {policyWarning || templateWarning}
+            </p>
+          ) : null}
           {vatPaymentHint ? (
             <p className="mt-2 text-xs text-muted-foreground" data-testid="vat-settlement-hint">
               {vatPaymentHint}
@@ -795,7 +923,7 @@ export function CreateEntrySheet({
               </Button>
             </div>
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[1100px] text-sm">
+              <table className="w-full min-w-[1100px] text-sm" data-own-style="">
                 <thead className="bg-muted/50 text-xs text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-2 text-left">#</th>
@@ -928,8 +1056,13 @@ export function CreateEntrySheet({
           </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={schedule} onChange={(e) => setSchedule(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm" data-testid="create-entry-schedule">
+              <input
+                type="checkbox"
+                checked={schedule}
+                onChange={(e) => setSchedule(e.target.checked)}
+                data-testid="create-entry-schedule-checkbox"
+              />
               Schedule for later post
             </label>
             {schedule ? (
@@ -943,8 +1076,13 @@ export function CreateEntrySheet({
               <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
               Recurring entry
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={autoReverse} onChange={(e) => setAutoReverse(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm" data-testid="create-entry-auto-reverse">
+              <input
+                type="checkbox"
+                checked={autoReverse}
+                onChange={(e) => setAutoReverse(e.target.checked)}
+                data-testid="create-entry-auto-reverse-checkbox"
+              />
               Auto-reverse next period
             </label>
           </div>
@@ -1012,12 +1150,26 @@ export function CreateEntrySheet({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button variant="secondary" disabled={submitting || !balanced} onClick={() => void submit(false)}>
-              Save draft
-            </Button>
-            <Button disabled={submitting || !balanced} onClick={() => void submit(true)} data-testid="create-journal">
-              {submitting ? "Saving…" : "Post"}
-            </Button>
+            {editEntryId ? (
+              // Editing a draft only saves it: whoever edits is a preparer and can't also post
+              // (dual control). Post from the entry drawer as a different approver.
+              <Button
+                disabled={submitting || !balanced}
+                onClick={() => void submit(false)}
+                data-testid="create-journal"
+              >
+                {submitting ? "Saving…" : "Save draft"}
+              </Button>
+            ) : (
+              <>
+                <Button variant="secondary" disabled={submitting || !balanced} onClick={() => void submit(false)}>
+                  Save draft
+                </Button>
+                <Button disabled={submitting || !balanced} onClick={() => void submit(true)} data-testid="create-journal">
+                  {submitting ? "Saving…" : "Post"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </SheetContent>

@@ -1,0 +1,17 @@
+{
+  "doc_type": "sales_invoice",
+  "route": "text",
+  "invoice_no": "INV-E1C-001",
+  "invoice_date": "2026-01-28",
+  "issuer_name": "Sample Holiday Homes LLC",
+  "issuer_trn": "105181487700003",
+  "customer_name": "Example Trading Inc",
+  "customer_trn": "100000000000099",
+  "currency": "AED",
+  "net": 500000,
+  "vat": 0,
+  "gross": 500000,
+  "grand_total": 500000,
+  "line_description": "4th Rental Payment",
+  "line_vat_code": "EX"
+}

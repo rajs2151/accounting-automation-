@@ -1,0 +1,12 @@
+{
+  "route": "text",
+  "doc_type": "sales_invoice",
+  "invoice_no": "INV-ING5-001",
+  "invoice_date": "2026-05-15",
+  "currency": "AED",
+  "supplier_trn": "100000000000001",
+  "customer_trn": "100123456700003",
+  "net": 1000000,
+  "vat": 50000,
+  "gross": 1050000
+}

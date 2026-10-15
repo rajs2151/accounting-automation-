@@ -1,0 +1,12 @@
+{
+  "route": "text",
+  "doc_type": "purchase_bill",
+  "invoice_no": "BILL-ING5-RC",
+  "invoice_date": "2026-05-18",
+  "currency": "USD",
+  "supplier_trn": null,
+  "net": 100000,
+  "vat": 0,
+  "gross": 100000,
+  "reverse_charge": true
+}

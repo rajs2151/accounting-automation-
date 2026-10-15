@@ -1,0 +1,29 @@
+{
+  "doc_type": "bank_statement",
+  "layout_tag": "debit_credit_columns",
+  "bank_name": "Example Bank UAE",
+  "iban": "AE070331234567890123456",
+  "currency": "AED",
+  "period_from": "2026-05-01",
+  "period_to": "2026-05-31",
+  "opening_minor": 100000,
+  "closing_minor": 130000,
+  "lines": [
+    {
+      "txn_date": "2026-05-05",
+      "description": "CLIENT RECEIPT",
+      "debit_minor": 0,
+      "credit_minor": 50000,
+      "amount_minor": 50000,
+      "running_balance_minor": 150000
+    },
+    {
+      "txn_date": "2026-05-10",
+      "description": "OFFICE RENT",
+      "debit_minor": 20000,
+      "credit_minor": 0,
+      "amount_minor": 20000,
+      "running_balance_minor": 130000
+    }
+  ]
+}

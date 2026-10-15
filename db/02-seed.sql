@@ -10,9 +10,9 @@ INSERT INTO clients (id, firm_id, name, trn, default_currency) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO users (id, firm_id, email, name, role) VALUES
-  ('44444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'layla@northwind.test', 'Layla Hassan', 'admin'),
-  ('55555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111', 'omar@northwind.test', 'Omar Faris', 'accountant'),
-  ('66666666-6666-4666-8666-666666666666', '11111111-1111-4111-8111-111111111111', 'nina@northwind.test', 'Nina Shah', 'viewer')
+  ('44444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'layla@arnibooks.test', 'Layla Hassan', 'admin'),
+  ('55555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111', 'omar@arnibooks.test', 'Omar Faris', 'accountant'),
+  ('66666666-6666-4666-8666-666666666666', '11111111-1111-4111-8111-111111111111', 'nina@arnibooks.test', 'Nina Shah', 'viewer')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO user_client_access (user_id, client_id) VALUES

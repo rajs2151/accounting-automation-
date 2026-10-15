@@ -92,6 +92,39 @@ export default async function globalSetup() {
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/20-books-coa-v2.sql")]);
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/21-books-phase0-fixes.sql")]);
   psql("daftar_e2e", ["-f", path.join(ROOT, "db/22-books-alignment.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/23-books-phase1.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/24-books-phase1-seed.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/25-books-slice1.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/26-books-approver-release-rls.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/27-books-approver-least-privilege.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/28-books-c1-printed-totals.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/29-books-c1-check-vat.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/30-pytest0-force-rls-reference.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/31-demo-owner-user.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/32-books-files-hash-per-company.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/33-books-c2-bank-accounts.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/34-books-c2-intended-account.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/35-books-c3-bank-transactions.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/36-books-c3-bank-txn-match.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/37-books-c3-transfer-link.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/38-books-p2a-bank-txn-allocations.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/39-books-p2a-match-suggestions.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/40-books-p2a-bank-rules.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/41-books-p2a-gateway-card.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/50-books-document-void.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/51-books-place-of-supply.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/52-books-vat-stagger.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/53-books-pos-supply-type.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/54-books-vat201-box-map.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/55-books-expenses.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/56-books-expense-bank-match.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/57-books-close.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/58-books-fixed-assets.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/59-books-fx-rates.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/60-books-year-end.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/61-books-fs-comments-forecasts.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/62-books-review-later.sql")]);
+  psql("daftar_e2e", ["-f", path.join(ROOT, "db/63-books-inbox-page-snippets.sql")]);
 
   const admin = new pg.Client({
     connectionString:

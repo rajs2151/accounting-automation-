@@ -1,10 +1,14 @@
 "use client";
 
 import { ChevronDown, ChevronRight, MoreHorizontal, Plus, Search } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useBooksShell } from "@/components/books/books-shell-context";
+import { FxRatesSection } from "@/components/books/fx-rates-section";
+import { CtSettingsSection } from "@/components/books/ct-settings-section";
+import { VatSettingsSection } from "@/components/books/vat-settings-section";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,13 +25,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiErrorMessage } from "@/lib/api-error";
 import { formatDateUae } from "@/lib/date";
-import { formatMinor } from "@/lib/money";
+import { displayToMinor, formatMinor } from "@/lib/money";
 import { statementLineLabel } from "@/lib/statement-line";
 
-type Profile = { id: string; name: string; trn: string | null; defaultCurrency: string };
+type Profile = {
+  id: string;
+  name: string;
+  trn: string | null;
+  defaultCurrency: string;
+  fiscalYearStartMonth?: number;
+  booksStartPeriodId?: string | null;
+};
 type Period = { id: string; label: string; periodStart: string; periodEnd: string; status: string };
-type UserRow = { id: string; name: string; email: string; role: string };
+type UserRow = { id: string; name: string; email: string; role: string; isMe?: boolean };
 type CoaNode = {
   id: string;
   code: string;
@@ -41,6 +53,17 @@ type CoaNode = {
   active: boolean;
   children: CoaNode[];
 };
+
+/** Lock refusal text, listing failing checklist items (waive or fix them on the Close page). */
+function lockErrorMessage(data: {
+  error?: string;
+  failingGates?: Array<{ key: string; label?: string }>;
+}) {
+  const failList = Array.isArray(data.failingGates)
+    ? data.failingGates.map((g) => g.label || g.key).join(", ")
+    : "";
+  return (apiErrorMessage(data) || data.error || "lock_failed") + (failList ? ` (${failList})` : "");
+}
 
 function flattenCoa(nodes: CoaNode[], depth = 0, out: Array<CoaNode & { depth: number }> = []) {
   for (const n of nodes) {
@@ -210,7 +233,7 @@ function CoaSection({ periodId }: { periodId: string }) {
                               });
                               if (!res.ok) {
                                 const err = await res.json().catch(() => ({}));
-                                toast.error(err.error || "Cannot deactivate");
+                                toast.error(apiErrorMessage(err, "Cannot deactivate"));
                                 return;
                               }
                               toast.success("Account deactivated");
@@ -333,7 +356,7 @@ function CoaSection({ periodId }: { periodId: string }) {
           <DialogFooter>
             <Button
               onClick={async () => {
-                await fetch("/api/books/accounts", {
+                const res = await fetch("/api/books/accounts", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -342,6 +365,12 @@ function CoaSection({ periodId }: { periodId: string }) {
                     isPostable: true,
                   }),
                 });
+                if (!res.ok) {
+                  // e.g. account_code_exists — keep the dialog open so the code can be changed.
+                  toast.error(apiErrorMessage(await res.json().catch(() => ({})), "Could not create the account."));
+                  return;
+                }
+                toast.success("Account created");
                 setAddOpen(false);
                 setAddParent(null);
                 void reload();
@@ -358,8 +387,328 @@ function CoaSection({ periodId }: { periodId: string }) {
 
 type VoucherSeq = { voucherType: string; year: number; prefix: string; lastN: number };
 
+type ObRow = { code: string; debitAed: string; creditAed: string; partyId: string };
+type PartyOpt = { id: string; name: string; partyType: string };
+
+function OpeningBalancesSection({ periods }: { periods: Period[] }) {
+  const { reloadPeriods } = useBooksShell();
+  const [rows, setRows] = useState<ObRow[]>([
+    { code: "1120", debitAed: "1000.00", creditAed: "", partyId: "" },
+    { code: "3900", debitAed: "", creditAed: "1000.00", partyId: "" },
+  ]);
+  const [parties, setParties] = useState<PartyOpt[]>([]);
+  const [partyItems, setPartyItems] = useState<
+    Array<{ partyId: string; side: "AR" | "AP"; amountAed: string }>
+  >([]);
+  const [unlockReason, setUnlockReason] = useState("Opening balance import");
+  const [message, setMessage] = useState("");
+  const [draftId, setDraftId] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/books/parties")
+      .then((r) => r.json())
+      .then((list) => {
+        if (Array.isArray(list)) setParties(list);
+      });
+  }, []);
+
+  const apr = periods.find((p) => /Apr\s*2026/i.test(p.label));
+
+  async function onFile(file: File | null) {
+    if (!file) return;
+    const text = await file.text();
+    const next: ObRow[] = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || /^code/i.test(line) || /^account/i.test(line)) continue;
+      const [code, debit = "", credit = ""] = line.split(",").map((p) => p.trim());
+      if (!code) continue;
+      // Accept AED decimals or raw fils integers (≥1000 without decimal → treat as fils/100 display)
+      const d = debit.includes(".") || !debit ? debit || "" : (Number(debit) / 100).toFixed(2);
+      const c = credit.includes(".") || !credit ? credit || "" : (Number(credit) / 100).toFixed(2);
+      next.push({
+        code,
+        debitAed: d && Number(d) ? Number(d).toFixed(2) : debit.includes(".") ? debit : d,
+        creditAed: c && Number(c) ? Number(c).toFixed(2) : credit.includes(".") ? credit : c,
+        partyId: "",
+      });
+    }
+    if (next.length) setRows(next);
+  }
+
+  async function unlockStartPeriod() {
+    if (!apr) {
+      setMessage("Apr 2026 period not found");
+      return;
+    }
+    const res = await fetch(`/api/books/periods/${apr.id}/reopen`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: unlockReason || "Opening balance import" }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setMessage(data.error || "unlock_failed");
+      return;
+    }
+    setMessage(`Unlocked ${apr.label} — reason audited. Map TB, then relock after post.`);
+    await reloadPeriods();
+  }
+
+  async function mapImport() {
+    setMessage("");
+    const lines = [];
+    for (const r of rows) {
+      let debitMinor = 0;
+      let creditMinor = 0;
+      try {
+        debitMinor = r.debitAed ? displayToMinor(r.debitAed) ?? 0 : 0;
+        creditMinor = r.creditAed ? displayToMinor(r.creditAed) ?? 0 : 0;
+      } catch {
+        setMessage(`Invalid amount on ${r.code}`);
+        return;
+      }
+      if (!debitMinor && !creditMinor) continue;
+      lines.push({
+        accountCode: r.code,
+        debitMinor,
+        creditMinor,
+        partyId: r.partyId || null,
+      });
+    }
+    const partyOpenItems = [];
+    for (const p of partyItems) {
+      if (!p.partyId) continue;
+      try {
+        partyOpenItems.push({
+          partyId: p.partyId,
+          side: p.side,
+          amountMinor: displayToMinor(p.amountAed) ?? 0,
+        });
+      } catch {
+        setMessage("Invalid AR/AP amount");
+        return;
+      }
+    }
+    const res = await fetch("/api/books/opening-imports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lines, partyOpenItems }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setMessage(data.error || "import_failed");
+      return;
+    }
+    setDraftId(String(data.id || data.importId || data.documentId || ""));
+    setMessage(
+      `Mapped OB as-of ${data.asOfDate} → ${data.periodLabel}. Switch to approver and post, then relock.`,
+    );
+  }
+
+  async function postImport() {
+    if (!draftId) {
+      setMessage("Map a TB first");
+      return;
+    }
+    const res = await fetch(`/api/books/opening-imports/${draftId}/post`, {
+      method: "POST",
+      body: "{}",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setMessage(data.error || "post_failed");
+      return;
+    }
+    setMessage(`Posted ${data.entryNo || "opening"}. Relock the start period when done.`);
+  }
+
+  async function relockStart() {
+    if (!apr) return;
+    // Goes through the close checklist (gates must pass or be waived on the Close page).
+    const res = await fetch(`/api/books/periods/${apr.id}/lock`, { method: "POST", body: "{}" });
+    if (!res.ok) {
+      const data = await res.json();
+      setMessage(lockErrorMessage(data));
+      return;
+    }
+    setMessage(`Relocked ${apr.label} (audited).`);
+    await reloadPeriods();
+  }
+
+  return (
+    <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="opening-balances">
+      <h2 className="text-lg font-medium">Opening balances</h2>
+      <p className="text-sm text-muted-foreground">
+        Unlock the books-start period (reason required) → import TB (CSV/XLSX) → post as approver →
+        relock. All steps are audited. Amounts in AED.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-[220px] flex-1">
+          <Label>Unlock reason</Label>
+          <Input
+            className="mt-1"
+            value={unlockReason}
+            onChange={(e) => setUnlockReason(e.target.value)}
+            data-testid="ob-unlock-reason"
+          />
+        </div>
+        <Button variant="outline" onClick={() => void unlockStartPeriod()} data-testid="ob-unlock">
+          Unlock start period
+        </Button>
+        <Button variant="outline" onClick={() => void relockStart()} data-testid="ob-relock">
+          Relock
+        </Button>
+      </div>
+      <div>
+        <Label>Upload TB (CSV / XLSX text)</Label>
+        <Input
+          className="mt-1"
+          type="file"
+          accept=".csv,.xlsx,.txt"
+          data-testid="ob-file"
+          onChange={(e) => void onFile(e.target.files?.[0] || null)}
+        />
+      </div>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full text-sm" data-testid="ob-mapping-table">
+          <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+            <tr>
+              <th className="px-2 py-2">Account</th>
+              <th className="px-2 py-2">Debit (AED)</th>
+              <th className="px-2 py-2">Credit (AED)</th>
+              <th className="px-2 py-2">Party (AR/AP)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.code}-${i}`} className="border-t border-border">
+                <td className="px-2 py-1">
+                  <Input
+                    className="h-8 font-mono"
+                    value={r.code}
+                    onChange={(e) => {
+                      const next = [...rows];
+                      next[i] = { ...r, code: e.target.value };
+                      setRows(next);
+                    }}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <Input
+                    className="h-8"
+                    value={r.debitAed}
+                    onChange={(e) => {
+                      const next = [...rows];
+                      next[i] = { ...r, debitAed: e.target.value };
+                      setRows(next);
+                    }}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <Input
+                    className="h-8"
+                    value={r.creditAed}
+                    onChange={(e) => {
+                      const next = [...rows];
+                      next[i] = { ...r, creditAed: e.target.value };
+                      setRows(next);
+                    }}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <select
+                    className="h-8 w-full rounded-md border border-input bg-background px-1 text-xs"
+                    value={r.partyId}
+                    onChange={(e) => {
+                      const next = [...rows];
+                      next[i] = { ...r, partyId: e.target.value };
+                      setRows(next);
+                    }}
+                  >
+                    <option value="">—</option>
+                    {parties.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label>AR / AP party detail</Label>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              setPartyItems((prev) => [...prev, { partyId: "", side: "AR", amountAed: "0.00" }])
+            }
+          >
+            Add party open item
+          </Button>
+        </div>
+        {partyItems.map((p, i) => (
+          <div key={i} className="grid gap-2 md:grid-cols-3">
+            <select
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={p.partyId}
+              onChange={(e) => {
+                const next = [...partyItems];
+                next[i] = { ...p, partyId: e.target.value };
+                setPartyItems(next);
+              }}
+            >
+              <option value="">Party…</option>
+              {parties.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={p.side}
+              onChange={(e) => {
+                const next = [...partyItems];
+                next[i] = { ...p, side: e.target.value as "AR" | "AP" };
+                setPartyItems(next);
+              }}
+            >
+              <option value="AR">AR</option>
+              <option value="AP">AP</option>
+            </select>
+            <Input
+              value={p.amountAed}
+              onChange={(e) => {
+                const next = [...partyItems];
+                next[i] = { ...p, amountAed: e.target.value };
+                setPartyItems(next);
+              }}
+              placeholder="Amount AED"
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={() => void mapImport()} data-testid="ob-map">
+          Map opening TB
+        </Button>
+        <Button variant="outline" onClick={() => void postImport()} data-testid="ob-post">
+          Post opening (approver)
+        </Button>
+      </div>
+      {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+    </section>
+  );
+}
+
 export default function BooksSettingsPage() {
-  const { periodId } = useBooksShell();
+  const { periodId, reloadPeriods } = useBooksShell();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -368,28 +717,55 @@ export default function BooksSettingsPage() {
   const [inviteRole, setInviteRole] = useState("accountant");
   const [name, setName] = useState("");
   const [trn, setTrn] = useState("");
+  const [fyMonth, setFyMonth] = useState(1);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  const [buildSha, setBuildSha] = useState("");
 
   async function reload() {
-    const [p, per, u, seq] = await Promise.all([
-      fetch("/api/books/company").then((r) => r.json()),
-      fetch("/api/books/periods").then((r) => r.json()),
-      fetch("/api/books/users").then((r) => r.json()),
-      fetch("/api/books/voucher-sequences").then((r) => r.json()),
-    ]);
-    if (p?.id) {
-      setProfile(p);
-      setName(p.name || "");
-      setTrn(p.trn || "");
+    // Load independently so one failing endpoint does not blank the whole page.
+    const errors: string[] = [];
+    try {
+      const p = await fetch("/api/books/company").then((r) => r.json());
+      if (p?.id) {
+        setProfile(p);
+        setName(p.name || "");
+        setTrn(p.trn || "");
+        setFyMonth(Number(p.fiscalYearStartMonth || 1));
+      } else if (p?.error) errors.push(`company:${p.error}`);
+    } catch {
+      errors.push("company");
     }
-    if (Array.isArray(per)) setPeriods(per);
-    if (Array.isArray(u)) setUsers(u);
-    if (Array.isArray(seq)) setSequences(seq);
+    try {
+      const per = await fetch("/api/books/periods").then((r) => r.json());
+      if (Array.isArray(per)) setPeriods(per);
+      else if (per?.error) errors.push(`periods:${per.error}`);
+    } catch {
+      errors.push("periods");
+    }
+    try {
+      const u = await fetch("/api/books/users").then((r) => r.json());
+      if (Array.isArray(u)) setUsers(u);
+    } catch {
+      errors.push("users");
+    }
+    try {
+      const seq = await fetch("/api/books/voucher-sequences").then((r) => r.json());
+      if (Array.isArray(seq)) setSequences(seq);
+    } catch {
+      errors.push("sequences");
+    }
+    if (errors.length) setError(`Partial load: ${errors.join(", ")}`);
+    else setError("");
   }
 
   useEffect(() => {
-    reload().catch(() => setError("Could not load settings."));
+    void reload();
+    setBuildSha(
+      process.env.NEXT_PUBLIC_BUILD_SHA ||
+        process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
+        "local-dev",
+    );
   }, []);
 
   async function saveProfile() {
@@ -398,10 +774,11 @@ export default function BooksSettingsPage() {
     const res = await fetch("/api/books/company", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, trn: trn || null }),
+      body: JSON.stringify({ name, trn: trn || null, fiscalYearStartMonth: fyMonth }),
     });
     if (!res.ok) {
-      setError("Profile save failed.");
+      const data = await res.json().catch(() => ({}));
+      setError(apiErrorMessage(data, "Profile save failed."));
       return;
     }
     setSaved("Company profile saved.");
@@ -409,17 +786,34 @@ export default function BooksSettingsPage() {
   }
 
   async function lockPeriod(id: string) {
-    await fetch(`/api/books/periods/${id}/lock`, { method: "POST", body: "{}" });
+    // Same gated path as the Close page: failing gates are reported, not skipped.
+    const res = await fetch(`/api/books/periods/${id}/lock`, { method: "POST", body: "{}" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      await reload();
+      await reloadPeriods();
+      setError(lockErrorMessage(data));
+      return;
+    }
     await reload();
+    await reloadPeriods();
   }
 
   async function unlockPeriod(id: string) {
-    await fetch(`/api/books/periods/${id}/reopen`, {
+    const res = await fetch(`/api/books/periods/${id}/reopen`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: "Settings unlock" }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      await reload();
+      await reloadPeriods();
+      setError(apiErrorMessage(data) || data.error || "unlock_failed");
+      return;
+    }
     await reload();
+    await reloadPeriods();
   }
 
   return (
@@ -431,28 +825,104 @@ export default function BooksSettingsPage() {
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       {saved ? <p className="text-sm text-status-ok">{saved}</p> : null}
 
-      <section className="space-y-3 rounded-lg border border-border bg-card p-4">
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="company-profile">
         <h2 className="text-lg font-medium">Company profile</h2>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="co-name">Legal name</Label>
-            <Input id="co-name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              id="co-name"
+              data-testid="company-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
           </div>
           <div className="space-y-1">
             <Label htmlFor="co-trn">TRN</Label>
-            <Input id="co-trn" value={trn} onChange={(e) => setTrn(e.target.value)} />
+            <Input
+              id="co-trn"
+              data-testid="company-trn"
+              value={trn}
+              inputMode="numeric"
+              maxLength={15}
+              placeholder="15 digits"
+              onChange={(e) => setTrn(e.target.value)}
+            />
           </div>
           <div className="space-y-1">
             <Label>Default currency</Label>
             <Input value={profile?.defaultCurrency || "AED"} disabled />
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="fy-start">Fiscal year start month</Label>
+            <Input
+              id="fy-start"
+              data-testid="fiscal-year-start-month"
+              type="number"
+              min={1}
+              max={12}
+              value={fyMonth}
+              onChange={(e) => setFyMonth(Number(e.target.value))}
+            />
+            <p className="text-xs text-muted-foreground">
+              Separate from books-start period. Voucher number series use this fiscal year.
+            </p>
+          </div>
         </div>
+        <p className="text-xs text-muted-foreground">Only an admin can change the company profile.</p>
         <Button onClick={saveProfile}>Save profile</Button>
+      </section>
+
+      <VatSettingsSection />
+      <CtSettingsSection />
+
+      <FxRatesSection />
+
+      <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+        <h2 className="text-lg font-medium">Fixed assets</h2>
+        <p className="text-sm text-muted-foreground">
+          Register assets and run monthly straight-line depreciation (dual-control JV).
+        </p>
+        <Link
+          href="/books/fixed-assets"
+          className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+        >
+          Open fixed assets
+        </Link>
       </section>
 
       <CoaSection periodId={periodId} />
 
-      <section className="space-y-3 rounded-lg border border-border bg-card p-4">
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="settings-csv-templates">
+        <h2 className="text-lg font-medium">CSV templates</h2>
+        <p className="text-sm text-muted-foreground">
+          Blank import templates (fake headers only). Fill locally — never commit real TRNs or IBANs.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <a
+            className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+            href={`data:text/csv;charset=utf-8,${encodeURIComponent(
+              "code,name,type,sub_type,postable\n1000,Sample asset,asset,bank,true\n",
+            )}`}
+            download="coa-template.csv"
+            data-testid="settings-coa-csv-template"
+          >
+            Chart of accounts CSV
+          </a>
+          <a
+            className="inline-flex h-9 items-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent"
+            href={`data:text/csv;charset=utf-8,${encodeURIComponent(
+              "party_type,name,trn,country,emirate,email\ncustomer,Example Customer FZE,100000000000003,AE,Dubai,\nsupplier,Example Supplier LLC,100000000000004,AE,Dubai,\n",
+            )}`}
+            download="parties-template.csv"
+            data-testid="settings-parties-csv-template"
+          >
+            Parties CSV
+          </a>
+        </div>
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4" data-testid="periods-table">
         <h2 className="text-lg font-medium">Periods</h2>
         <table className="w-full text-sm">
           <thead>
@@ -464,29 +934,39 @@ export default function BooksSettingsPage() {
             </tr>
           </thead>
           <tbody>
-            {periods.map((p) => (
-              <tr key={p.id} className="border-t border-border">
-                <td className="py-2 font-medium">{p.label}</td>
-                <td>
-                  {formatDateUae(p.periodStart)} → {formatDateUae(p.periodEnd)}
-                </td>
-                <td>{p.status}</td>
-                <td className="space-x-2 text-right">
-                  {p.status === "LOCKED" ? (
-                    <Button size="sm" variant="outline" onClick={() => unlockPeriod(p.id)}>
-                      Unlock
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="outline" onClick={() => lockPeriod(p.id)}>
-                      Lock
-                    </Button>
-                  )}
+            {periods.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="py-6 text-center text-muted-foreground">
+                  No periods loaded
                 </td>
               </tr>
-            ))}
+            ) : (
+              periods.map((p) => (
+                <tr key={p.id} className="border-t border-border">
+                  <td className="py-2 font-medium">{p.label}</td>
+                  <td>
+                    {formatDateUae(p.periodStart)} → {formatDateUae(p.periodEnd)}
+                  </td>
+                  <td>{p.status}</td>
+                  <td className="space-x-2 text-right">
+                    {p.status === "LOCKED" ? (
+                      <Button size="sm" variant="outline" onClick={() => unlockPeriod(p.id)}>
+                        Unlock
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => lockPeriod(p.id)}>
+                        Lock
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </section>
+
+      <OpeningBalancesSection periods={periods} />
 
       <section className="space-y-3 rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-medium">Users & roles</h2>
@@ -501,32 +981,21 @@ export default function BooksSettingsPage() {
           <tbody>
             {users.map((u) => (
               <tr key={u.id} className="border-t border-border">
-                <td className="py-2">{u.name}</td>
+                <td className="py-2">
+                  {u.name}
+                  {u.isMe ? <span className="text-muted-foreground"> (you)</span> : null}
+                </td>
                 <td>{u.email}</td>
-                <td>
-                  <select
-                    className="h-8 rounded-md border border-border px-2 text-sm capitalize"
-                    value={u.role}
-                    data-testid={`user-role-${u.id}`}
-                    onChange={async (e) => {
-                      await fetch(`/api/books/users/${u.id}/role`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ role: e.target.value }),
-                      });
-                      await reload();
-                    }}
-                  >
-                    <option value="admin">admin</option>
-                    <option value="accountant">accountant</option>
-                    <option value="approver">approver</option>
-                    <option value="viewer">viewer</option>
-                  </select>
+                <td className="capitalize" data-testid={`user-role-${u.id}`}>
+                  {u.role}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        <p className="text-xs text-muted-foreground">
+          Everyone in your firm, with their role. Roles are read-only here for now.
+        </p>
         <div className="flex flex-wrap items-end gap-2 border-t border-border pt-3">
           <div>
             <Label>Invite email</Label>
@@ -534,7 +1003,7 @@ export default function BooksSettingsPage() {
               className="mt-1"
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
-              placeholder="name@firm.test"
+              placeholder="name@arnibooks.test"
               data-testid="invite-email"
             />
           </div>
@@ -637,6 +1106,19 @@ export default function BooksSettingsPage() {
             ))}
           </tbody>
         </table>
+        <p className="text-xs text-muted-foreground">
+          Sequences are scoped to the company fiscal year (start month above), not books-start period.
+        </p>
+      </section>
+
+      <section className="space-y-2 rounded-lg border border-border bg-card p-4" data-testid="about">
+        <h2 className="text-lg font-medium">About</h2>
+        <p className="text-sm text-muted-foreground">
+          arnibooks · build <span data-testid="build-sha">{buildSha || "local-dev"}</span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Portal security gate remains FAIL until PASS — synthetic companies only.
+        </p>
       </section>
     </div>
   );

@@ -1,6 +1,7 @@
 import { withUser } from "@/lib/db";
 import { assertSyntheticTenant } from "@/server/security-gate";
 import { BooksError } from "@/server/books/errors";
+import { assertUuid } from "@/server/books/periods";
 
 export type TbAccountRow = {
   id: string;
@@ -39,6 +40,7 @@ export async function booksTrialBalance(
   periodId: string,
   opts?: { includeZeroBalances?: boolean },
 ) {
+  assertUuid(periodId, "invalid_period_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const period = await db.query(
@@ -71,10 +73,9 @@ export async function booksTrialBalance(
        GROUP BY a.id, a.code, a.name, a.account_type, a.normal_balance, a.statement_line, a.default_vat_code
        HAVING
          $4::boolean
-         OR COALESCE(SUM(CASE WHEN e.entry_date < $2::date THEN l.debit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date < $2::date THEN l.credit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date >= $2::date AND e.entry_date <= $3::date THEN l.debit_minor ELSE 0 END), 0) <> 0
-         OR COALESCE(SUM(CASE WHEN e.entry_date >= $2::date AND e.entry_date <= $3::date THEN l.credit_minor ELSE 0 END), 0) <> 0
+         OR (
+           COALESCE(SUM(l.debit_minor), 0) - COALESCE(SUM(l.credit_minor), 0)
+         ) <> 0
        ORDER BY a.code`,
       [clientId, periodStart, periodEnd, includeZero],
     );
@@ -155,6 +156,8 @@ export async function booksAccountLedger(
   periodId: string,
   accountId: string,
 ) {
+  assertUuid(periodId, "invalid_period_id");
+  assertUuid(accountId, "invalid_account_id");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const period = await db.query(
@@ -190,9 +193,12 @@ export async function booksAccountLedger(
        JOIN books_journal_entries e ON e.id = l.entry_id
        WHERE l.account_id = $1 AND e.client_id = $2
          AND e.status IN ('posted', 'reversed')
+         AND e.entry_date >= $4::date
          AND e.entry_date <= $3::date
        ORDER BY e.entry_date ASC, e.created_at ASC, l.id ASC`,
-      [accountId, clientId, periodEnd],
+      // Lines before the period are already in the opening — start the list at period start
+      // (they were counted twice before; RPT-1 owner fix).
+      [accountId, clientId, periodEnd, period.rows[0].period_start],
     );
 
     const normal = String(acct.rows[0].normalBalance || "debit");

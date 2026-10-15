@@ -57,19 +57,60 @@ def _actor_from_job(conn, job: dict) -> str:
     raise ValueError("actor_unresolved")
 
 
+MAX_EXTRACT_ATTEMPTS = 3
+STUCK_RUNNING_MINUTES = 20
+
+
+def recover_stuck_books_jobs(conn) -> int:
+    """Re-queue extract jobs left in running (worker crash / timeout)."""
+    rows = conn.execute(
+        """
+        UPDATE books_jobs
+        SET status = 'queued', error = 'requeued_stuck', finished_at = NULL
+        WHERE status = 'running'
+          AND kind IN ('extract_document', 'classify_document')
+          AND created_at < now() - make_interval(mins => %s)
+        RETURNING id
+        """,
+        (STUCK_RUNNING_MINUTES,),
+    ).fetchall()
+    return len(rows or [])
+
+
 def run_books_job(conn, job: dict) -> None:
     kind = job["kind"]
+    inbox_id = None
     try:
-        actor = _actor_from_job(conn, job)
-        _as_actor(conn, actor)
-        if kind == "schedule_post":
-            _schedule_post(conn, job)
-        elif kind == "recurring_materialize":
-            _recurring_materialize(conn, job)
-        elif kind == "auto_reverse":
-            _auto_reverse(conn, job)
+        if kind in ("extract_document", "classify_document"):
+            # Prefer uploader from books_files; fall back to Omar preparer seed.
+            p = _payload(job)
+            inbox_id = p.get("inboxItemId") or p.get("inbox_item_id")
+            actor = p.get("actorUserId") or "55555555-5555-4555-8555-555555555555"
+            file_id = p.get("fileId") or p.get("file_id")
+            if file_id:
+                frow = conn.execute(
+                    "SELECT uploaded_by FROM books_files WHERE id = %s",
+                    (file_id,),
+                ).fetchone()
+                if frow and frow.get("uploaded_by"):
+                    actor = str(frow["uploaded_by"])
+            _as_actor(conn, actor)
+            _extract_document(conn, job)
         else:
-            raise ValueError(f"unknown_books_job:{kind}")
+            actor = _actor_from_job(conn, job)
+            _as_actor(conn, actor)
+            if kind == "schedule_post":
+                _schedule_post(conn, job)
+            elif kind == "recurring_materialize":
+                _recurring_materialize(conn, job)
+            elif kind == "auto_reverse":
+                _auto_reverse(conn, job)
+            elif kind == "deferred_release":
+                _deferred_release(conn, job)
+            elif kind == "prepaid_release":
+                _prepaid_release(conn, job)
+            else:
+                raise ValueError(f"unknown_books_job:{kind}")
         conn.execute(
             "SELECT books_complete_job(%s::uuid, 'done', NULL)",
             (job["id"],),
@@ -77,10 +118,54 @@ def run_books_job(conn, job: dict) -> None:
         conn.commit()
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
+        err = str(exc)[:500]
+        p = _payload(job)
+        attempts = int(p.get("attempt") or p.get("attempts") or 0) + 1
+        inbox_id = inbox_id or p.get("inboxItemId") or p.get("inbox_item_id")
+        if kind in ("extract_document", "classify_document") and attempts < MAX_EXTRACT_ATTEMPTS:
+            # Retry with backoff; keep inbox on extracting until final failure.
+            delay_sec = min(60 * attempts, 300)
+            p["attempt"] = attempts
+            conn.execute(
+                """
+                UPDATE books_jobs
+                SET status = 'queued', run_at = now() + make_interval(secs => %s),
+                    error = %s, finished_at = NULL, payload = %s::jsonb
+                WHERE id = %s
+                """,
+                (delay_sec, err, json.dumps(p), job["id"]),
+            )
+            if inbox_id:
+                conn.execute(
+                    """
+                    UPDATE books_inbox_items
+                    SET status = 'queued', error = %s, updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (f"retry:{attempts}:{err}"[:500], inbox_id),
+                )
+            conn.commit()
+            logger.warning(
+                "books_job retry id=%s kind=%s attempt=%s err=%s",
+                job["id"],
+                kind,
+                attempts,
+                exc,
+            )
+            return
         conn.execute(
             "SELECT books_complete_job(%s::uuid, 'failed', %s)",
-            (job["id"], str(exc)[:500]),
+            (job["id"], err),
         )
+        if inbox_id:
+            conn.execute(
+                """
+                UPDATE books_inbox_items
+                SET status = 'failed', error = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (err, inbox_id),
+            )
         conn.commit()
         logger.error("books_job failed id=%s kind=%s err=%s", job["id"], kind, exc)
 
@@ -142,6 +227,7 @@ def _schedule_post(conn, job: dict) -> None:
                     {
                         "entryId": str(entry_id),
                         "actorUserId": str(row["created_by"]),
+                        "reverseOn": run_on.isoformat(),
                     }
                 ),
                 run_on.isoformat(),
@@ -167,6 +253,23 @@ def _recurring_materialize(conn, job: dict) -> None:
     lines = tmpl["line_payload"]
     if isinstance(lines, str):
         lines = json.loads(lines)
+    # The occurrence belongs to the period containing its own date, not the template's
+    # original period; refuse a missing or LOCKED period instead of back/forward-dating.
+    occ_date = _as_date(tmpl["next_date"])
+    period = conn.execute(
+        """
+        SELECT id, status FROM books_periods
+        WHERE client_id = %s
+          AND period_start <= %s AND period_end >= %s
+        ORDER BY (status = 'LOCKED') DESC, period_start DESC
+        LIMIT 1
+        """,
+        (tmpl["client_id"], occ_date, occ_date),
+    ).fetchone()
+    if not period:
+        raise ValueError(f"recurring_period_missing:{occ_date.isoformat()}")
+    if period["status"] not in ("OPEN", "REOPENED"):
+        raise ValueError(f"recurring_period_locked:{occ_date.isoformat()}")
     entry_id = str(uuid4())
     conn.execute(
         """
@@ -178,7 +281,7 @@ def _recurring_materialize(conn, job: dict) -> None:
         (
             entry_id,
             tmpl["client_id"],
-            tmpl["period_id"],
+            period["id"],
             tmpl["memo"],
             tmpl["next_date"],
             f"recurring-{entry_id}",
@@ -263,7 +366,26 @@ def _recurring_materialize(conn, job: dict) -> None:
         )
 
 
+def _first_of_next_month(d: date) -> date:
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+def _as_date(value) -> date:
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
 def _auto_reverse(conn, job: dict) -> None:
+    """Post a reversing entry dated the 1st of the month after the original.
+
+    Payload may include reverseOn (YYYY-MM-DD). Older jobs without reverseOn
+    fall back to first-of-next-month from the original entry_date (not today).
+    Missing or locked target period fails the job instead of posting into the
+    original month.
+    """
     p = _payload(job)
     entry_id = p.get("entryId") or p.get("entry_id")
     orig = conn.execute(
@@ -272,21 +394,42 @@ def _auto_reverse(conn, job: dict) -> None:
     ).fetchone()
     if not orig:
         return
+
+    reverse_on_raw = p.get("reverseOn") or p.get("reverse_on")
+    if reverse_on_raw:
+        rev_date = _as_date(reverse_on_raw)
+    else:
+        rev_date = _first_of_next_month(_as_date(orig["entry_date"]))
+
+    period = conn.execute(
+        """
+        SELECT id, status FROM books_periods
+        WHERE client_id = %s
+          AND period_start <= %s AND period_end >= %s
+        ORDER BY (status = 'LOCKED') DESC, period_start DESC
+        LIMIT 1
+        """,
+        (orig["client_id"], rev_date, rev_date),
+    ).fetchone()
+    if not period:
+        raise ValueError(f"auto_reverse_period_missing:{rev_date.isoformat()}")
+    if period["status"] not in ("OPEN", "REOPENED"):
+        raise ValueError(f"auto_reverse_period_locked:{rev_date.isoformat()}")
+
     rev_id = str(uuid4())
-    today = date.today()
     conn.execute(
         """
         INSERT INTO books_journal_entries (
           id, client_id, period_id, memo, entry_date, status, reverses_entry_id,
-          entry_type, content_hash, created_by
-        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,'reversal',%s,%s)
+          entry_type, voucher_type, content_hash, created_by
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,'reversal','Journal',%s,%s)
         """,
         (
             rev_id,
             orig["client_id"],
-            orig["period_id"],
+            period["id"],
             f"Auto-reversal of {orig.get('entry_no') or entry_id}",
-            today,
+            rev_date,
             entry_id,
             f"auto-rev-{rev_id}",
             orig["created_by"],
@@ -297,12 +440,14 @@ def _auto_reverse(conn, job: dict) -> None:
         (entry_id,),
     ).fetchall()
     for line in lines:
+        # Same foreign-currency amount + rate on the opposite side so FC balances net to zero.
         conn.execute(
             """
             INSERT INTO books_journal_lines (
               entry_id, client_id, account_id, debit_minor, credit_minor,
-              currency, aed_minor, line_memo, vat_treatment, vat_code, tags
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              currency, original_minor, fx_rate_scaled, aed_minor, line_memo,
+              vat_treatment, vat_code, tags
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 rev_id,
@@ -311,6 +456,8 @@ def _auto_reverse(conn, job: dict) -> None:
                 line["credit_minor"],
                 line["debit_minor"],
                 line["currency"],
+                line.get("original_minor"),
+                line.get("fx_rate_scaled"),
                 line["aed_minor"],
                 f"Reversal: {line.get('line_memo') or ''}",
                 line.get("vat_treatment"),
@@ -318,7 +465,7 @@ def _auto_reverse(conn, job: dict) -> None:
                 line.get("tags") or [],
             ),
         )
-    year = today.year
+    year = rev_date.year
     entry_no = conn.execute(
         "SELECT books_next_entry_no(%s::uuid, %s::int) AS n",
         (orig["client_id"], year),
@@ -338,4 +485,203 @@ def _auto_reverse(conn, job: dict) -> None:
         WHERE id = %s
         """,
         (rev_id, entry_id),
+    )
+
+def _extract_document(conn, job: dict) -> None:
+    from daftar.extraction import process_extract_document
+    from daftar.settings import load_settings
+    from daftar.storage import ObjectStore
+
+    settings = load_settings()
+    store = ObjectStore(settings)
+    process_extract_document(conn, store, _payload(job))
+
+
+def _deferred_release(conn, job: dict) -> None:
+    """Release deferred revenue: Dr 2310 / Cr revenue for a schedule row."""
+    p = _payload(job)
+    schedule_id = p.get("scheduleId") or p.get("schedule_id")
+    if not schedule_id:
+        raise ValueError("scheduleId_required")
+    sched = conn.execute(
+        """
+        SELECT s.*, p.status AS period_status
+        FROM books_deferred_schedules s
+        LEFT JOIN books_periods p ON p.id = s.period_id
+        WHERE s.id = %s
+        """,
+        (schedule_id,),
+    ).fetchone()
+    if not sched:
+        raise ValueError("schedule_not_found")
+    if sched["status"] != "pending":
+        return
+    if sched.get("period_status") == "LOCKED":
+        conn.execute(
+            "UPDATE books_deferred_schedules SET status = 'blocked' WHERE id = %s",
+            (schedule_id,),
+        )
+        return
+    deferred = conn.execute(
+        "SELECT id FROM books_accounts WHERE client_id = %s AND code = '2310'",
+        (sched["client_id"],),
+    ).fetchone()
+    if not deferred:
+        raise ValueError("deferred_account_missing")
+    amount = int(sched["amount_aed_minor"])
+    entry_id = str(uuid4())
+    period_id = sched["period_id"]
+    actor = _actor_from_job(conn, job)
+    conn.execute(
+        """
+        INSERT INTO books_journal_entries (
+          id, client_id, period_id, memo, entry_date, status, content_hash,
+          created_by, voucher_type
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,%s,'Journal')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            period_id,
+            "Deferred revenue release",
+            sched["release_date"],
+            "deferred-release",
+            actor,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_journal_lines (
+          entry_id, client_id, account_id, debit_minor, credit_minor, currency, aed_minor, line_memo
+        ) VALUES
+          (%s,%s,%s,%s,0,'AED',%s,'Release deferred'),
+          (%s,%s,%s,0,%s,'AED',%s,'Recognize revenue')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            deferred["id"],
+            amount,
+            amount,
+            entry_id,
+            sched["client_id"],
+            sched["revenue_account_id"],
+            amount,
+            amount,
+        ),
+    )
+    year = int(str(sched["release_date"])[:4])
+    entry_no = conn.execute(
+        "SELECT books_next_voucher_no(%s::uuid, 'Journal', %s::int) AS n",
+        (sched["client_id"], year),
+    ).fetchone()["n"]
+    conn.execute(
+        """
+        UPDATE books_journal_entries
+        SET status = 'posted', posted_at = now(), entry_no = %s
+        WHERE id = %s
+        """,
+        (entry_no, entry_id),
+    )
+    conn.execute(
+        """
+        UPDATE books_deferred_schedules
+        SET status = 'posted', journal_entry_id = %s WHERE id = %s
+        """,
+        (entry_id, schedule_id),
+    )
+
+
+def _prepaid_release(conn, job: dict) -> None:
+    """Amortise prepaid expense: Dr expense / Cr 1410 for a schedule row."""
+    p = _payload(job)
+    schedule_id = p.get("scheduleId") or p.get("schedule_id")
+    if not schedule_id:
+        raise ValueError("scheduleId_required")
+    sched = conn.execute(
+        """
+        SELECT s.*, p.status AS period_status
+        FROM books_prepaid_schedules s
+        LEFT JOIN books_periods p ON p.id = s.period_id
+        WHERE s.id = %s
+        """,
+        (schedule_id,),
+    ).fetchone()
+    if not sched:
+        raise ValueError("schedule_not_found")
+    if sched["status"] != "pending":
+        return
+    if sched.get("period_status") == "LOCKED":
+        conn.execute(
+            "UPDATE books_prepaid_schedules SET status = 'blocked' WHERE id = %s",
+            (schedule_id,),
+        )
+        return
+    prepaid = conn.execute(
+        "SELECT id FROM books_accounts WHERE client_id = %s AND code = '1410'",
+        (sched["client_id"],),
+    ).fetchone()
+    if not prepaid:
+        raise ValueError("prepaid_account_missing")
+    amount = int(sched["amount_aed_minor"])
+    entry_id = str(uuid4())
+    period_id = sched["period_id"]
+    actor = _actor_from_job(conn, job)
+    conn.execute(
+        """
+        INSERT INTO books_journal_entries (
+          id, client_id, period_id, memo, entry_date, status, content_hash,
+          created_by, voucher_type
+        ) VALUES (%s,%s,%s,%s,%s,'draft',%s,%s,'Journal')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            period_id,
+            "Prepaid expense amortisation",
+            sched["release_date"],
+            "prepaid-release",
+            actor,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO books_journal_lines (
+          entry_id, client_id, account_id, debit_minor, credit_minor, currency, aed_minor, line_memo
+        ) VALUES
+          (%s,%s,%s,%s,0,'AED',%s,'Amortise prepaid'),
+          (%s,%s,%s,0,%s,'AED',%s,'Release prepaid asset')
+        """,
+        (
+            entry_id,
+            sched["client_id"],
+            sched["expense_account_id"],
+            amount,
+            amount,
+            entry_id,
+            sched["client_id"],
+            prepaid["id"],
+            amount,
+            amount,
+        ),
+    )
+    year = int(str(sched["release_date"])[:4])
+    entry_no = conn.execute(
+        "SELECT books_next_voucher_no(%s::uuid, 'Journal', %s::int) AS n",
+        (sched["client_id"], year),
+    ).fetchone()["n"]
+    conn.execute(
+        """
+        UPDATE books_journal_entries
+        SET status = 'posted', posted_at = now(), entry_no = %s
+        WHERE id = %s
+        """,
+        (entry_no, entry_id),
+    )
+    conn.execute(
+        """
+        UPDATE books_prepaid_schedules
+        SET status = 'posted', journal_entry_id = %s WHERE id = %s
+        """,
+        (entry_id, schedule_id),
     )

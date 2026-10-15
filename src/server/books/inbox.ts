@@ -1,0 +1,875 @@
+import { createHash, randomUUID } from "node:crypto";
+
+import { withUser } from "@/lib/db";
+import { parseFxRateToScaled } from "@/lib/fx";
+import { displayToMinor } from "@/lib/money";
+import { getObjectBytes, putObject, signedGetUrl } from "@/lib/storage";
+import { writeBooksAudit } from "@/server/books/audit";
+import { createBooksDocument } from "@/server/books/documents";
+import { BooksError } from "@/server/books/errors";
+import { enqueueBooksJob } from "@/server/books/jobs";
+import { parseAmountToFils } from "@/server/books/parsing";
+import { assertSyntheticTenant } from "@/server/security-gate";
+
+/** Read a money field from worker fields_json (value may be fils int or display string). */
+function fieldMinor(fields: Record<string, unknown>, key: string): number | null {
+  const raw = fields[key] as { value?: unknown } | string | number | undefined;
+  if (raw == null) return null;
+  const value =
+    typeof raw === "string" || typeof raw === "number"
+      ? raw
+      : (raw as { value?: unknown }).value;
+  if (value == null || value === "") return null;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  const s = String(value).trim();
+  if (!s) return null;
+  try {
+    return displayToMinor(s) ?? parseAmountToFils(s);
+  } catch {
+    try {
+      return parseAmountToFils(s);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function fieldStr(fields: Record<string, unknown>, key: string): string {
+  const raw = fields[key] as { value?: unknown } | string | undefined;
+  if (typeof raw === "string") return raw;
+  if (raw?.value == null || raw.value === "") return "";
+  return String(raw.value);
+}
+
+/** Prefer primary key, then worker aliases (net/vat/gross, document_number). */
+function fieldMinorAlias(
+  fields: Record<string, unknown>,
+  keys: string[],
+): number | null {
+  for (const k of keys) {
+    const v = fieldMinor(fields, k);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function fieldStrAlias(fields: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = fieldStr(fields, k);
+    if (v) return v;
+  }
+  return "";
+}
+
+/** Parse YYYY-MM-DD or DD/MM/YYYY from extraction / body. */
+function parseIsoDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return null;
+}
+
+export async function listBooksInbox(
+  userId: string,
+  clientId: string | null,
+  opts?: { unassignedOnly?: boolean },
+) {
+  return withUser(userId, async (db) => {
+    if (clientId) await assertSyntheticTenant(db, clientId);
+    const rows = await db.query(
+      `SELECT i.id, i.client_id AS "clientId", i.file_id AS "fileId",
+              i.detected_type AS "detectedType",
+              i.intended_type AS "intendedType",
+              i.classification_confidence AS "classificationConfidence",
+              i.status, i.error, i.created_at AS "createdAt",
+              f.filename, f.sha256, f.content_type AS "contentType",
+              f.byte_size AS "byteSize",
+              u.name AS "uploadedByName"
+       FROM books_inbox_items i
+       JOIN books_files f ON f.id = i.file_id
+       LEFT JOIN users u ON u.id = f.uploaded_by
+       WHERE ($1::boolean AND i.client_id IS NULL)
+          OR (NOT $1::boolean AND i.client_id = $2)
+       ORDER BY i.created_at DESC
+       LIMIT 200`,
+      [Boolean(opts?.unassignedOnly), clientId],
+    );
+    return rows.rows;
+  });
+}
+
+export async function getBooksInboxReview(
+  userId: string,
+  clientId: string | null,
+  inboxItemId: string,
+) {
+  return withUser(userId, async (db) => {
+    if (clientId) await assertSyntheticTenant(db, clientId);
+    const row = await db.query(
+      `SELECT i.id, i.client_id AS "clientId", i.file_id AS "fileId",
+              i.detected_type AS "detectedType",
+              i.classification_confidence AS "classificationConfidence",
+              i.status, i.error, i.created_at AS "createdAt",
+              i.parent_inbox_item_id AS "parentInboxItemId",
+              i.page_start AS "pageStart",
+              i.page_end AS "pageEnd",
+              f.filename, f.sha256, f.content_type AS "contentType",
+              f.storage_key AS "storageKey",
+              e.id AS "extractionId", e.fields_json AS "fieldsJson",
+              e.raw_text AS "rawText", e.validation_flags AS "validationFlags",
+              e.extractor_version AS "extractorVersion", e.doc_type AS "extractionDocType"
+       FROM books_inbox_items i
+       JOIN books_files f ON f.id = i.file_id
+       LEFT JOIN books_extractions e ON e.inbox_item_id = i.id
+       WHERE i.id = $1
+         AND (
+           ($2::uuid IS NULL AND i.client_id IS NULL)
+           OR i.client_id = $2
+           OR i.client_id IS NULL
+         )
+       LIMIT 1`,
+      [inboxItemId, clientId],
+    );
+    if (!row.rowCount) throw new BooksError("inbox_not_found", "not_found");
+    const r = row.rows[0];
+    const fileUrl = await signedGetUrl(String(r.storageKey));
+    const fieldsJson = (r.fieldsJson || {}) as Record<string, unknown>;
+    const lineItems = Array.isArray(fieldsJson._line_items)
+      ? fieldsJson._line_items
+      : Array.isArray((fieldsJson.lines as { value?: unknown })?.value)
+        ? (fieldsJson.lines as { value: unknown[] }).value
+        : [];
+    const fields = { ...fieldsJson };
+    delete fields._line_items;
+
+    let documentId: string | null = null;
+    if (r.extractionId) {
+      const linked = await db.query(
+        `SELECT id FROM books_documents
+         WHERE extraction_id = $1 AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [r.extractionId],
+      );
+      if (linked.rowCount) documentId = String(linked.rows[0].id);
+    }
+
+    return {
+      id: r.id,
+      clientId: r.clientId,
+      fileId: r.fileId,
+      filename: r.filename,
+      sha256: r.sha256,
+      contentType: r.contentType,
+      status: r.status,
+      error: r.error,
+      detectedType: r.detectedType,
+      classificationConfidence: r.classificationConfidence,
+      parentInboxItemId: r.parentInboxItemId ? String(r.parentInboxItemId) : null,
+      pageStart: r.pageStart == null ? null : Number(r.pageStart),
+      pageEnd: r.pageEnd == null ? null : Number(r.pageEnd),
+      fileUrl,
+      extractionId: r.extractionId,
+      extractorVersion: r.extractorVersion,
+      extractionDocType: r.extractionDocType,
+      fieldsJson: fields,
+      lineItems,
+      validationFlags: r.validationFlags || [],
+      rawTextPreview: r.rawText ? String(r.rawText).slice(0, 500) : null,
+      documentId,
+    };
+  });
+}
+
+function classifyInboxDocType(detected: string): "sales_invoice" | "purchase_bill" {
+  const d = detected.toLowerCase();
+  if (d.includes("purchase") || d.includes("bill") || d === "debit_note") {
+    return "purchase_bill";
+  }
+  return "sales_invoice";
+}
+
+export type InboxIntendedType =
+  | "sales_invoice"
+  | "purchase_bill"
+  | "bank_statement"
+  | "card_statement"
+  | "gateway_statement";
+
+export async function uploadBooksInboxFiles(
+  userId: string,
+  clientId: string | null,
+  files: Array<{ filename: string; contentType: string; bytes: Buffer }>,
+  opts?: {
+    intendedType?: InboxIntendedType | null;
+    userDocType?: string | null;
+    /** C2-2: Banking row Upload — COA account the file is meant for. */
+    accountId?: string | null;
+  },
+) {
+  return withUser(userId, async (db) => {
+    if (clientId) await assertSyntheticTenant(db, clientId);
+    const { assertBooksUploadAllowed } = await import("@/lib/books-upload");
+    for (const file of files) {
+      assertBooksUploadAllowed(file.filename, file.bytes.length);
+    }
+    const intendedType = opts?.intendedType || null;
+    const userDocType = opts?.userDocType || null;
+    const intendedAccountId: string | null = opts?.accountId ? String(opts.accountId) : null;
+    if (intendedAccountId) {
+      if (!clientId) throw new BooksError("account_requires_client", "invalid");
+      const acc = await db.query(
+        `SELECT id, bank_name, iban, iban_last4, is_bank, is_card, is_gateway, sub_type
+         FROM books_accounts WHERE id = $1 AND client_id = $2 AND active = true`,
+        [intendedAccountId, clientId],
+      );
+      if (!acc.rowCount) throw new BooksError("account_not_found", "not_found");
+      const { bankInstrumentType, isBankAccountSetUp } = await import(
+        "@/lib/statement-coverage"
+      );
+      const row = acc.rows[0];
+      const instrumentType = bankInstrumentType({
+        isBank: Boolean(row.is_bank),
+        isCard: Boolean(row.is_card),
+        isGateway: Boolean(row.is_gateway),
+        subType: row.sub_type as string | null,
+      });
+      if (
+        !isBankAccountSetUp({
+          instrumentType,
+          bankName: row.bank_name as string | null,
+          iban: row.iban as string | null,
+          ibanLast4: row.iban_last4 as string | null,
+        })
+      ) {
+        throw new BooksError("bank_account_not_set_up", "invalid");
+      }
+    }
+    const results: Array<{
+      inboxItemId: string;
+      fileId: string;
+      duplicate: boolean;
+      sha256: string;
+      status?: string;
+      filename?: string;
+      existingDocumentId?: string | null;
+    }> = [];
+
+    for (const file of files) {
+      const sha256 = createHash("sha256").update(file.bytes).digest("hex");
+      // Same bytes already uploaded to this company: point at the existing item, store nothing new
+      // (C1 Uploads: "Duplicate: link to the existing document"). Hashes are unique per company (db/32).
+      const existing = await db.query(
+        `SELECT f.id AS file_id, f.storage_key, i.id AS inbox_id, i.status, d.id AS document_id
+         FROM books_files f
+         LEFT JOIN LATERAL (
+           SELECT id, status FROM books_inbox_items
+           WHERE file_id = f.id AND error IS DISTINCT FROM 'duplicate_file'
+           ORDER BY created_at LIMIT 1
+         ) i ON true
+         LEFT JOIN LATERAL (
+           SELECT doc.id FROM books_extractions e
+           JOIN books_documents doc ON doc.extraction_id = e.id AND doc.deleted_at IS NULL
+           WHERE e.inbox_item_id = i.id
+           ORDER BY doc.created_at DESC LIMIT 1
+         ) d ON true
+         WHERE f.sha256 = $1 AND f.client_id IS NOT DISTINCT FROM $2`,
+        [sha256, clientId],
+      );
+      if (existing.rowCount && existing.rows[0].inbox_id) {
+        const row = existing.rows[0];
+        results.push({
+          inboxItemId: String(row.inbox_id),
+          fileId: String(row.file_id),
+          duplicate: true,
+          sha256,
+          status: String(row.status),
+          filename: file.filename,
+          existingDocumentId: row.document_id ? String(row.document_id) : null,
+        });
+        continue;
+      }
+
+      // A stored file whose only inbox rows are legacy duplicate markers: reuse it and queue it again.
+      const reuse = existing.rowCount ? existing.rows[0] : null;
+      const fileId = reuse ? String(reuse.file_id) : randomUUID();
+      const storageKey = reuse
+        ? String(reuse.storage_key)
+        : `books/${clientId || "unassigned"}/${fileId}/${file.filename}`;
+      if (!reuse) {
+        await putObject(storageKey, file.bytes, file.contentType || "application/octet-stream");
+        await db.query(
+          `INSERT INTO books_files (id, client_id, sha256, storage_key, filename, content_type, byte_size, uploaded_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            fileId,
+            clientId,
+            sha256,
+            storageKey,
+            file.filename,
+            file.contentType || "application/octet-stream",
+            file.bytes.length,
+            userId,
+          ],
+        );
+      }
+
+      const inboxId = randomUUID();
+      await db.query(
+        `INSERT INTO books_inbox_items (id, client_id, file_id, status, intended_type, intended_account_id)
+         VALUES ($1,$2,$3,'queued',$4,$5)`,
+        [inboxId, clientId, fileId, intendedType, intendedAccountId],
+      );
+
+      // Store + enqueue only — field extraction is the worker's job (no TS sync extract).
+      if (clientId) {
+        const payload: Record<string, unknown> = {
+          inboxItemId: inboxId,
+          fileId,
+          storageKey,
+          filename: file.filename,
+        };
+        // Statements / purchases / sales: pass intended type so the worker does not default to sale.
+        const docHint = userDocType || intendedType;
+        if (docHint) payload.userDocType = docHint;
+        if (intendedType) payload.intendedType = intendedType;
+        if (intendedAccountId) payload.accountId = intendedAccountId;
+        await enqueueBooksJob(db, clientId, "extract_document", payload);
+        await writeBooksAudit(db, {
+          clientId,
+          actor: userId,
+          action: "upload",
+          entity: "books_inbox_item",
+          entityId: inboxId,
+          after: {
+            filename: file.filename,
+            sha256,
+            status: "queued",
+            intendedType,
+            userDocType,
+            intendedAccountId,
+          },
+        });
+      }
+
+      results.push({
+        inboxItemId: inboxId,
+        fileId,
+        duplicate: false,
+        sha256,
+        status: "queued",
+      });
+    }
+    return { results };
+  });
+}
+
+export async function retryBooksInboxExtract(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const item = await db.query(
+      `SELECT i.id, i.file_id, i.intended_type, i.intended_account_id,
+              f.storage_key, f.filename, f.content_type
+       FROM books_inbox_items i
+       JOIN books_files f ON f.id = i.file_id
+       WHERE i.id = $1 AND (i.client_id = $2 OR i.client_id IS NULL)`,
+      [inboxItemId, clientId],
+    );
+    if (!item.rowCount) throw new BooksError("inbox_not_found", "not_found");
+    const row = item.rows[0];
+    await db.query(
+      `UPDATE books_inbox_items
+       SET client_id = $2, status = 'queued', error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [inboxItemId, clientId],
+    );
+    // Touch storage so missing objects fail early; extraction itself is worker-only.
+    await getObjectBytes(String(row.storage_key));
+    const retryPayload: Record<string, unknown> = {
+      inboxItemId,
+      fileId: String(row.file_id),
+      storageKey: String(row.storage_key),
+      filename: String(row.filename),
+    };
+    if (row.intended_type) retryPayload.userDocType = String(row.intended_type);
+    if (row.intended_account_id) retryPayload.accountId = String(row.intended_account_id);
+    await enqueueBooksJob(db, clientId, "extract_document", retryPayload);
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "retry_extract",
+      entity: "books_inbox_item",
+      entityId: inboxItemId,
+      after: { status: "queued" },
+    });
+    return { id: inboxItemId, status: "queued" };
+  });
+}
+
+export async function routeInboxItem(
+  userId: string,
+  inboxItemId: string,
+  clientId: string,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const item = await db.query(`SELECT * FROM books_inbox_items WHERE id = $1`, [inboxItemId]);
+    if (!item.rowCount) throw new BooksError("inbox_not_found", "not_found");
+    await db.query(
+      `UPDATE books_inbox_items SET client_id = $2, status = 'queued', updated_at = now() WHERE id = $1`,
+      [inboxItemId, clientId],
+    );
+    await db.query(`UPDATE books_files SET client_id = $2 WHERE id = $1`, [
+      item.rows[0].file_id,
+      clientId,
+    ]);
+    await enqueueBooksJob(db, clientId, "extract_document", {
+      inboxItemId,
+      fileId: String(item.rows[0].file_id),
+    });
+    return { id: inboxItemId, clientId };
+  });
+}
+
+const ALLOWED_INBOX_DOC_TYPES = new Set([
+  "sales_invoice",
+  "purchase_bill",
+  "credit_note",
+  "debit_note",
+  "receipt",
+  "payment",
+  "bank_statement",
+  "card_statement",
+  "gateway_statement",
+]);
+
+export async function setInboxDocType(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  docType: string,
+) {
+  const t = String(docType || "").trim();
+  if (!ALLOWED_INBOX_DOC_TYPES.has(t)) {
+    throw new BooksError("invalid_doc_type", "invalid");
+  }
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const updated = await db.query(
+      `UPDATE books_inbox_items
+       SET intended_type = $3,
+           detected_type = COALESCE(detected_type, $3),
+           classification_confidence = 1,
+           status = CASE WHEN status IN ('queued', 'extracting', 'failed') THEN status ELSE 'needs_review' END,
+           updated_at = now()
+       WHERE id = $1 AND client_id = $2
+       RETURNING id, intended_type, detected_type, classification_confidence, status`,
+      [inboxItemId, clientId, t],
+    );
+    if (!updated.rowCount) throw new BooksError("inbox_not_found", "not_found");
+    return {
+      id: inboxItemId,
+      intendedType: t,
+      detectedType: updated.rows[0].detected_type,
+      classificationConfidence: 1,
+      status: updated.rows[0].status,
+    };
+  });
+}
+
+/** Park a needs_review inbox row for later without failing extraction. */
+export async function setInboxReviewLater(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  later: boolean,
+) {
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const next = later ? "review_later" : "needs_review";
+    const updated = await db.query(
+      `UPDATE books_inbox_items
+       SET status = $3, updated_at = now()
+       WHERE id = $1 AND client_id = $2
+         AND status IN ('needs_review', 'review_later')
+       RETURNING id, status`,
+      [inboxItemId, clientId, next],
+    );
+    if (!updated.rowCount) throw new BooksError("inbox_item_not_found", "not_found");
+    return { id: inboxItemId, status: String(updated.rows[0].status) };
+  });
+}
+
+/**
+ * Split a multi-page PDF inbox upload into page-range children (same file_id).
+ * Parent becomes routed; each child is queued for extract_document with pageStart/pageEnd.
+ */
+export async function splitInboxPdfSnippets(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  body: {
+    ranges: Array<{ pageStart: number; pageEnd: number }>;
+    pageCount?: number;
+  },
+) {
+  const ranges = Array.isArray(body.ranges) ? body.ranges : [];
+  if (ranges.length < 2) {
+    throw new BooksError("ranges_require_at_least_two", "invalid");
+  }
+  const maxPage = Math.min(Math.max(1, Number(body.pageCount) || 500), 500);
+  const normalized = ranges.map((r) => ({
+    pageStart: Number(r.pageStart),
+    pageEnd: Number(r.pageEnd),
+  }));
+  for (const r of normalized) {
+    if (
+      !Number.isInteger(r.pageStart) ||
+      !Number.isInteger(r.pageEnd) ||
+      r.pageStart < 1 ||
+      r.pageEnd < r.pageStart ||
+      r.pageEnd > maxPage
+    ) {
+      throw new BooksError("invalid_page_range", "invalid");
+    }
+  }
+  const sorted = [...normalized].sort((a, b) => a.pageStart - b.pageStart);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].pageStart <= sorted[i - 1].pageEnd) {
+      throw new BooksError("overlapping_ranges", "invalid");
+    }
+  }
+
+  return withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const parent = await db.query(
+      `SELECT id, file_id, status, intended_type, intended_account_id, parent_inbox_item_id
+       FROM books_inbox_items
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    if (!parent.rowCount) throw new BooksError("inbox_item_not_found", "not_found");
+    const p = parent.rows[0];
+    if (p.parent_inbox_item_id) {
+      throw new BooksError("cannot_split_snippet_child", "invalid");
+    }
+    const status = String(p.status);
+    if (!["needs_review", "ready", "review_later"].includes(status)) {
+      throw new BooksError("cannot_split_status", "conflict");
+    }
+    const existingKids = await db.query(
+      `SELECT id FROM books_inbox_items WHERE parent_inbox_item_id = $1 LIMIT 1`,
+      [inboxItemId],
+    );
+    if (existingKids.rowCount) throw new BooksError("already_split", "conflict");
+
+    const fileId = String(p.file_id);
+    const intendedType = p.intended_type ? String(p.intended_type) : null;
+    const intendedAccountId = p.intended_account_id ? String(p.intended_account_id) : null;
+    const children: Array<{ id: string; pageStart: number; pageEnd: number; status: string }> =
+      [];
+
+    for (const r of sorted) {
+      const childId = randomUUID();
+      await db.query(
+        `INSERT INTO books_inbox_items (
+           id, client_id, file_id, status, intended_type, intended_account_id,
+           parent_inbox_item_id, page_start, page_end
+         ) VALUES ($1,$2,$3,'queued',$4,$5,$6,$7,$8)`,
+        [
+          childId,
+          clientId,
+          fileId,
+          intendedType,
+          intendedAccountId,
+          inboxItemId,
+          r.pageStart,
+          r.pageEnd,
+        ],
+      );
+      const payload: Record<string, unknown> = {
+        inboxItemId: childId,
+        fileId,
+        pageStart: r.pageStart,
+        pageEnd: r.pageEnd,
+      };
+      if (intendedType) {
+        payload.intendedType = intendedType;
+        payload.userDocType = intendedType;
+      }
+      if (intendedAccountId) payload.accountId = intendedAccountId;
+      await enqueueBooksJob(db, clientId, "extract_document", payload);
+      children.push({
+        id: childId,
+        pageStart: r.pageStart,
+        pageEnd: r.pageEnd,
+        status: "queued",
+      });
+    }
+
+    await db.query(
+      `UPDATE books_inbox_items
+       SET status = 'routed', updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "split_inbox_pdf_snippets",
+      entity: "books_inbox_item",
+      entityId: inboxItemId,
+      after: {
+        childIds: children.map((c) => c.id),
+        ranges: sorted,
+      },
+    });
+
+    return { parentId: inboxItemId, status: "routed", children };
+  });
+}
+
+/**
+ * Confirm extraction → draft document. Fills printed_* from extracted totals when present.
+ * Payments made / balance due are stored as info only (no settlement).
+ */
+export async function confirmInboxAsDocument(
+  userId: string,
+  clientId: string,
+  inboxItemId: string,
+  body: {
+    partyId: string;
+    periodId: string;
+    docType?: "sales_invoice" | "purchase_bill";
+    issueDate?: string;
+    dueDate?: string | null;
+    /** Optional line overrides from review UI (VAT codes the accountant picked). */
+    lines?: Array<{
+      description?: string;
+      vatCode?: string | null;
+      vat_code?: string | null;
+      netMinor?: number;
+      vatMinor?: number;
+      lineKind?: string;
+    }>;
+  },
+) {
+  const review = await getBooksInboxReview(userId, clientId, inboxItemId);
+  if (!review.extractionId) throw new BooksError("extraction_required", "invalid");
+  if (String(review.status) === "routed") {
+    throw new BooksError("cannot_confirm_routed_parent", "conflict");
+  }
+  const fields = (review.fieldsJson || {}) as Record<string, unknown>;
+  const detected = String(review.detectedType || review.extractionDocType || "");
+  const classified = classifyInboxDocType(detected);
+  // Positive sales classification only — empty/unknown/receipt must not re-route.
+  const isSalesInvoice = detected.toLowerCase() === "sales_invoice";
+
+  // Upload context (Purchases vs Sales) may request a type; classification can re-route.
+  let intended: "sales_invoice" | "purchase_bill" | null = body.docType || null;
+  await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    const row = await db.query(
+      `SELECT intended_type FROM books_inbox_items WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    if (row.rowCount && row.rows[0].intended_type) {
+      const t = String(row.rows[0].intended_type);
+      if (t === "purchase_bill" || t === "sales_invoice") {
+        if (!intended) intended = t;
+      }
+    }
+    const kids = await db.query(
+      `SELECT id FROM books_inbox_items WHERE parent_inbox_item_id = $1 LIMIT 1`,
+      [inboxItemId],
+    );
+    if (kids.rowCount) throw new BooksError("cannot_confirm_split_parent", "conflict");
+  });
+
+  let docType: "sales_invoice" | "purchase_bill" = intended || classified;
+  let reroutedFrom: "purchase_bill" | null = null;
+  // Sales invoice uploaded under Purchases → move to Sales (never a purchase_bill).
+  if (
+    (intended === "purchase_bill" || body.docType === "purchase_bill") &&
+    isSalesInvoice
+  ) {
+    docType = "sales_invoice";
+    reroutedFrom = "purchase_bill";
+  }
+
+  type ConfirmLine = {
+    description?: string;
+    vatCode?: string | null;
+    vat_code?: string | null;
+    netMinor?: number;
+    vatMinor?: number;
+    lineKind?: string;
+  };
+
+  // Optional UI override (accountant picked VAT codes). Never invent SR here.
+  const overrideLines = Array.isArray(body.lines) ? (body.lines as ConfirmLine[]) : null;
+  const sourceLines = (overrideLines && overrideLines.length > 0
+    ? overrideLines
+    : (review.lineItems || [])) as ConfirmLine[];
+
+  function normalizeVatCode(raw: unknown): string | null {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    return s ? s : null;
+  }
+
+  const lines =
+    sourceLines.length > 0
+      ? sourceLines.map((l) => ({
+          description: l.description || "Line",
+          lineKind: (l.lineKind as "revenue" | "expense" | "disbursement") ||
+            (docType === "purchase_bill" ? "expense" : "revenue"),
+          vatCode: normalizeVatCode(l.vatCode ?? l.vat_code),
+          netMinor: Number(l.netMinor || 0),
+          vatMinor: Number(l.vatMinor || 0),
+        }))
+      : [
+          {
+            description: "Extracted line",
+            lineKind: (docType === "purchase_bill" ? "expense" : "revenue") as "expense" | "revenue",
+            // No evidence → null (never invent SR). Confirm is blocked below.
+            vatCode: null as string | null,
+            netMinor: fieldMinorAlias(fields, ["subtotal", "net"]) ?? 0,
+            vatMinor: fieldMinorAlias(fields, ["vat_total", "vat"]) ?? 0,
+          },
+        ];
+
+  const missingVat = lines
+    .map((l, i) => ({ i, ...l }))
+    .filter((l) => l.lineKind !== "disbursement" && !l.vatCode);
+  if (missingVat.length) {
+    const labels = missingVat
+      .map((l) => l.description || `line ${l.i + 1}`)
+      .slice(0, 5)
+      .join(", ");
+    throw new BooksError(
+      `vat_code_required: pick a VAT code before confirm (${labels})`,
+      "invalid",
+    );
+  }
+
+  const issueDate =
+    parseIsoDate(body.issueDate) ||
+    parseIsoDate(fieldStrAlias(fields, ["invoice_date", "document_date", "issue_date"]));
+  if (!issueDate) {
+    throw new BooksError("issue_date_required", "invalid");
+  }
+
+  const dueDate =
+    parseIsoDate(body.dueDate) ||
+    parseIsoDate(fieldStrAlias(fields, ["due_date", "payment_due", "due"]));
+
+  const currency = (fieldStr(fields, "currency") || "AED").toUpperCase();
+  let fxRateScaled = 100_000_000;
+  if (currency !== "AED") {
+    const rateRaw = fieldStrAlias(fields, ["fx_rate", "exchange_rate", "rate"]);
+    if (rateRaw) {
+      try {
+        fxRateScaled = Number(parseFxRateToScaled(rateRaw));
+      } catch {
+        throw new BooksError("invalid_fx_rate", "invalid");
+      }
+    } else {
+      const lookedUp = await withUser(userId, async (db) => {
+        await assertSyntheticTenant(db, clientId);
+        const row = await db.query(
+          `SELECT rate_scaled FROM books_fx_rates
+           WHERE client_id = $1 AND currency = $2 AND rate_date <= $3::date
+           ORDER BY rate_date DESC LIMIT 1`,
+          [clientId, currency, issueDate],
+        );
+        return row.rowCount ? Number(row.rows[0].rate_scaled) : null;
+      });
+      if (lookedUp == null) throw new BooksError(`fx_rate_required:${currency}`, "invalid");
+      fxRateScaled = lookedUp;
+    }
+  }
+
+  // Worker fields_json uses net/vat/gross (fils int); legacy aliases kept for fixtures.
+  const printedNet = fieldMinorAlias(fields, ["subtotal", "net"]);
+  const printedVat = fieldMinorAlias(fields, ["vat_total", "vat"]);
+  const printedGross = fieldMinorAlias(fields, ["grand_total", "gross"]);
+  const printedPaid =
+    fieldMinor(fields, "amount_paid") ?? fieldMinor(fields, "payments_made");
+  const printedBalanceDue =
+    fieldMinor(fields, "balance_due") ?? fieldMinor(fields, "amount_due");
+
+  const created = await createBooksDocument(userId, clientId, {
+    docType,
+    partyId: body.partyId,
+    periodId: body.periodId,
+    issueDate,
+    dueDate: dueDate ?? null,
+    documentNumber:
+      fieldStrAlias(fields, ["invoice_no", "document_number"]) || null,
+    currency,
+    fxRateScaled,
+    lines,
+    printedNetMinor: printedNet,
+    printedVatMinor: printedVat,
+    printedGrossMinor: printedGross,
+    printedPaidMinor: printedPaid,
+    printedBalanceDueMinor: printedBalanceDue,
+    extractionId: String(review.extractionId),
+    fileId: String(review.fileId),
+    pageStart: review.pageStart,
+    pageEnd: review.pageEnd,
+  });
+
+  const notice = reroutedFrom
+    ? "Classified as sales invoice — moved to Sales (not posted as a purchase)."
+    : null;
+
+  await withUser(userId, async (db) => {
+    await assertSyntheticTenant(db, clientId);
+    await db.query(
+      `UPDATE books_inbox_items SET status = 'confirmed', updated_at = now()
+       WHERE id = $1 AND client_id = $2`,
+      [inboxItemId, clientId],
+    );
+    await writeBooksAudit(db, {
+      clientId,
+      actor: userId,
+      action: "confirm_inbox_document",
+      entity: "books_inbox_item",
+      entityId: inboxItemId,
+      after: {
+        documentId: created.id,
+        printedGrossMinor: printedGross,
+        docType,
+        reroutedFrom,
+        notice,
+      },
+    });
+    if (reroutedFrom) {
+      await writeBooksAudit(db, {
+        clientId,
+        actor: userId,
+        action: "reroute_doc_type",
+        entity: "books_document",
+        entityId: String(created.id),
+        before: { docType: reroutedFrom },
+        after: { docType, notice, inboxItemId },
+      });
+    }
+  });
+
+  return {
+    inboxItemId,
+    documentId: String(created.id),
+    document: created,
+    docType,
+    reroutedFrom,
+    notice,
+  };
+}

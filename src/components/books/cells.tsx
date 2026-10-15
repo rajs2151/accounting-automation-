@@ -29,7 +29,21 @@ export function CellEntryId({
 
 export type AccountCell = { code: string; name: string; vatTreatment?: string | null };
 
-export function CellAccount({ account }: { account: AccountCell | null | undefined }) {
+export function CellAccount({
+  account,
+  lineCount,
+}: {
+  account: AccountCell | null | undefined;
+  /** When > 1, show CrossVal-style "Split (n lines)" instead of a single account. */
+  lineCount?: number;
+}) {
+  if (lineCount != null && lineCount > 1) {
+    return (
+      <span className="text-sm text-muted-foreground" data-testid="account-split">
+        Split ({lineCount} lines)
+      </span>
+    );
+  }
   if (!account?.code) return <span className="text-muted-foreground">—</span>;
   const showVat = VAT_TAX_CODES.has(account.code);
   return (

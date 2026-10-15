@@ -1,0 +1,8 @@
+# Dev override: the worker runs the Python code straight from ./worker/src (no image rebuild for code changes).
+# Use via scripts/dev-local.ps1 -Worker; restart the worker to pick up edits (seconds).
+services:
+  worker:
+    environment:
+      PYTHONPATH: /app/devsrc
+    volumes:
+      - ./worker/src:/app/devsrc:ro

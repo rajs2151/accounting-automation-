@@ -1,0 +1,18 @@
+TAX INVOICE
+Example Trading Inc
+TRN 100000000000099
+Dubai Marina, UAE
+Sample Holiday Homes LLC
+TRN : 105181487700003
+Business Bay, Dubai
+Invoice          Invoice Date
+Number           28 Jan 2026
+INV-E1C-001
+Description          Quantity    Rate       Tax           Amount AED
+4th Rental Payment      1           5000.00   Tax Exempt    5000.00
+Subtotal                                    5000.00
+Total No Tax 0%                              0.00
+Invoice Total AED                           5000.00
+Amount Due AED                              5000.00
+Payment to be made in favour of Sample Holiday Homes LLC
+Bank: Synthetic UAE Bank  IBAN: AE070331234567890123456

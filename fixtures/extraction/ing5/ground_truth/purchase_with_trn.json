@@ -1,0 +1,12 @@
+{
+  "route": "text",
+  "doc_type": "purchase_bill",
+  "invoice_no": "BILL-ING5-002",
+  "invoice_date": "2026-05-16",
+  "currency": "AED",
+  "supplier_trn": "100999999999999",
+  "customer_trn": "100000000000001",
+  "net": 200000,
+  "vat": 10000,
+  "gross": 210000
+}

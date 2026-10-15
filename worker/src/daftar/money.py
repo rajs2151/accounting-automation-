@@ -31,6 +31,8 @@ def parse_amount(
     thousands_sep: str = ",",
 ) -> int | None:
     """Parse a decimal string into minor units. Blank means the side is empty."""
+    from daftar.textnorm import arabic_indic_to_ascii
+
     if raw is None:
         return None
     if isinstance(raw, float):
@@ -38,7 +40,7 @@ def parse_amount(
     if isinstance(raw, bool) or not isinstance(raw, str):
         raise TypeError("money must be a decimal string")
 
-    text = raw.strip()
+    text = arabic_indic_to_ascii(raw).strip()
     if text in {"", "-", "—", "–", "n/a", "N/A"}:
         return None
 

@@ -7,9 +7,13 @@ alwaysApply: true
 
 arnibooks: Arnifi's internal bookkeeping product for UAE SME clients, used by Arnifi accountants (not client users yet).
 End goal: source documents in → journal → ledger → trial balance → P&L, Balance Sheet, Cash Flow (+ company health).
-UX reference: the screenshots in `docs/reference/crossval/` (CrossVal). Replicate their layout, interactions and workflow
-closely, but use Arnifi branding, our own copy/wording, and fix the accounting errors called out in each phase prompt.
-Never use CrossVal's name, logo, colours or exact text in the product.
+UX reference:
+- Ledger / journals / TB layout: `docs/reference/crossval/` (CrossVal) — Phase 0 visual bar.
+- Document workflow (sales/purchases/parties/statements): `docs/reference/ai-accountant/` + Addendum C
+  (`docs/plan/arnibooks-cursor-prompts-addendum-C.md`) — WORKFLOW and LAYOUT only; never copy AI Accountant
+  branding, copy, colours, or Indian tax concepts (GSTIN→TRN, GST→VAT 5%, place of supply = emirate).
+Replicate layout/interactions closely with Arnifi branding and our copy; fix accounting errors called out in each
+phase prompt. Never use CrossVal's or AI Accountant's name, logo, colours or exact text in the product.
 
 # Codebase
 
@@ -58,8 +62,10 @@ Never use CrossVal's name, logo, colours or exact text in the product.
 
 - TypeScript strict. Postgres. New schema = new numbered SQL file, also applied in test setup and e2e setup.
 - Background jobs in the worker/queue (parsing, OCR, scheduled entries, recurring entries).
-- OCR = local Tesseract (eng+ara) only, behind an `Extractor` interface so a provider can be swapped later.
-  No external OCR/LLM API calls.
+- Extraction (Addendum A): text-layer PDFs via pdfplumber/PyMuPDF; scans/images via local docTR
+  (EasyOCR fallback when Arabic/low confidence); CSV/XLSX via column-mapping profiles. Behind an
+  `Extractor` interface so a provider can be swapped later. No external OCR/LLM API calls until
+  security PASS.
 - UI: one shared design system. Brand tokens in a single theme file (Arnifi brand colours — ask for exact hex values if not
   in the repo; use placeholders meanwhile). Light mode first; tokens must make dark mode possible later.
 - Tables: one shared `DataGrid` (TanStack Table + virtualisation) and one shared `SideDrawer` used by every list screen.

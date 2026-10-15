@@ -1,0 +1,9 @@
+{
+  "doc_type": "sales_invoice",
+  "route": "text",
+  "invoice_no": "INV-SYN-NOVAT",
+  "invoice_date": "2026-05-15",
+  "grand_total": 10000,
+  "supplier_trn": "100000000000001",
+  "vat_missing": true
+}

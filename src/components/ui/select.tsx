@@ -5,7 +5,34 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "cn"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+/**
+ * Collect value → label from the SelectItem options in the tree, so the trigger shows the selected
+ * option's label. Without `items`, Base UI's Select.Value renders the raw value (ids, codes).
+ */
+function collectItemLabels(node: React.ReactNode, out: Record<string, React.ReactNode>) {
+  React.Children.forEach(node, (child) => {
+    if (!React.isValidElement(child)) return
+    const props = child.props as { value?: unknown; children?: React.ReactNode }
+    if (child.type === SelectItem && props.value != null) {
+      out[String(props.value)] = props.children
+    } else if (props.children) {
+      collectItemLabels(props.children, out)
+    }
+  })
+}
+
+function Select<Value, Multiple extends boolean | undefined = false>(
+  props: SelectPrimitive.Root.Props<Value, Multiple>,
+) {
+  const { items, children } = props
+  const derived = React.useMemo(() => {
+    if (items) return items
+    const out: Record<string, React.ReactNode> = {}
+    collectItemLabels(children, out)
+    return Object.keys(out).length ? out : undefined
+  }, [items, children])
+  return <SelectPrimitive.Root {...props} items={derived} />
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

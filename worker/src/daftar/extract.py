@@ -62,6 +62,10 @@ class Extraction:
     thousands_sep: str = ","
     date_format: str = "%Y-%m-%d"
     kind: str = "csv"
+    # Per-page text used by field extraction (text layer and/or OCR). Never drop OCR here.
+    raw_pages: list[str] = field(default_factory=list)
+    # Word boxes for review highlights (PDF points or image pixels).
+    word_boxes: list[dict] = field(default_factory=list)
 
 
 OPENING_RE = re.compile(r"opening(?:\s+balance)?\s*[:|,]?\s*([-(]?\d[\d.,]*\)?)", re.I)
@@ -129,10 +133,20 @@ def _extract_xls(content: bytes) -> Extraction:
     return _from_grid(grid, "xlsx")
 
 
+_XLSX_SKIP_ROW = re.compile(
+    r"(?i)^\s*(B/?C/?F|balance\s+brought\s+forward|balance\s+carried\s+forward|"
+    r"page\s+total|total\s+for\s+page)\b"
+)
+
+
 def _from_grid(grid: list[list[str]], kind: str) -> Extraction:
-    lines = [",".join(cell for cell in row) for row in grid]
+    from daftar.textnorm import arabic_indic_to_ascii
+
+    # Normalize Arabic-Indic digits in every cell up front (Excel UAE exports).
+    grid = [[arabic_indic_to_ascii(cell) for cell in row] for row in grid]
     header_at = None
-    for index, row in enumerate(grid[:40]):
+    # Scan deeper title rows (layout_tag xlsx_header_row_5 etc.).
+    for index, row in enumerate(grid[:60]):
         if _row_is_header(row):
             header_at = index
             break
@@ -149,10 +163,18 @@ def _from_grid(grid: list[list[str]], kind: str) -> Extraction:
         if len(row) >= 2 and row[0] and row[1]:
             _assign_meta(meta, row[0], row[1])
     headers = [cell.strip() for cell in grid[header_at]]
+    header_fingerprint = [h.casefold() for h in headers if h]
     rows = []
     number = 0
     for raw in grid[header_at + 1 :]:
         if not any(cell.strip() for cell in raw):
+            continue
+        joined = " ".join(cell.strip() for cell in raw if cell and cell.strip())
+        if _XLSX_SKIP_ROW.match(joined):
+            continue
+        # Repeated header row mid-sheet.
+        raw_fp = [c.strip().casefold() for c in raw if c and c.strip()]
+        if raw_fp and raw_fp == header_fingerprint:
             continue
         number += 1
         cells = {}
@@ -196,6 +218,13 @@ def _finish_tabular(headers, rows, meta, encoding, kind) -> Extraction:
     )
 
 
+def _max_pdf_pages() -> int:
+    try:
+        return max(1, int(os.environ.get("BOOKS_EXTRACT_MAX_PAGES", "50")))
+    except ValueError:
+        return 50
+
+
 def _extract_pdf(content: bytes, password: str | None) -> Extraction:
     document = fitz.open(stream=content, filetype="pdf")
     try:
@@ -204,12 +233,19 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 raise CodedError("password_required")
             if not document.authenticate(password):
                 raise CodedError("bad_password")
+        max_pages = _max_pdf_pages()
+        if document.page_count > max_pages:
+            raise CodedError(f"too_many_pages:{document.page_count}>{max_pages}")
         extraction = Extraction(headers=[], rows=[], page_count=document.page_count, kind="pdf")
         meta_text = []
         next_row = 1
         for index, page in enumerate(document, start=1):
             text = page.get_text("text") or ""
-            meta_text.append(text)
+            from daftar.textnorm import arabic_indic_to_ascii
+
+            extraction.word_boxes.append(
+                {"page": index, "width": float(page.rect.width), "height": float(page.rect.height)}
+            )
             if _page_has_text(text):
                 words = page.get_text("words") or []
                 zoom = 1400 / max(page.rect.width, 1)
@@ -228,12 +264,30 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                 extraction.rows.extend(rows)
                 extraction.pages.append(PageImage(index, pixmap.tobytes("png"), pixmap.width, pixmap.height))
                 extraction.methods.append((index, "pdf_text"))
+                cleaned = arabic_indic_to_ascii(text)
+                extraction.raw_pages.append(cleaned)
+                meta_text.append(cleaned)
+                for word in words:
+                    extraction.word_boxes.append(
+                        {
+                            "page": index,
+                            "x0": float(word[0]),
+                            "y0": float(word[1]),
+                            "x1": float(word[2]),
+                            "y1": float(word[3]),
+                            "text": arabic_indic_to_ascii(str(word[4])),
+                            "conf": 1.0,
+                        }
+                    )
             else:
+                from daftar.extraction.pdf_words import ocr_tokens_to_word_boxes
+
                 zoom = 2
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
                 image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
-                headers, rows, png, width, height, ocr_text = _ocr_image(image, index)
-                meta_text.append(ocr_text)
+                headers, rows, png, width, height, ocr_text, ocr_tokens, processed = _ocr_image(
+                    image, index
+                )
                 for row in rows:
                     row.row_no = next_row
                     next_row += 1
@@ -241,7 +295,21 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
                     extraction.headers = headers
                 extraction.rows.extend(rows)
                 extraction.pages.append(PageImage(index, png, width, height))
-                extraction.methods.append((index, "ocr"))
+                engine = getattr(recognize, "last_engine", "ocr")
+                extraction.methods.append((index, engine))
+                extraction.raw_pages.append(ocr_text)
+                meta_text.append(ocr_text)
+                extraction.word_boxes.extend(
+                    ocr_tokens_to_word_boxes(
+                        ocr_tokens,
+                        page=index,
+                        page_width=float(page.rect.width),
+                        page_height=float(page.rect.height),
+                        image_width=float(processed.size[0]),
+                        image_height=float(processed.size[1]),
+                        engine=str(engine),
+                    )
+                )
         meta = _metadata_from_free_text("\n".join(meta_text))
         _apply_meta(extraction, meta)
         return extraction
@@ -250,67 +318,69 @@ def _extract_pdf(content: bytes, password: str | None) -> Extraction:
 
 
 def _extract_image(content: bytes) -> Extraction:
+    from daftar.extraction.pdf_words import image_tokens_to_word_boxes
+
     image = Image.open(io.BytesIO(content))
     image = ImageOps.exif_transpose(image).convert("RGB")
-    headers, rows, png, width, height, ocr_text = _ocr_image(image, 1)
+    headers, rows, png, width, height, ocr_text, ocr_tokens, _processed = _ocr_image(image, 1)
     for number, row in enumerate(rows, start=1):
         row.row_no = number
+    engine = getattr(recognize, "last_engine", "ocr")
     extraction = Extraction(
         headers=headers,
         rows=rows,
         page_count=1,
         pages=[PageImage(1, png, width, height)],
-        methods=[(1, "ocr")],
+        methods=[(1, engine)],
         kind="image",
+        raw_pages=[ocr_text],
+        word_boxes=image_tokens_to_word_boxes(
+            ocr_tokens, page=1, width=width, height=height, engine=str(engine)
+        ),
     )
     _apply_meta(extraction, _metadata_from_free_text(ocr_text))
     return extraction
 
 
 def _ocr_image(image: Image.Image, page_no: int):
+    from daftar.textnorm import arabic_indic_to_ascii
+
     processed, tokens = recognize(image)
     width, height = processed.size
     buffer = io.BytesIO()
     processed.save(buffer, format="PNG")
     headers, rows = _rows_from_tokens(tokens, page_no, width, height)
-    ocr_text = " ".join(token.text for token in tokens)
-    return headers, rows, buffer.getvalue(), width, height, ocr_text
+    ocr_text = arabic_indic_to_ascii(" ".join(token.text for token in tokens))
+    return headers, rows, buffer.getvalue(), width, height, ocr_text, tokens, processed
 
 
 def recognize(image: Image.Image) -> tuple[Image.Image, list[Token]]:
+    """OCR via docTR (primary) with EasyOCR Arabic/low-confidence fallback."""
     provider = os.environ.get("OCR_PROVIDER", "local")
     if provider == "textract":
         raise CodedError("textract_not_available")
     if provider != "local":
         raise CodedError("unknown_ocr_provider")
-    processed = _preprocess(image)
-    import pytesseract
+    from daftar.ocr_engine import recognize_image
 
-    data = pytesseract.image_to_data(
-        processed,
-        lang="eng+ara",
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT,
-    )
-    tokens: list[Token] = []
-    total = len(data["text"])
-    for index in range(total):
-        text = (data["text"][index] or "").strip()
-        if not text:
-            continue
-        try:
-            confidence = float(data["conf"][index])
-        except (TypeError, ValueError):
-            confidence = -1
-        if confidence < 0:
-            continue
-        x, y, w, h = data["left"][index], data["top"][index], data["width"][index], data["height"][index]
-        tokens.append(Token(text, x, y, x + w, y + h, confidence / 100.0))
+    processed = _preprocess(image)
+    result = recognize_image(processed)
+    # Stash engine on module for callers that inspect last OCR route.
+    recognize.last_engine = result.engine  # type: ignore[attr-defined]
+    recognize.last_models = result.model_names  # type: ignore[attr-defined]
+    tokens = [
+        Token(t.text, t.x0, t.y0, t.x1, t.y1, t.confidence) for t in result.tokens
+    ]
     return processed, tokens
+
+
+recognize.last_engine = "none"  # type: ignore[attr-defined]
+recognize.last_models = []  # type: ignore[attr-defined]
 
 
 def _preprocess(image: Image.Image) -> Image.Image:
     gray = ImageOps.autocontrast(image.convert("L"))
+    gray = _auto_rotate_cardinal(gray)
     gray = _deskew(gray)
     if gray.width < 1400:
         scale = 1400 / gray.width
@@ -318,16 +388,37 @@ def _preprocess(image: Image.Image) -> Image.Image:
     return gray.convert("RGB")
 
 
+def _ink_row_variance(image: Image.Image) -> float:
+    import numpy as np
+
+    ink = np.asarray(image) < 180
+    if ink.size == 0:
+        return -1.0
+    return float(ink.sum(axis=1).var())
+
+
+def _auto_rotate_cardinal(image: Image.Image) -> Image.Image:
+    """Try 0/90/180/270 — phone photos of bills are often sideways."""
+    best = image
+    best_score = _ink_row_variance(image)
+    for angle in (90, 180, 270):
+        rotated = image.rotate(angle, expand=True, fillcolor=255)
+        score = _ink_row_variance(rotated)
+        # Prefer landscape-ish text lines (higher row variance) and avoid tiny pathological scores.
+        if score > best_score * 1.05:
+            best_score = score
+            best = rotated
+    return best
+
+
 def _deskew(image: Image.Image) -> Image.Image:
     import numpy as np
 
-    gray = np.asarray(image)
     best_angle = 0.0
     best_score = -1.0
     for angle in np.linspace(-6, 6, 25):
         rotated = image.rotate(float(angle), expand=False, fillcolor=255)
-        ink = np.asarray(rotated) < 180
-        score = float(ink.sum(axis=1).var())
+        score = float((np.asarray(rotated) < 180).sum(axis=1).var())
         if score > best_score:
             best_score = score
             best_angle = float(angle)
@@ -420,13 +511,11 @@ def _cluster_lines(tokens: list[Token]) -> list[list[Token]]:
 
 
 def _page_has_text(text: str) -> bool:
-    minimum = int(os.environ.get("PDF_PROBE_MIN_CHARS", "30"))
-    compact = re.sub(r"\s+", "", text or "")
-    if len(compact) < minimum:
-        return False
-    has_date = re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text) is not None
-    has_amount = re.search(r"\d+[.,]\d{2}", text) is not None
-    return has_date and has_amount
+    from daftar.textclean import page_has_usable_text_layer
+
+    # Approximate word count from whitespace so short digital totals pages skip OCR.
+    words = len(re.findall(r"\S+", text or ""))
+    return page_has_usable_text_layer(text, word_count=words)
 
 
 def _apply_meta(extraction: Extraction, meta: dict[str, str]) -> None:

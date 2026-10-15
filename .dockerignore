@@ -14,3 +14,8 @@ playwright-report
 e2e/artifacts
 lab-output
 .verify-*.log
+
+# AI loop logs and test output (grow every run; not needed in images)
+.ai/runs
+test-results
+docs/reference/outputs

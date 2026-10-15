@@ -2,25 +2,56 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   ArrowLeftRight,
-  FileSpreadsheet,
-  Home,
+  BookOpen,
+  Building2,
+  Activity,
+  CalendarCheck,
+  ChartColumn,
+  FileText,
+  HandCoins,
+  Inbox,
   Landmark,
+  Languages,
+  LayoutDashboard,
   PanelLeft,
+  PiggyBank,
   Receipt,
+  Scale,
   Search,
   Settings,
+  Upload,
+  Users,
+  Wallet,
 } from "lucide-react";
 
 import { BooksShellProvider, useBooksShell } from "@/components/books/books-shell-context";
+import { CompanySwitcher } from "@/components/books/company-switcher";
+import { BooksIssuesBadge } from "@/components/books/issues-badge";
+import { UploadDialog } from "@/components/books/upload-dialog";
 import { SecurityBannerChip } from "@/components/security-banner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { BOOKS_NAV_GROUPS } from "@/config/books-nav";
 import { BOOKS_CLIENT_ID_SET, PRODUCT_NAME } from "@/config/product";
+import { canShowWorkingAs, workingAsLabel } from "@/lib/working-as-label";
 import { cn } from "@/lib/utils";
 
 type Directory = {
@@ -30,24 +61,68 @@ type Directory = {
   clientId: string;
 };
 
-const NAV = [
-  { href: "/books", label: "Home", icon: Home },
-  { href: "/books/transactions", label: "Transactions", icon: ArrowLeftRight },
-  { href: "/books/expenses", label: "Expenses", icon: Receipt },
-  { href: "/books/journals", label: "Ledger", icon: Landmark },
-  { href: "/books/reports/trial-balance", label: "Reports", icon: FileSpreadsheet },
-  { href: "/books/health", label: "Company Health", icon: Activity },
-  { href: "/books/settings", label: "Settings", icon: Settings },
-];
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  /** Other routes that belong to this item (highlight it there too). */
+  also?: string[];
+  soon?: boolean;
+};
+
+const NAV_ICONS: Record<string, typeof LayoutDashboard> = {
+  "/books": LayoutDashboard,
+  "/books/inbox": Inbox,
+  "/books/sales": FileText,
+  "/books/purchases": Receipt,
+  "/books/expenses": Wallet,
+  "/books/receipts": HandCoins,
+  "/books/advances": PiggyBank,
+  "/books/parties": Users,
+  "/books/banking": Landmark,
+  "/books/transactions": ArrowLeftRight,
+  "/books/journals": BookOpen,
+  "/books/fixed-assets": Building2,
+  "/books/loans": Scale,
+  "/books/close": CalendarCheck,
+  "/books/reports/trial-balance": ChartColumn,
+  "/books/health": Activity,
+  "/books/settings": Settings,
+};
+
+/** Labels/hrefs from books-nav config; icons attached here. */
+const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = BOOKS_NAV_GROUPS.map((g) => ({
+  label: g.label,
+  items: g.items.map((item) => ({
+    ...item,
+    icon: NAV_ICONS[item.href] || LayoutDashboard,
+  })),
+}));
+
+function periodDotClass(status: string) {
+  const open = status === "OPEN" || status === "REOPENED";
+  return open ? "bg-emerald-500" : "bg-muted-foreground/45";
+}
 
 function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { periods, periodId, setPeriodId, globalSearch, setGlobalSearch } = useBooksShell();
+  const {
+    periods,
+    periodsLoaded,
+    periodId,
+    setPeriodId,
+    globalSearch,
+    setGlobalSearch,
+    sidebarCollapsed: collapsed,
+    setSidebarCollapsed: setCollapsed,
+  } = useBooksShell();
+  const searchRef = useRef<HTMLInputElement>(null);
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [language, setLanguage] = useState<"EN" | "AR">("EN");
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const isLogin = pathname === "/login";
   const isBooks = pathname.startsWith("/books");
@@ -81,7 +156,6 @@ function ShellInner({ children }: { children: React.ReactNode }) {
       .finally(() => setSessionReady(true));
   }, [pathname, router, isLogin]);
 
-  // Books routes: never stay on a legacy client (e.g. Al Noor).
   useEffect(() => {
     if (isLogin || !isBooks || !directory?.me || booksClients.length === 0) return;
     if (BOOKS_CLIENT_ID_SET.has(directory.clientId)) return;
@@ -89,6 +163,17 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     void switchWorking(directory.me.id, fallback);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBooks, directory?.clientId, directory?.me?.id, booksClients, isLogin]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function switchWorking(userId: string, clientId: string) {
     const response = await fetch("/api/session", {
@@ -102,37 +187,106 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     setDirectory(next);
   }
 
+  const clientValue = switcherClients.some((c) => c.id === directory?.clientId)
+    ? directory!.clientId
+    : switcherClients[0]?.id || directory?.clientId || "";
+
+  const isActive = (item: NavItem) =>
+    item.href === "/books"
+      ? pathname === "/books"
+      : [item.href, ...(item.also || [])].some((h) => pathname === h || pathname.startsWith(`${h}/`));
+
   const nav = (
     <nav className="flex flex-col gap-0.5 px-2">
-      {NAV.map((item) => {
-        const active =
-          item.href === "/books"
-            ? pathname === "/books"
-            : pathname === item.href || pathname.startsWith(`${item.href}/`);
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={() => setMobileOpen(false)}
-            title={item.label}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-              active
-                ? "bg-primary-subtle text-primary"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              collapsed && "justify-center px-2",
-            )}
-          >
-            <Icon className="size-[18px] shrink-0" />
-            {collapsed ? <span className="sr-only">{item.label}</span> : item.label}
-          </Link>
-        );
-      })}
+      {NAV_GROUPS.map((group, gi) => (
+        <div key={group.label || `g${gi}`} className={cn("flex flex-col gap-0.5", gi > 0 && "mt-3")}>
+          {group.label && !collapsed ? (
+            <div className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              {group.label}
+            </div>
+          ) : null}
+          {group.items.map((item) => {
+            const active = isActive(item);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setMobileOpen(false)}
+                title={item.label}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-primary-subtle text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  collapsed && "justify-center px-2",
+                )}
+              >
+                <Icon className="size-[18px] shrink-0" />
+                {collapsed ? (
+                  <span className="sr-only">{item.label}</span>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {item.soon ? (
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">
+                        Soon
+                      </Badge>
+                    ) : null}
+                  </>
+                )}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 
-  const firstName = directory?.me?.name?.split(/\s+/)[0];
+  const sidebarTop = (
+    <div className={cn("space-y-2 px-3 pb-3", collapsed && "px-2")}>
+      {directory?.me ? (
+        <CompanySwitcher
+          clients={switcherClients}
+          value={clientValue}
+          collapsed={collapsed}
+          onSwitch={(id) => void switchWorking(directory.me!.id, id)}
+        />
+      ) : null}
+      {!collapsed ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-start gap-2"
+          data-testid="shell-global-upload"
+          onClick={() => setUploadOpen(true)}
+        >
+          <Upload className="size-4" />
+          Upload
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          className="mx-auto flex"
+          title="Upload"
+          data-testid="shell-global-upload"
+          onClick={() => setUploadOpen(true)}
+        >
+          <Upload className="size-4" />
+        </Button>
+      )}
+    </div>
+  );
+
+  const meName = directory?.me?.name?.trim() || "";
+  const looksLikeId = /^[0-9a-f-]{20,}$/i.test(meName);
+  const firstName = looksLikeId
+    ? directory?.me?.role || "there"
+    : meName.split(/\s+/)[0] || "there";
+  const currentPeriod = periods.find((p) => p.id === periodId);
 
   if (isLogin) {
     return <>{children}</>;
@@ -146,7 +300,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (isBooks && periods.length === 0) {
+  if (isBooks && !periodsLoaded) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
         Loading company period…
@@ -155,9 +309,9 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="flex min-h-screen">
-        <aside
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <aside data-print-chrome=""
           className={cn(
             "hidden shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex",
             collapsed ? "w-[72px]" : "w-64",
@@ -175,23 +329,29 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="ml-auto"
+                className="ms-auto"
                 onClick={() => setCollapsed(true)}
                 aria-label="Collapse navigation"
               >
                 <PanelLeft className="size-4" />
               </Button>
             ) : (
-              <Button variant="ghost" size="icon-sm" onClick={() => setCollapsed(false)} aria-label="Expand navigation">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setCollapsed(false)}
+                aria-label="Expand navigation"
+              >
                 <PanelLeft className="size-4" />
               </Button>
             )}
           </div>
+          {sidebarTop}
           <div className="flex-1 overflow-y-auto py-1">{nav}</div>
           <div className="mt-auto space-y-3 border-t border-sidebar-border p-3">
-            <WorkingAs
+            <WorkingAsUser
               directory={directory}
-              clients={switcherClients}
+              clientId={clientValue}
               collapsed={collapsed}
               onSwitch={switchWorking}
             />
@@ -209,60 +369,115 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header data-print-chrome="" className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2 md:hidden">
             <Button variant="outline" size="icon-sm" onClick={() => setMobileOpen(true)} aria-label="Open navigation">
               <PanelLeft />
             </Button>
             <span className="font-semibold text-primary">{PRODUCT_NAME}</span>
           </header>
 
-          <header
-            className="hidden items-center gap-3 border-b border-border bg-card px-4 py-2.5 md:flex"
+          <header data-print-chrome=""
+            className="hidden shrink-0 items-center gap-3 border-b border-border bg-card px-4 py-2.5 md:flex"
             data-testid="app-top-bar"
           >
             <p className="shrink-0 text-sm font-medium text-foreground">
               Hi <span className="font-semibold">{firstName}</span>
             </p>
             {isBooks && periods.length > 0 ? (
-              <select
-                className="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+              <Select
                 value={periodId}
-                onChange={(e) => setPeriodId(e.target.value)}
-                data-testid="topbar-period"
-                aria-label="Period"
+                onValueChange={(v) => {
+                  if (v) setPeriodId(v);
+                }}
               >
-                {periods.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label} ({p.status})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  size="sm"
+                  className="h-8 shrink-0 gap-2"
+                  data-testid="topbar-period"
+                  aria-label="Period"
+                >
+                  {currentPeriod ? (
+                    <span
+                      className={cn("size-2 shrink-0 rounded-full", periodDotClass(currentPeriod.status))}
+                      aria-hidden
+                    />
+                  ) : null}
+                  <SelectValue placeholder="Period">
+                    {currentPeriod
+                      ? `${currentPeriod.label} (${currentPeriod.status})`
+                      : null}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {periods.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={cn("size-2 rounded-full", periodDotClass(p.status))}
+                          aria-hidden
+                        />
+                        {p.label} ({p.status})
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : isBooks ? (
+              <span className="shrink-0 text-xs text-muted-foreground" data-testid="topbar-no-periods">
+                No accounting periods yet
+              </span>
             ) : null}
             <div className="relative w-full max-w-[480px] flex-1">
-              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
-                className="h-8 pl-8 text-sm"
-                placeholder="Search…"
+                ref={searchRef}
+                className="h-8 ps-8 pe-16 text-sm"
+                placeholder="Search vouchers, references, amounts…"
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  // Journals holds every posted voucher (invoices, bills, receipts, expenses…) with its
+                  // reference, so Enter anywhere searches there; the query carries over.
+                  if (e.key === "Enter" && globalSearch.trim() && isBooks && pathname !== "/books/journals") {
+                    router.push("/books/journals");
+                  }
+                }}
+                title="Press Enter to search all vouchers"
+                data-testid="topbar-search"
               />
+              <kbd className="pointer-events-none absolute end-2 top-1/2 hidden -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">
+                Ctrl K
+              </kbd>
             </div>
-            <select
-              className="h-8 shrink-0 rounded-md border-0 bg-muted/60 px-2 text-sm text-foreground"
-              aria-label="Language"
-            >
-              <option>EN</option>
-              <option>AR</option>
-            </select>
-            <div className="ml-auto shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="sm" className="h-8 gap-1 px-2" aria-label="Language">
+                    <Languages className="size-4" />
+                    <span className="text-xs">{language}</span>
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setLanguage("EN")}>English (EN)</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLanguage("AR")}>Arabic (AR)</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {isBooks ? <BooksIssuesBadge /> : null}
+            <div className="ms-auto shrink-0">
               <SecurityBannerChip />
             </div>
           </header>
 
-          <main
+          <main data-print-main=""
             key={`${directory?.me?.id || ""}:${directory?.clientId || ""}`}
-            className="min-w-0 flex-1 px-4 py-5 md:px-6 lg:px-8"
+            className={cn(
+              "min-h-0 min-w-0 flex-1",
+              pathname.match(/^\/books\/(inbox|documents|statements)\/[^/]+$/)
+                ? "flex flex-col overflow-hidden p-0"
+                : "overflow-y-auto px-4 py-5 md:px-6 lg:px-8",
+            )}
           >
             {children}
           </main>
@@ -274,17 +489,22 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           <SheetHeader>
             <SheetTitle className="font-semibold text-primary">{PRODUCT_NAME}</SheetTitle>
           </SheetHeader>
-          <div className="mt-4">{nav}</div>
+          <div className="mt-4 space-y-3">
+            {sidebarTop}
+            {nav}
+          </div>
           <div className="mt-6">
-            <WorkingAs
+            <WorkingAsUser
               directory={directory}
-              clients={switcherClients}
+              clientId={clientValue}
               collapsed={false}
               onSwitch={switchWorking}
             />
           </div>
         </SheetContent>
       </Sheet>
+
+      <UploadDialog open={uploadOpen} onOpenChange={setUploadOpen} />
     </div>
   );
 }
@@ -297,73 +517,70 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function WorkingAs({
+function WorkingAsUser({
   directory,
-  clients,
+  clientId,
   collapsed,
   onSwitch,
 }: {
   directory: Directory | null;
-  clients: { id: string; name: string }[];
+  clientId: string;
   collapsed: boolean;
   onSwitch: (userId: string, clientId: string) => void;
 }) {
   if (!directory?.me) return null;
-  const value = clients.some((c) => c.id === directory.clientId)
-    ? directory.clientId
-    : clients[0]?.id || directory.clientId;
+  if (!canShowWorkingAs(directory.me.role)) return null;
+
+  const items = Object.fromEntries(
+    directory.users.map((u) => [u.id, workingAsLabel(u, { collapsed })]),
+  );
+  const meLabel = workingAsLabel(directory.me, { collapsed });
 
   if (collapsed) {
     return (
-      <select
-        className="w-full rounded-md border border-border bg-card p-1 text-[10px]"
-        value={value}
-        title="Switch client"
-        onChange={(event) => onSwitch(directory.me!.id, event.target.value)}
+      <Select
+        value={directory.me.id}
+        items={items}
+        onValueChange={(uid) => {
+          if (uid) onSwitch(uid, clientId);
+        }}
       >
-        {clients.map((client) => (
-          <option key={client.id} value={client.id}>
-            {client.name.slice(0, 12)}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger size="sm" className="w-full" title="Working as" aria-label="Working as">
+          <SelectValue>{meLabel}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {directory.users.map((user) => (
+            <SelectItem key={user.id} value={user.id}>
+              {workingAsLabel(user, { collapsed: true })}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     );
   }
+
   return (
-    <div className="space-y-2 text-sm">
-      <label className="block text-xs font-medium text-muted-foreground">
-        Company
-        <select
-          className="mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
-          value={value}
-          onChange={(event) => onSwitch(directory.me!.id, event.target.value)}
-          data-testid="books-company-switcher"
-        >
-          {clients.map((client) => (
-            <option key={client.id} value={client.id}>
-              {client.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-xs font-medium text-muted-foreground">
-        Working as
-        <select
-          className="mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
-          value={directory.me.id}
-          onChange={(event) => {
-            const user = directory.users.find((item) => item.id === event.target.value);
-            if (!user) return;
-            onSwitch(user.id, value);
-          }}
-        >
+    <div className="space-y-1 text-sm">
+      <span className="block text-xs font-medium text-muted-foreground">Working as</span>
+      <Select
+        value={directory.me.id}
+        items={items}
+        onValueChange={(uid) => {
+          if (!uid) return;
+          onSwitch(uid, clientId);
+        }}
+      >
+        <SelectTrigger size="sm" className="w-full" data-testid="working-as-select">
+          <SelectValue>{meLabel}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
           {directory.users.map((user) => (
-            <option key={user.id} value={user.id}>
-              {user.name} · {user.role}
-            </option>
+            <SelectItem key={user.id} value={user.id}>
+              {workingAsLabel(user)}
+            </SelectItem>
           ))}
-        </select>
-      </label>
+        </SelectContent>
+      </Select>
     </div>
   );
 }

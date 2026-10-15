@@ -1,0 +1,2 @@
+id,Type,Source,Amount,Fee,Net,Currency,Created (UTC),Description
+txn_1,charge,ch_1,100.00,3.20,96.80,aed,2026-05-05 10:00:00,Payment for INV-SYN-001

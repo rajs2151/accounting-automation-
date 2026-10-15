@@ -95,6 +95,11 @@ def poll(settings, storage) -> None:
     while True:
         try:
             with connect(settings.worker_database_url) as conn:
+                from daftar.books_jobs import claim_books_job, recover_stuck_books_jobs, run_books_job
+
+                recover_stuck_books_jobs(conn)
+                conn.commit()
+
                 job = conn.execute("SELECT * FROM claim_job()").fetchone()
                 conn.commit()
                 if job is not None and job["id"] is not None:
@@ -102,8 +107,6 @@ def poll(settings, storage) -> None:
 
                     run_queued_job(conn, storage, job)
                     continue
-
-                from daftar.books_jobs import claim_books_job, run_books_job
 
                 books_job = claim_books_job(conn)
                 conn.commit()
@@ -124,6 +127,14 @@ def main() -> None:
     from daftar.bootstrap import bootstrap
 
     bootstrap()
+    # Load OCR models at start so the first scanned bill is not +3–5 s cold.
+    try:
+        from daftar.ocr_engine import loaded_model_report
+
+        report = loaded_model_report()
+        logger.info("ocr_models %s", report.get("models_loaded") or report)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ocr_preload_failed: %s", exc)
     UnlockHandler.settings = settings
     UnlockHandler.storage = storage
     server = ThreadingHTTPServer(("0.0.0.0", 4711), UnlockHandler)

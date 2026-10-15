@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { CellStatusPill, CellTypePill } from "@/components/books/cells";
@@ -32,17 +32,41 @@ export function BooksSideDrawer({
   onTabChange?: (id: string) => void;
   children: ReactNode;
 }) {
+  // Notion-style: side peek by default, expand to a wide panel.
+  const [wide, setWide] = useState(false);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
         showCloseButton={false}
-        className="flex w-full flex-col gap-0 p-0 sm:max-w-xl"
+        className={cn(
+          "books-notion flex w-full flex-col gap-0 p-0 shadow-2xl transition-[max-width] duration-200 ease-out",
+          wide ? "sm:max-w-4xl" : "sm:max-w-[560px]",
+        )}
         data-testid="books-side-drawer"
       >
-        <div className="flex items-start justify-between border-b border-border px-5 py-4">
+        <div className="flex items-center gap-1 border-b border-border/70 px-3 py-2 text-muted-foreground">
+          <button
+            type="button"
+            className="rounded-md p-1.5 hover:bg-muted"
+            onClick={() => onOpenChange(false)}
+            aria-label="Close drawer"
+          >
+            <X className="size-4" />
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1.5 hover:bg-muted"
+            onClick={() => setWide((w) => !w)}
+            aria-label={wide ? "Side peek" : "Expand"}
+            data-testid="books-side-drawer-expand"
+          >
+            {wide ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </button>
+        </div>
+        <div className="flex items-start justify-between px-8 pb-3 pt-6">
           <div className="min-w-0 space-y-1">
-            <SheetTitle className="text-lg font-semibold">{entryNo || title}</SheetTitle>
+            <SheetTitle className="text-2xl font-semibold tracking-tight">{entryNo || title}</SheetTitle>
             <p className="truncate text-sm text-muted-foreground">{title}</p>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {status ? <CellStatusPill status={status} /> : null}
@@ -54,17 +78,9 @@ export function BooksSideDrawer({
               ) : null}
             </div>
           </div>
-          <button
-            type="button"
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-            onClick={() => onOpenChange(false)}
-            aria-label="Close drawer"
-          >
-            <X className="size-5" />
-          </button>
         </div>
         {tabs && tabs.length > 0 ? (
-          <div className="flex gap-1 border-b border-border px-5">
+          <div className="flex gap-1 border-b border-border/70 px-6">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -82,7 +98,7 @@ export function BooksSideDrawer({
             ))}
           </div>
         ) : null}
-        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <div className="flex-1 overflow-y-auto px-8 py-5">{children}</div>
       </SheetContent>
     </Sheet>
   );

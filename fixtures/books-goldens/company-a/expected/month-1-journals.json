@@ -1,0 +1,54 @@
+{
+  "_provisional": true,
+  "periodLabel": "May 2026",
+  "notes": "PROVISIONAL — expected journal lines were drafted by the coding agent from posting rules, not independently hand-computed in a spreadsheet. Owner must replace with hand-computed values before ship. Harness will skip while _provisional is true.",
+  "documents": [
+    {
+      "documentNumber": "GOLDEN-A-SV-M1",
+      "docType": "sales_invoice",
+      "partyId": "e9000001-0000-4000-8000-000000000001",
+      "issueDate": "2026-05-08",
+      "lines": [
+        {
+          "description": "Consulting May",
+          "lineKind": "revenue",
+          "vatCode": "SR",
+          "netMinor": 10000,
+          "vatMinor": 500
+        },
+        {
+          "description": "Gov fee rebill",
+          "lineKind": "disbursement",
+          "netMinor": 2000,
+          "vatMinor": 0
+        }
+      ],
+      "expectedJournalLines": [
+        { "code": "1210", "debitMinor": 12500, "creditMinor": 0 },
+        { "code": "1220", "debitMinor": 0, "creditMinor": 2000 },
+        { "code": "2210", "debitMinor": 0, "creditMinor": 500 },
+        { "code": "4100", "debitMinor": 0, "creditMinor": 10000 }
+      ]
+    },
+    {
+      "documentNumber": "GOLDEN-A-PV-M1",
+      "docType": "purchase_bill",
+      "partyId": "e9000001-0000-4000-8000-000000000002",
+      "issueDate": "2026-05-09",
+      "lines": [
+        {
+          "description": "Office supplies",
+          "lineKind": "expense",
+          "vatCode": "SR",
+          "netMinor": 10000,
+          "vatMinor": 500
+        }
+      ],
+      "expectedJournalLines": [
+        { "code": "1430", "debitMinor": 500, "creditMinor": 0 },
+        { "code": "2110", "debitMinor": 0, "creditMinor": 10500 },
+        { "code": "6600", "debitMinor": 10000, "creditMinor": 0 }
+      ]
+    }
+  ]
+}

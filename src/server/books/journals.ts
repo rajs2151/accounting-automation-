@@ -3,9 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 
 import { withUser } from "@/lib/db";
+import { fiscalYearForDate } from "@/lib/fiscal-year";
 import { assertMinor } from "@/lib/money";
+import { firstOfNextMonthIso, firstOfNextMonthUtc } from "@/lib/schedule-dates";
+import { markPeriodChangedSinceClose } from "@/server/books/close";
 import { linkBooksJournalAttachments } from "@/server/books/attachments";
 import { writeBooksAudit } from "@/server/books/audit";
+import { isBooksControlAccountCode, isPureVatSettlement } from "@/server/books/control-accounts";
 import { requireDualControlActor } from "@/server/books/dual-control";
 import { BooksError } from "@/server/books/errors";
 import { enqueueBooksJob } from "@/server/books/jobs";
@@ -66,15 +70,55 @@ function hashEntry(memo: string, entryDate: string, lines: BooksLineInput[]) {
   return createHash("sha256").update(JSON.stringify({ memo, entryDate, lines })).digest("hex");
 }
 
-async function requireWritablePeriod(db: PoolClient, clientId: string, periodId: string) {
+function isoDate(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+function dayBeforeIso(d: string): string {
+  const t = new Date(`${d}T12:00:00Z`);
+  t.setUTCDate(t.getUTCDate() - 1);
+  return t.toISOString().slice(0, 10);
+}
+
+/**
+ * Period must be OPEN/REOPENED. With entryDate: the date must fall inside the period, and no
+ * LOCKED period may contain that date (reports aggregate by entry_date, not period_id).
+ * Only exception: an Opening voucher may be dated the day before its period starts (opening
+ * balances as at the books-start cut-over); the LOCKED-containing-period check still applies.
+ */
+async function requireWritablePeriod(
+  db: PoolClient,
+  clientId: string,
+  periodId: string,
+  entryDate?: string,
+  voucherType?: string | null,
+) {
   const period = await db.query(
-    `SELECT id, status, period_start, period_end, label
+    `SELECT id, status, period_start::text AS period_start, period_end::text AS period_end, label
      FROM books_periods WHERE id = $1 AND client_id = $2`,
     [periodId, clientId],
   );
   if (!period.rowCount) throw new BooksError("period_not_found", "not_found");
   if (!["OPEN", "REOPENED"].includes(String(period.rows[0].status))) {
     throw new BooksError("period_locked", "period_closed");
+  }
+  if (entryDate !== undefined) {
+    const d = isoDate(entryDate);
+    const start = isoDate(period.rows[0].period_start);
+    const end = isoDate(period.rows[0].period_end);
+    const openingCutOver = voucherType === "Opening" && d === dayBeforeIso(start);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || ((d < start || d > end) && !openingCutOver)) {
+      throw new BooksError("entry_date_outside_period", "invalid");
+    }
+    const containing = await db.query(
+      `SELECT 1 FROM books_periods
+       WHERE client_id = $1 AND period_start <= $2::date AND period_end >= $2::date
+         AND status = 'LOCKED'
+       LIMIT 1`,
+      [clientId, d],
+    );
+    if (containing.rowCount) throw new BooksError("period_locked", "period_closed");
   }
   return period.rows[0];
 }
@@ -117,20 +161,30 @@ async function assignEntryNo(
   entryId: string,
   entryDate: string,
   voucherType: string = "Journal",
+  postedBy?: string,
 ): Promise<string> {
-  const year = Number(String(entryDate).slice(0, 4));
+  const fyRow = await db.query(
+    `SELECT fiscal_year_start_month AS m FROM clients WHERE id = $1`,
+    [clientId],
+  );
+  const year = fiscalYearForDate(entryDate, Number(fyRow.rows[0]?.m || 1));
   const vt = isVoucherType(voucherType) ? voucherType : "Journal";
   const no = await db.query(
     `SELECT books_next_voucher_no($1::uuid, $2::text, $3::int) AS entry_no`,
     [clientId, vt, year],
   );
   const entryNo = String(no.rows[0].entry_no);
-  await db.query(
+  const posted = await db.query(
     `UPDATE books_journal_entries
-     SET status = 'posted', posted_at = now(), entry_no = $3, voucher_type = $4
-     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')`,
-    [entryId, clientId, entryNo, vt],
+     SET status = 'posted', posted_at = now(), entry_no = $3, voucher_type = $4,
+         posted_by = COALESCE($5::uuid, posted_by)
+     WHERE id = $1 AND client_id = $2 AND status IN ('draft', 'scheduled')
+     RETURNING period_id`,
+    [entryId, clientId, entryNo, vt, postedBy ?? null],
   );
+  // A concurrent post already won: do not hand back a voucher number that was never used.
+  if (!posted.rowCount) throw new BooksError("not_draft", "conflict");
+  await markPeriodChangedSinceClose(db, clientId, String(posted.rows[0].period_id));
   return entryNo;
 }
 
@@ -361,6 +415,22 @@ export async function listBooksJournals(
               e.posted_at AS "postedAt",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.created_at AS "createdAt", e.created_by AS "createdBy",
               e.corrects_entry_id AS "correctsEntryId",
               e.reverses_entry_id AS "reversesEntryId",
@@ -388,6 +458,14 @@ export async function listBooksJournals(
                 LIMIT 1
               ) AS "creditAccount",
               (
+                SELECT count(*)::int FROM books_journal_lines dlc
+                WHERE dlc.entry_id = e.id AND dlc.debit_minor > 0
+              ) AS "debitLineCount",
+              (
+                SELECT count(*)::int FROM books_journal_lines clc
+                WHERE clc.entry_id = e.id AND clc.credit_minor > 0
+              ) AS "creditLineCount",
+              (
                 SELECT ARRAY(
                   SELECT DISTINCT t FROM (
                     SELECT unnest(e.tags) AS t
@@ -414,6 +492,10 @@ export async function listBooksJournals(
       debitTotal: Number(row.debitTotal),
       creditTotal: Number(row.creditTotal),
       amount: Number(row.debitTotal),
+      debitLineCount: Number(row.debitLineCount || 0),
+      creditLineCount: Number(row.creditLineCount || 0),
+      recurringIndex: row.recurringIndex == null ? null : Number(row.recurringIndex),
+      recurringTotal: row.recurringTotal == null ? null : Number(row.recurringTotal),
       tags: Array.isArray(row.tags) ? row.tags : [],
       debitAccount: row.debitAccount ?? null,
       creditAccount: row.creditAccount ?? null,
@@ -434,10 +516,37 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
               e.corrects_entry_id AS "correctsEntryId",
               e.scheduled_for AS "scheduledFor", e.auto_reverse_next_period AS "autoReverseNextPeriod",
               e.template_key AS "templateKey", e.recurring_id AS "recurringId",
+              (
+                SELECT rt.occurrences
+                FROM books_recurring_templates rt
+                WHERE rt.id = e.recurring_id
+              ) AS "recurringTotal",
+              CASE
+                WHEN e.recurring_id IS NULL THEN NULL
+                ELSE (
+                  SELECT count(*)::int
+                  FROM books_journal_entries e2
+                  WHERE e2.recurring_id = e.recurring_id
+                    AND e2.client_id = e.client_id
+                    AND e2.deleted_at IS NULL
+                    AND (e2.entry_date, e2.created_at, e2.id) <= (e.entry_date, e.created_at, e.id)
+                )
+              END AS "recurringIndex",
               e.content_hash AS "contentHash", e.created_by AS "createdBy",
-              e.posted_at AS "postedAt", e.created_at AS "createdAt"
+              cu.name AS "createdByName",
+              e.posted_by AS "postedBy",
+              pu.name AS "postedByName",
+              e.posted_at AS "postedAt", e.created_at AS "createdAt",
+              rev.entry_no AS "reversesEntryNo",
+              byrev.entry_no AS "reversedByEntryNo",
+              corr.entry_no AS "correctsEntryNo"
        FROM books_journal_entries e
        LEFT JOIN books_periods p ON p.id = e.period_id
+       LEFT JOIN users cu ON cu.id = e.created_by
+       LEFT JOIN users pu ON pu.id = e.posted_by
+       LEFT JOIN books_journal_entries rev ON rev.id = e.reverses_entry_id
+       LEFT JOIN books_journal_entries byrev ON byrev.id = e.reversed_by_entry_id
+       LEFT JOIN books_journal_entries corr ON corr.id = e.corrects_entry_id
        WHERE e.id = $1 AND e.client_id = $2 AND e.deleted_at IS NULL`,
       [entryId, clientId],
     );
@@ -469,6 +578,10 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
     return {
       ...entry.rows[0],
       autoReverseNextPeriod: Boolean(entry.rows[0].autoReverseNextPeriod),
+      recurringIndex:
+        entry.rows[0].recurringIndex == null ? null : Number(entry.rows[0].recurringIndex),
+      recurringTotal:
+        entry.rows[0].recurringTotal == null ? null : Number(entry.rows[0].recurringTotal),
       lines: lines.rows.map((line) => ({
         ...line,
         debitMinor: Number(line.debitMinor),
@@ -483,6 +596,15 @@ export async function getBooksJournal(userId: string, clientId: string, entryId:
   });
 }
 
+const BOOKS_ENTRY_TYPES = new Set([
+  "manual",
+  "auto",
+  "closing",
+  "opening",
+  "reversal",
+  "depreciation",
+  "fx_revaluation",
+]);
 export async function createBooksJournal(
   userId: string,
   clientId: string,
@@ -493,6 +615,8 @@ export async function createBooksJournal(
     reference?: string;
     tags?: string[];
     voucherType?: string;
+    /** Defaults to manual. P5-2 depreciation runs use entry_type=depreciation. */
+    entryType?: string;
     correctsEntryId?: string | null;
     lines: BooksLineInput[];
     post?: boolean;
@@ -505,6 +629,11 @@ export async function createBooksJournal(
       occurrences: number;
     } | null;
     attachmentFileIds?: string[];
+    /**
+     * Documents / settlements / expenses may post to AR/AP/VAT controls.
+     * Manual journals and bank categorisation must not (open items would drift).
+     */
+    allowControlAccounts?: boolean;
   },
 ) {
   const entryTags = body.tags ?? [];
@@ -512,11 +641,27 @@ export async function createBooksJournal(
   const voucherType: VoucherType = isVoucherType(body.voucherType || "")
     ? (body.voucherType as VoucherType)
     : "Journal";
+  const entryType =
+    body.entryType && BOOKS_ENTRY_TYPES.has(body.entryType) ? body.entryType : "manual";
 
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    await requireWritablePeriod(db, clientId, body.periodId);
+    await requireWritablePeriod(db, clientId, body.periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
+    const lineCodes = lines.map((l) => accountById.get(l.accountId)?.code ?? "");
+    const pureVatSettlement = isPureVatSettlement(lineCodes);
+    if (!body.allowControlAccounts && !pureVatSettlement) {
+      for (const line of lines) {
+        const meta = accountById.get(line.accountId);
+        if (meta && isBooksControlAccountCode(meta.code)) {
+          throw new BooksError(`control_account_forbidden:${meta.code}`, "invalid");
+        }
+      }
+    }
+    const warnings: string[] = [];
+    if (pureVatSettlement && !body.allowControlAccounts && entryType === "manual") {
+      warnings.push("manual_vat_control_journal");
+    }
     lines = expandVatCompanionLines(lines, accountById, vatAccountByCode);
     assertBooksBalanced(lines);
 
@@ -535,9 +680,9 @@ export async function createBooksJournal(
 
     await db.query(
       `INSERT INTO books_journal_entries (
-         id, client_id, period_id, memo, reference, entry_date, status, content_hash, created_by,
+         id, client_id, period_id, memo, reference, entry_date, status, entry_type, content_hash, created_by,
          scheduled_for, auto_reverse_next_period, template_key, voucher_type, tags, corrects_entry_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::text[],$15)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::text[],$16)`,
       [
         id,
         clientId,
@@ -546,6 +691,7 @@ export async function createBooksJournal(
         reference,
         body.entryDate,
         initialStatus,
+        entryType,
         hash,
         userId,
         wantSchedule ? scheduleDate : null,
@@ -624,8 +770,8 @@ export async function createBooksJournal(
     }
 
     if (body.post && !wantSchedule) {
-      await requireDualControlActor(db, userId, userId, "post");
-      entryNo = await assignEntryNo(db, clientId, id, body.entryDate, voucherType);
+      await requireDualControlActor(db, userId, userId, "post", { clientId });
+      entryNo = await assignEntryNo(db, clientId, id, body.entryDate, voucherType, userId);
       status = "posted";
       await writeBooksAudit(db, {
         clientId,
@@ -633,15 +779,16 @@ export async function createBooksJournal(
         action: "post",
         entity: "books_journal_entry",
         entityId: id,
-        after: { status: "posted", entryNo, voucherType },
+        after: { status: "posted", entryNo, voucherType, postedBy: userId },
       });
       if (body.autoReverseNextPeriod) {
+        const reverseOn = firstOfNextMonthIso(body.entryDate);
         await enqueueBooksJob(
           db,
           clientId,
           "auto_reverse",
-          { entryId: id, actorUserId: userId },
-          new Date(),
+          { entryId: id, actorUserId: userId, reverseOn },
+          firstOfNextMonthUtc(body.entryDate),
         );
       }
     }
@@ -667,6 +814,7 @@ export async function createBooksJournal(
       entryNo,
       recurringId,
       scheduledFor: wantSchedule ? scheduleDate : null,
+      warnings,
       lines: linesOut.rows.map((line) => ({
         ...line,
         debitMinor: Number(line.debitMinor),
@@ -680,39 +828,81 @@ export async function createBooksJournal(
 export async function postBooksJournal(userId: string, clientId: string, entryId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
-    const entry = await db.query(
-      `SELECT id, period_id, status, entry_date, auto_reverse_next_period, created_by, voucher_type
-       FROM books_journal_entries
-       WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
-      [entryId, clientId],
+    return postBooksJournalInTx(db, userId, clientId, entryId);
+  });
+}
+
+/**
+ * Post a draft/scheduled entry inside the caller's transaction (same checks as postBooksJournal:
+ * dual control vs created_by, writable period + entry date, changed-since-close marking).
+ * Caller must already have run assertSyntheticTenant on this connection.
+ */
+export async function postBooksJournalInTx(
+  db: PoolClient,
+  userId: string,
+  clientId: string,
+  entryId: string,
+) {
+  const entry = await db.query(
+    `SELECT id, period_id, status, entry_date, auto_reverse_next_period, created_by, voucher_type
+     FROM books_journal_entries
+     WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+    [entryId, clientId],
+  );
+  if (!entry.rowCount) throw new BooksError("journal_not_found", "not_found");
+  if (!["draft", "scheduled"].includes(String(entry.rows[0].status))) {
+    throw new BooksError("not_draft", "conflict");
+  }
+  await requireDualControlActor(db, userId, String(entry.rows[0].created_by), "post", { clientId });
+  // Dual control: whoever replaced the draft's lines/header is also its preparer and cannot post it.
+  const dualOn = await db.query(`SELECT require_dual_control FROM clients WHERE id = $1`, [clientId]);
+  const requireDual = dualOn.rows[0]?.require_dual_control !== false;
+  if (requireDual) {
+    const edited = await db.query(
+      `SELECT 1 FROM books_audit_events
+       WHERE client_id = $1 AND entity = 'books_journal_entry' AND entity_id = $2::uuid
+         AND action = 'update' AND actor = $3
+       LIMIT 1`,
+      [clientId, entryId, userId],
     );
-    if (!entry.rowCount) throw new BooksError("journal_not_found", "not_found");
-    if (!["draft", "scheduled"].includes(String(entry.rows[0].status))) {
-      throw new BooksError("not_draft", "conflict");
-    }
-    await requireDualControlActor(db, userId, String(entry.rows[0].created_by), "post");
-    await requireWritablePeriod(db, clientId, String(entry.rows[0].period_id));
-    const entryNo = await assignEntryNo(
+    if (edited.rowCount) throw new BooksError("post_preparer_cannot_approve", "forbidden");
+  }
+  await requireWritablePeriod(
+    db,
+    clientId,
+    String(entry.rows[0].period_id),
+    String(entry.rows[0].entry_date),
+    String(entry.rows[0].voucher_type || ""),
+  );
+  const entryNo = await assignEntryNo(
+    db,
+    clientId,
+    entryId,
+    String(entry.rows[0].entry_date),
+    String(entry.rows[0].voucher_type || "Journal"),
+    userId,
+  );
+  await writeBooksAudit(db, {
+    clientId,
+    actor: userId,
+    action: "post",
+    entity: "books_journal_entry",
+    entityId: entryId,
+    before: { status: entry.rows[0].status },
+    after: { status: "posted", entryNo, postedBy: userId },
+  });
+  if (entry.rows[0].auto_reverse_next_period) {
+    const entryDate = String(entry.rows[0].entry_date).slice(0, 10);
+    const reverseOn = firstOfNextMonthIso(entryDate);
+    await enqueueBooksJob(
       db,
       clientId,
-      entryId,
-      String(entry.rows[0].entry_date),
-      String(entry.rows[0].voucher_type || "Journal"),
+      "auto_reverse",
+      { entryId, actorUserId: userId, reverseOn },
+      firstOfNextMonthUtc(entryDate),
     );
-    await writeBooksAudit(db, {
-      clientId,
-      actor: userId,
-      action: "post",
-      entity: "books_journal_entry",
-      entityId: entryId,
-      before: { status: entry.rows[0].status },
-      after: { status: "posted", entryNo },
-    });
-    if (entry.rows[0].auto_reverse_next_period) {
-      await enqueueBooksJob(db, clientId, "auto_reverse", { entryId }, new Date());
-    }
-    return { id: entryId, status: "posted", entryNo };
-  });
+  }
+  return { id: entryId, status: "posted", entryNo };
 }
 
 export async function bulkPostBooksJournals(userId: string, clientId: string, entryIds: string[]) {
@@ -737,11 +927,12 @@ export async function bulkReverseBooksJournals(
   clientId: string,
   entryIds: string[],
   entryDate: string,
+  reason: string,
 ) {
   const results: Array<{ id: string; ok: boolean; reversalId?: string; error?: string }> = [];
   for (const entryId of entryIds) {
     try {
-      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+      const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate, reason);
       results.push({ id: entryId, ok: true, reversalId: rev.reversalId });
     } catch (error) {
       results.push({
@@ -978,7 +1169,11 @@ export async function reverseBooksJournal(
   clientId: string,
   entryId: string,
   entryDate: string,
+  reason: string,
 ) {
+  const reasonTrim = String(reason || "").trim();
+  if (!reasonTrim) throw new BooksError("reversal_reason_required", "invalid");
+
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const original = await db.query(
@@ -989,19 +1184,39 @@ export async function reverseBooksJournal(
     );
     if (!original.rowCount) throw new BooksError("journal_not_found", "not_found");
     if (original.rows[0].status !== "posted") throw new BooksError("not_posted", "conflict");
-    await requireDualControlActor(db, userId, String(original.rows[0].created_by), "reverse");
-    await requireWritablePeriod(db, clientId, String(original.rows[0].period_id));
+    await requireDualControlActor(db, userId, String(original.rows[0].created_by), "reverse", {
+    clientId,
+  });
+
+    const periodRow = await db.query(
+      `SELECT id FROM books_periods
+       WHERE client_id = $1
+         AND period_start <= $2::date
+         AND period_end >= $2::date
+       ORDER BY period_start DESC
+       LIMIT 1`,
+      [clientId, entryDate],
+    );
+    if (!periodRow.rowCount) throw new BooksError("period_not_found", "not_found");
+    const periodId = String(periodRow.rows[0].id);
+    // Period resolved from the reversal's own date (not the original's period_id); refuses a
+    // LOCKED period containing that date.
+    await requireWritablePeriod(db, clientId, periodId, entryDate);
 
     const lines = await db.query(
-      `SELECT account_id, debit_minor, credit_minor, currency, line_memo, vat_treatment, vat_code, tags
+      `SELECT account_id, debit_minor, credit_minor, currency, original_minor, fx_rate_scaled,
+              line_memo, vat_treatment, vat_code, tags
        FROM books_journal_lines WHERE entry_id = $1 ORDER BY id`,
       [entryId],
     );
+    // Same foreign-currency amount and rate on the opposite side, so FC balances net to zero.
     const opposite: BooksLineInput[] = lines.rows.map((line) => ({
       accountId: String(line.account_id),
       debitMinor: Number(line.credit_minor),
       creditMinor: Number(line.debit_minor),
       currency: String(line.currency),
+      originalMinor: line.original_minor == null ? null : Number(line.original_minor),
+      fxRateScaled: line.fx_rate_scaled == null ? null : Number(line.fx_rate_scaled),
       lineMemo: `Reversal: ${line.line_memo || ""}`.trim(),
       vatTreatment: line.vat_treatment,
       vatCode: line.vat_code,
@@ -1019,7 +1234,7 @@ export async function reverseBooksJournal(
       [
         reversalId,
         clientId,
-        original.rows[0].period_id,
+        periodId,
         memo,
         entryDate,
         entryId,
@@ -1049,6 +1264,8 @@ export async function reverseBooksJournal(
         reversesEntryId: entryId,
         status: "reversed",
         reversalNo,
+        reason: reasonTrim,
+        reversalDate: entryDate,
       },
     });
     return {
@@ -1076,6 +1293,8 @@ export async function replaceBooksJournalDraft(
     tags?: string[];
     voucherType?: string;
     scheduledFor?: string | null;
+    autoReverseNextPeriod?: boolean;
+    templateKey?: string | null;
     lines: BooksLineInput[];
   },
 ) {
@@ -1097,7 +1316,7 @@ export async function replaceBooksJournalDraft(
       throw new BooksError("not_editable", "conflict");
     }
     const periodId = body.periodId || String(before.rows[0].period_id);
-    await requireWritablePeriod(db, clientId, periodId);
+    await requireWritablePeriod(db, clientId, periodId, body.entryDate, voucherType);
     const { accountById, vatAccountByCode } = await loadAccountMaps(db, clientId, lines);
     lines = expandVatCompanionLines(lines, accountById, vatAccountByCode);
     assertBooksBalanced(lines);
@@ -1108,12 +1327,18 @@ export async function replaceBooksJournalDraft(
         ? before.rows[0].scheduled_for
         : body.scheduledFor;
     const nextStatus = scheduleDate ? "scheduled" : "draft";
+    const autoReverse =
+      body.autoReverseNextPeriod !== undefined
+        ? Boolean(body.autoReverseNextPeriod)
+        : Boolean(before.rows[0].auto_reverse_next_period);
+    const templateKey =
+      body.templateKey !== undefined ? body.templateKey : before.rows[0].template_key;
 
     await db.query(
       `UPDATE books_journal_entries SET
          period_id = $3, memo = $4, note = COALESCE($5, note), reference = COALESCE($6, reference),
          entry_date = $7, content_hash = $8, voucher_type = $9, tags = $10::text[],
-         scheduled_for = $11, status = $12
+         scheduled_for = $11, status = $12, auto_reverse_next_period = $13, template_key = $14
        WHERE id = $1 AND client_id = $2`,
       [
         entryId,
@@ -1121,13 +1346,16 @@ export async function replaceBooksJournalDraft(
         periodId,
         memo,
         body.note ?? null,
-        body.reference ?? null,
+        // A blank reference keeps the draft's own (e.g. DRAFT-0010) instead of wiping it.
+        body.reference?.trim() ? body.reference.trim() : null,
         body.entryDate,
         hash,
         voucherType,
         entryTags,
         scheduleDate,
         nextStatus,
+        autoReverse,
+        templateKey,
       ],
     );
     await db.query(`DELETE FROM books_journal_lines WHERE entry_id = $1`, [entryId]);
@@ -1153,6 +1381,7 @@ export async function replaceBooksJournalDraft(
       status: nextStatus,
       voucherType,
       tags: entryTags,
+      autoReverseNextPeriod: autoReverse,
       lines,
     };
   });
@@ -1206,7 +1435,13 @@ export async function beginBooksJournalCorrection(
   if (String(original.periodStatus) === "LOCKED") {
     throw new BooksError("period_locked", "period_closed");
   }
-  const rev = await reverseBooksJournal(userId, clientId, entryId, entryDate);
+  const rev = await reverseBooksJournal(
+    userId,
+    clientId,
+    entryId,
+    entryDate,
+    "Correction: reverse original before new entry",
+  );
   const prefillLines = (original.lines as Array<Record<string, unknown>>).map((line) => ({
     accountId: String(line.accountId),
     debitMinor: Number(line.debitMinor),

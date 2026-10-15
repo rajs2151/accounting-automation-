@@ -24,11 +24,15 @@ from daftar.money import MoneyError, parse_amount
 from daftar.settings import Settings, load_settings
 from daftar.sniff import sniff
 from daftar.storage import ObjectStore
+from daftar.textclean import clean_param
 from daftar.validate import Txn, apply_validation
 
 logger = logging.getLogger("daftar.worker")
 
 OMAR = "55555555-5555-4555-8555-555555555555"
+
+# Page-level OCR engines (Addendum A) collapse to document-level "ocr".
+OCR_METHODS = frozenset({"ocr", "doctr", "easyocr", "tesseract"})
 
 
 class AppConn:
@@ -48,7 +52,8 @@ class AppConn:
     def execute(self, query, params=None, **kwargs):
         if self.user_id:
             self._raw.execute("SELECT set_config('app.current_user_id', %s, true)", (self.user_id,))
-        return self._raw.execute(query, params, **kwargs)
+        # Every worker write goes through here: strip NUL/control chars so garbled PDF text never fails a job.
+        return self._raw.execute(query, clean_param(params), **kwargs)
 
     def commit(self):
         return self._raw.commit()
@@ -169,7 +174,16 @@ def process_statement(conn, storage: ObjectStore, statement_id: str, password: s
         conn.commit()
         return
     for page_no, method in extraction.methods:
-        _event(conn, row, "parse" if method != "ocr" else "ocr", method, 1 if method == "ocr" else page_no, started)
+        is_ocr = method in OCR_METHODS
+        event_method = "ocr" if is_ocr else method
+        _event(
+            conn,
+            row,
+            "ocr" if is_ocr else "parse",
+            event_method,
+            1 if is_ocr else page_no,
+            started,
+        )
     _store_extraction(conn, storage, row, extraction)
     column_map = propose_column_map(extraction.headers)
     fingerprint = header_fingerprint(extraction.headers)
@@ -613,7 +627,10 @@ def _fail(conn, statement_id: str, code: str) -> None:
 
 
 def _extraction_method(extraction: Extraction) -> str:
-    methods = {method for _page, method in extraction.methods}
+    # Normalize Addendum A OCR engine names to the statements.extraction_method taxonomy.
+    methods = {
+        ("ocr" if method in OCR_METHODS else method) for _page, method in extraction.methods
+    }
     if methods == {"pdf_text"}:
         return "pdf_text"
     if methods == {"ocr"}:

@@ -90,6 +90,7 @@ services:
     working_dir: /work
     environment:
       E2E_IN_CONTAINER: "1"
+      E2E_PHASE1_GATE: "1"
       PGHOST: postgres
       PGPASSWORD: daftar-local-only
       DATABASE_URL: postgresql://daftar_app:daftar-local-only@postgres:5432/daftar_e2e

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { withUser } from "@/lib/db";
 import { BooksError } from "@/server/books/errors";
 import { writeBooksAudit } from "@/server/books/audit";
+import { assertUuid } from "@/server/books/periods";
 import { assertSyntheticTenant } from "@/server/security-gate";
 
 export async function listBooksAccounts(
@@ -18,7 +19,7 @@ export async function listBooksAccounts(
               normal_balance AS "normalBalance",
               is_ar AS "isAr", is_ap AS "isAp", is_vat_control AS "isVatControl",
               is_bank AS "isBank", is_control AS "isControl",
-              cash_flow_class AS "cashFlowClass",
+              cash_flow_class AS "cashFlowClass", sub_type AS "subType",
               statement_line AS "statementLine", note_group AS "noteGroup",
               vat_class AS "vatClass", default_vat_code AS "defaultVatCode", active
        FROM books_accounts
@@ -132,6 +133,8 @@ function buildCoaTree(flat: Array<Record<string, unknown>>, balances: Map<string
   return roots;
 }
 
+const ACCOUNT_TYPES = new Set(["asset", "liability", "equity", "income", "expense"]);
+
 export async function createBooksAccount(
   userId: string,
   clientId: string,
@@ -149,11 +152,29 @@ export async function createBooksAccount(
   const code = body.code.trim();
   const name = body.name.trim();
   if (!code || !name) throw new BooksError("account_fields_required", "invalid_line");
+  const accountType = String(body.accountType || "").trim();
+  if (!ACCOUNT_TYPES.has(accountType)) throw new BooksError("invalid_account_type", "invalid");
+  if (body.normalBalance && !["debit", "credit"].includes(body.normalBalance)) {
+    throw new BooksError("invalid_normal_balance", "invalid");
+  }
+  if (body.parentId) assertUuid(body.parentId, "invalid_parent_account");
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const id = randomUUID();
     const parentId = body.parentId || null;
     const isPostable = body.isPostable ?? true;
+    const existing = await db.query(
+      `SELECT 1 FROM books_accounts WHERE client_id = $1 AND code = $2`,
+      [clientId, code],
+    );
+    if (existing.rowCount) throw new BooksError("account_code_exists", "conflict");
+    if (parentId) {
+      const parent = await db.query(
+        `SELECT 1 FROM books_accounts WHERE id = $1 AND client_id = $2`,
+        [parentId, clientId],
+      );
+      if (!parent.rowCount) throw new BooksError("invalid_parent_account", "invalid");
+    }
     await db.query(
       `INSERT INTO books_accounts (
          id, client_id, code, name, account_type, parent_id, is_postable,
@@ -164,14 +185,21 @@ export async function createBooksAccount(
         clientId,
         code,
         name,
-        body.accountType,
+        accountType,
         parentId,
         isPostable,
-        body.normalBalance || (body.accountType === "asset" || body.accountType === "expense" ? "debit" : "credit"),
+        body.normalBalance || (accountType === "asset" || accountType === "expense" ? "debit" : "credit"),
         body.statementLine || null,
         body.defaultVatCode ?? null,
       ],
-    );
+    ).catch((error: unknown) => {
+      // A concurrent create of the same code loses on UNIQUE (client_id, code).
+      const pgCode = (error as { code?: string })?.code;
+      if (pgCode === "23505") throw new BooksError("account_code_exists", "conflict");
+      // Unknown default VAT code (FK to books_vat_codes).
+      if (pgCode === "23503") throw new BooksError("invalid_vat_code", "invalid");
+      throw error;
+    });
     await writeBooksAudit(db, {
       clientId,
       actor: userId,
@@ -275,7 +303,9 @@ export async function getBooksCompanyProfile(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const row = await db.query(
-      `SELECT id, name, trn, default_currency AS "defaultCurrency", is_synthetic AS "isSynthetic"
+      `SELECT id, name, trn, default_currency AS "defaultCurrency", is_synthetic AS "isSynthetic",
+              fiscal_year_start_month AS "fiscalYearStartMonth",
+              books_start_period_id AS "booksStartPeriodId"
        FROM clients WHERE id = $1`,
       [clientId],
     );
@@ -284,24 +314,61 @@ export async function getBooksCompanyProfile(userId: string, clientId: string) {
   });
 }
 
+/** Functional (ledger) currency: every amount in the books is AED fils. */
+export const BASE_CURRENCY = "AED";
+
 export async function updateBooksCompanyProfile(
   userId: string,
   clientId: string,
-  body: { name?: string; trn?: string | null; defaultCurrency?: string },
+  body: {
+    name?: string;
+    trn?: string | null;
+    defaultCurrency?: string;
+    fiscalYearStartMonth?: number;
+  },
 ) {
+  // Validate before touching the DB: nothing is clamped or silently corrected.
+  let trnIn: string | null | undefined;
+  if (body.trn !== undefined) {
+    const t = body.trn == null ? "" : String(body.trn).trim();
+    if (t && !/^\d{15}$/.test(t)) throw new BooksError("invalid_company_trn", "invalid");
+    trnIn = t || null;
+  }
+  let currencyIn: string | undefined;
+  if (body.defaultCurrency !== undefined && body.defaultCurrency !== "") {
+    const c = String(body.defaultCurrency).trim();
+    if (!/^[A-Z]{3}$/.test(c)) throw new BooksError("invalid_currency_code", "invalid");
+    // The ledger, VAT and FX revaluation all work in AED fils; the base currency is fixed.
+    if (c !== BASE_CURRENCY) throw new BooksError("base_currency_fixed", "invalid");
+    currencyIn = c;
+  }
+  let fyIn: number | undefined;
+  if (body.fiscalYearStartMonth !== undefined) {
+    const m = body.fiscalYearStartMonth;
+    if (typeof m !== "number" || !Number.isInteger(m) || m < 1 || m > 12) {
+      throw new BooksError("invalid_fiscal_year_start_month", "invalid");
+    }
+    fyIn = m;
+  }
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
+    // Same rule as the VAT settings: only an admin changes company-level settings.
+    const role = await db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    if (String(role.rows[0]?.role) !== "admin") {
+      throw new BooksError("company_settings_require_admin", "forbidden");
+    }
     const before = await db.query(
-      `SELECT name, trn, default_currency FROM clients WHERE id = $1`,
+      `SELECT name, trn, default_currency, fiscal_year_start_month FROM clients WHERE id = $1 FOR UPDATE`,
       [clientId],
     );
     if (!before.rowCount) throw new BooksError("client_not_found", "not_found");
     const name = body.name?.trim() || before.rows[0].name;
-    const trn = body.trn === undefined ? before.rows[0].trn : body.trn;
-    const currency = body.defaultCurrency || before.rows[0].default_currency;
+    const trn = trnIn === undefined ? before.rows[0].trn : trnIn;
+    const currency = currencyIn || before.rows[0].default_currency;
+    const fy = fyIn ?? Number(before.rows[0].fiscal_year_start_month || 1);
     await db.query(
-      `UPDATE clients SET name = $2, trn = $3, default_currency = $4 WHERE id = $1`,
-      [clientId, name, trn, currency],
+      `UPDATE clients SET name = $2, trn = $3, default_currency = $4, fiscal_year_start_month = $5 WHERE id = $1`,
+      [clientId, name, trn, currency, fy],
     );
     await writeBooksAudit(db, {
       clientId,
@@ -310,22 +377,27 @@ export async function updateBooksCompanyProfile(
       entity: "client",
       entityId: clientId,
       before: before.rows[0],
-      after: { name, trn, defaultCurrency: currency },
+      after: { name, trn, defaultCurrency: currency, fiscalYearStartMonth: fy },
     });
-    return { id: clientId, name, trn, defaultCurrency: currency };
+    return { id: clientId, name, trn, defaultCurrency: currency, fiscalYearStartMonth: fy };
   });
 }
 
+/**
+ * Users of the signed-in user's firm with their roles (Settings → Users, created-by filters).
+ * RLS on user_client_access only exposes the caller's own grants, so joining it returned just the
+ * caller. The users table's RLS (users_read: same firm) is the scope /api/session also uses; the
+ * per-company access list needs a DB function and is not filtered here. Read-only for everyone;
+ * `isMe` marks the caller.
+ */
 export async function listBooksUsers(userId: string, clientId: string) {
   return withUser(userId, async (db) => {
     await assertSyntheticTenant(db, clientId);
     const rows = await db.query(
-      `SELECT u.id, u.name, u.email, u.role
+      `SELECT u.id, u.name, u.email, u.role, (u.id = $1::uuid) AS "isMe"
        FROM users u
-       JOIN user_client_access a ON a.user_id = u.id
-       WHERE a.client_id = $1
        ORDER BY u.name`,
-      [clientId],
+      [userId],
     );
     return rows.rows;
   });
@@ -352,7 +424,10 @@ export async function updateBooksUserRole(
     );
     if (!access.rowCount) throw new BooksError("user_not_on_client", "not_found");
     const before = await db.query(`SELECT id, role FROM users WHERE id = $1`, [targetUserId]);
-    await db.query(`UPDATE users SET role = $2 WHERE id = $1`, [targetUserId, role]);
+    const updated = await db.query(`UPDATE users SET role = $2 WHERE id = $1`, [targetUserId, role]);
+    // users has no UPDATE policy for the app role, so RLS turns this into a silent no-op: say so
+    // instead of reporting a role change that did not happen.
+    if (!updated.rowCount) throw new BooksError("role_change_not_saved", "conflict");
     await writeBooksAudit(db, {
       clientId,
       actor: userId,

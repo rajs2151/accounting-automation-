@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import {
   BookOpen,
   Bookmark,
@@ -50,8 +49,8 @@ import {
 } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { apiErrorMessage } from "@/lib/api-error";
 import { csvCell } from "@/lib/csv";
-import { cn } from "@/lib/utils";
 
 type TagRow = { id: string; name: string; colour: string; usageCount?: number };
 type UserRow = { id: string; name: string; role?: string };
@@ -248,7 +247,7 @@ function ManageTagsDialog({
 }
 
 export function LedgerToolbar({
-  periodId,
+  periodId: _periodId,
   toolbarSearch,
   onToolbarSearchChange,
   types,
@@ -276,6 +275,7 @@ export function LedgerToolbar({
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [reverseOpen, setReverseOpen] = useState(false);
   const [reverseReason, setReverseReason] = useState("");
+  const [reverseDate, setReverseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const [bulkTagMode, setBulkTagMode] = useState<"add" | "remove">("add");
   const [bulkTagName, setBulkTagName] = useState("");
@@ -383,7 +383,7 @@ export function LedgerToolbar({
   }, [appliedFilters, onApplyFilters, users]);
 
   async function exportCsv() {
-    const header = ["Date", "Entry ID", "Description", "Amount (fils)", "Type", "Status", "Tags"];
+    const header = ["Date", "Entry ID", "Description", "Amount (fils)", "Source", "Status", "Tags"];
     const lines = selectedRows.length
       ? selectedRows
       : [];
@@ -444,7 +444,7 @@ export function LedgerToolbar({
             Guide
           </PopoverTrigger>
           <PopoverContent className="w-80 text-sm" align="start">
-            <p className="font-medium">Entry types</p>
+            <p className="font-medium">Source</p>
             <ul className="mt-1 list-disc pl-4 text-muted-foreground">
               <li>Manual — accountant-created journals</li>
               <li>Auto — system-generated from rules/imports</li>
@@ -457,6 +457,7 @@ export function LedgerToolbar({
               <li>Posted — locked lines, affects balances</li>
               <li>Reversed — original entry superseded by reversal pair</li>
               <li>Scheduled — will post on scheduled date</li>
+              <li>Blocked — schedule could not post (period locked)</li>
             </ul>
           </PopoverContent>
         </Popover>
@@ -465,7 +466,7 @@ export function LedgerToolbar({
           <DropdownMenuTrigger
             render={<Button variant="outline" size="sm" data-testid="ledger-type-filter" />}
           >
-            Type{types.length ? ` (${types.length})` : ""}
+            Source{types.length ? ` (${types.length})` : ""}
             <ChevronDown className="ml-1 size-3" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
@@ -623,13 +624,16 @@ export function LedgerToolbar({
               size="sm"
               variant="outline"
               disabled={!isAdmin}
-              title={isAdmin ? undefined : "Admin only"}
+              title={isAdmin ? undefined : "Approver or admin only"}
               onClick={() => setReverseOpen(true)}
+              data-testid="ledger-bulk-reverse"
             >
               Reverse
             </Button>
             <Button
               size="sm"
+              disabled={!isAdmin}
+              title={isAdmin ? undefined : "Approver or admin only"}
               onClick={async () => {
                 const res = await fetch("/api/books/journals/bulk/post", {
                   method: "POST",
@@ -637,9 +641,21 @@ export function LedgerToolbar({
                   body: JSON.stringify({ entryIds: selectedIds }),
                 });
                 const data = await res.json();
-                if (!res.ok) toast.error(String(data.error || "Post failed"));
+                if (!res.ok) toast.error(apiErrorMessage(data, "Post failed"));
                 else {
-                  toast.success("Drafts posted");
+                  // Per-entry results: dual control can refuse some (e.g. ones you prepared or edited).
+                  const results: Array<{ ok: boolean; error?: string }> = Array.isArray(data.results)
+                    ? data.results
+                    : [];
+                  const failed = results.filter((r) => !r.ok);
+                  const posted = results.length - failed.length;
+                  if (failed.length) {
+                    toast.error(
+                      `${posted} posted, ${failed.length} not posted: ${apiErrorMessage({ error: failed[0]!.error })}`,
+                    );
+                  } else {
+                    toast.success(`${posted} draft${posted === 1 ? "" : "s"} posted`);
+                  }
                   onBulkDone();
                 }
               }}
@@ -858,27 +874,40 @@ export function LedgerToolbar({
       </Dialog>
 
       <Dialog open={reverseOpen} onOpenChange={setReverseOpen}>
-        <DialogContent>
+        <DialogContent data-testid="ledger-reverse-dialog">
           <DialogHeader>
             <DialogTitle>Reverse selected entries</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">Admin action — requires a reason for audit.</p>
+          <p className="text-sm text-muted-foreground">
+            Approver action — original stays immutable; a linked reversal is posted. Reason is required for
+            audit.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Reversal date</label>
+            <BooksDateInput
+              data-testid="ledger-reverse-date"
+              value={reverseDate}
+              onChange={setReverseDate}
+            />
+          </div>
           <Textarea
             value={reverseReason}
             onChange={(e) => setReverseReason(e.target.value)}
             placeholder="Reason for reversal"
+            data-testid="ledger-reverse-reason"
           />
           <DialogFooter>
             <Button
               variant="destructive"
-              disabled={!reverseReason.trim() || !isAdmin}
+              disabled={!reverseReason.trim() || !isAdmin || !reverseDate}
+              data-testid="ledger-reverse-confirm"
               onClick={async () => {
                 const res = await fetch("/api/books/journals/bulk/reverse", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     entryIds: selectedIds,
-                    entryDate: new Date().toISOString().slice(0, 10),
+                    entryDate: reverseDate,
                     reason: reverseReason.trim(),
                   }),
                 });
@@ -917,13 +946,7 @@ export function LedgerPageChrome({
   transactionsEmpty?: boolean;
   toolbar?: ReactNode;
 }) {
-  const pathname = usePathname();
   const [bannerOpen, setBannerOpen] = useState(true);
-
-  const tabs = [
-    { href: "/books/transactions", label: "Transactions" },
-    { href: "/books/journals", label: "Journals" },
-  ];
 
   return (
     <div className="space-y-4" data-testid="ledger-page-chrome">
@@ -940,26 +963,6 @@ export function LedgerPageChrome({
         <div className="flex flex-wrap items-center gap-2">{rightActions}</div>
       </div>
 
-      <div className="flex gap-1 border-b border-border">
-        {tabs.map((tab) => {
-          const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
-          return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              className={cn(
-                "border-b-2 px-4 py-2 text-sm -mb-px",
-                active
-                  ? "border-primary font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {tab.label}
-            </Link>
-          );
-        })}
-      </div>
-
       {toolbar}
 
       {infoBanner && bannerOpen ? (
@@ -973,10 +976,16 @@ export function LedgerPageChrome({
 
       {transactionsEmpty ? (
         <div className="rounded-lg border border-dashed border-border bg-card px-6 py-16 text-center">
-          <p className="text-sm font-medium text-foreground">Coming in Phase 2</p>
+          <p className="text-sm font-medium text-foreground">Bank transactions live next door</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Bank and card transaction matching will live here. Use the Journals tab for the live ledger.
+            Matching and posting are on the Transactions screen. Journals here stay the posted ledger.
           </p>
+          <Link
+            href="/books/transactions"
+            className="mt-4 inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-sm hover:bg-muted"
+          >
+            Open Transactions
+          </Link>
         </div>
       ) : (
         children

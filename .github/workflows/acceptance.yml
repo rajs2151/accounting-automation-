@@ -1,8 +1,17 @@
 name: acceptance
 
 on:
+  # One run per change: PRs run on pull_request; push only for main (merges).
+  # Running on both push and pull_request doubled Actions minutes for every PR commit.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A newer commit cancels the older run of the same PR/branch instead of finishing it.
+concurrency:
+  group: acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -70,6 +79,14 @@ jobs:
         run: npm ci && npm test
       - name: E2E database
         run: psql -h 127.0.0.1 -U daftar -d postgres -c "CREATE DATABASE daftar_e2e OWNER daftar;"
+      # The Playwright Docker image no longer fits next to the runner's preinstalled toolchains
+      # ("no space left on device" while pulling it). Drop the unused SDKs first.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker image prune -af || true
+          df -h /
       - name: Browser e2e (Docker / Linux node_modules)
         run: npm run test:e2e:docker
       - name: Upload Playwright report

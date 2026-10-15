@@ -6,7 +6,7 @@ INSERT INTO clients (id, firm_id, name, trn, default_currency, is_synthetic) VAL
     'e1000001-0000-4000-8000-000000000001',
     '11111111-1111-4111-8111-111111111111',
     'Desert Falcon Services FZE',
-    '100000000000101',
+    '100000000000001',
     'AED',
     true
   ),
@@ -14,7 +14,7 @@ INSERT INTO clients (id, firm_id, name, trn, default_currency, is_synthetic) VAL
     'e1000001-0000-4000-8000-000000000002',
     '11111111-1111-4111-8111-111111111111',
     'Gulf Crest Trading LLC',
-    '100000000000102',
+    '100000000000002',
     'AED',
     true
   ),
@@ -22,12 +22,13 @@ INSERT INTO clients (id, firm_id, name, trn, default_currency, is_synthetic) VAL
     'e1000001-0000-4000-8000-000000000003',
     '11111111-1111-4111-8111-111111111111',
     'Palm Grove Properties LLC',
-    '100000000000103',
+    '100000000000003',
     'AED',
     true
   )
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
+  trn = EXCLUDED.trn,
   is_synthetic = true;
 
 -- RLS probe user: Desert Falcon (A) only — must not see Gulf Crest (B).
@@ -35,7 +36,7 @@ INSERT INTO users (id, firm_id, email, name, role) VALUES
   (
     'e5000001-0000-4000-8000-000000000001',
     '11111111-1111-4111-8111-111111111111',
-    'books-a-only@northwind.test',
+    'books-a-only@arnibooks.test',
     'Books A-Only',
     'accountant'
   )
