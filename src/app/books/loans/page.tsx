@@ -56,7 +56,9 @@ export default function LoansPage() {
     try {
       let principalMinor = 0;
       try {
-        principalMinor = displayToMinor(principal);
+        const parsed = displayToMinor(principal);
+        if (parsed == null || parsed <= 0) throw new Error("invalid");
+        principalMinor = parsed;
       } catch {
         throw new Error("Enter a valid principal amount");
       }

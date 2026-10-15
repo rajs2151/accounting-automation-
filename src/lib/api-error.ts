@@ -136,7 +136,6 @@ const MESSAGES: Record<string, string> = {
   allocation_exceeds_open: "You're allocating more than the invoice or bill still has open.",
   allocations_exceed_payment: "The allocations add up to more than the payment.",
   open_item_not_found: "That invoice or bill is no longer open.",
-  open_item_not_open: "That invoice or bill is already settled.",
   advance_insufficient: "The advance balance is smaller than the amount you're applying.",
   currency_mismatch: "The currencies don't match.",
   contra_accounts_must_be_cash_bank: "A contra transfer must be between two cash or bank accounts.",
